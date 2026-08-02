@@ -1,0 +1,11 @@
+build/
+build-*/
+*.o
+*.a
+*.so
+*.log
+.env
+.venv/
+__pycache__/
+*.pcap
+!tests/fixtures/*.pcap
