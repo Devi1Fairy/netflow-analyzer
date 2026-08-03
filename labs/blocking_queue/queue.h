@@ -13,8 +13,8 @@
 /**
  * @brief 保存有界队列的数据和运行状态。    
  *
- * 当前练习使用固定数组保存整数。后续会在这个结构中加入互斥锁和
- * 条件变量，使生产者和消费者能够安全地并发访问队列。
+ * 当前练习使用固定数组保存整数。后续会加入互斥锁和条件变量，
+ * 使生产者和消费者能够安全地并发访问队列。
  */
 typedef struct {
     /* data */ 
@@ -34,5 +34,21 @@ typedef struct {
  * @return 成功时返回0；queue为NULL时返回EINVAL。
  */
 int blocking_queue_init(blocking_queue_t *queue);
+
+/**
+ * @brief 将一个整数写入队尾。
+ *
+ * 当前是单线程、非阻塞版本。队列已满时不会等待，而是直接返回错误。
+ * 后续加入条件变量后，队列已满时生产者将进入等待状态。
+ *
+ * @param queue 指向已经初始化的队列，不能为NULL。
+ * @param value 需要写入队列的整数。
+ *
+ * @return 成功时返回0；
+ *         queue为NULL时返回EINVAL；
+ *         队列已经关闭时返回ECANCELED；
+ *         队列已满时返回ENOSPC。
+ */
+int blocking_queue_push(blocking_queue_t *queue, int value);
 
 #endif

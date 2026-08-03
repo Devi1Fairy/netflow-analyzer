@@ -20,3 +20,49 @@ int blocking_queue_init(blocking_queue_t *queue)
 
     return 0;
 }
+
+int blocking_queue_push(blocking_queue_t *queue, int value)
+{
+    /*
+     * 入队需要访问和修改queue指向的对象，因此必须先验证指针。
+     */
+    if(queue == NULL){
+        return EINVAL;
+    }
+
+     /*
+     * 关闭是队列的永久状态。关闭后不再接收任何新数据，
+     * 即使数组中仍有剩余位置，也不能继续入队。
+     */
+    if(queue->closed){
+        return ECANCELED;
+    }
+
+     /*
+     * 有界队列不能写入超过容量的数据。
+     * 当前单线程版本直接返回ENOSPC，后续多线程版本会在这里等待。
+     */
+    if(queue->count == QUEUE_CAPACITY){
+        return ENOSPC;
+    }
+
+     /*
+     * tail始终表示下一次写入位置。
+     */
+    queue->items[queue->tail] = value;
+
+     /*
+     * 写入完成后移动tail。
+     * 取模运算保证tail到达数组末尾后重新回到下标0。
+     */
+    queue->tail = (queue->tail + 1u) % QUEUE_CAPACITY;
+
+    /*
+     * 成功写入一个元素后，有效元素数量增加。
+     */
+    queue->count++;
+
+    return 0;
+}
+
+
