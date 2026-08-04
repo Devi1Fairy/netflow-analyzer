@@ -8,9 +8,12 @@
 /**
  * @brief 阻塞队列练习程序的入口。
  *
- * 当前程序负责初始化队列，依次写入4个整数，并验证队列满时
- * 是否能够拒绝第5次写入。
- *
+ * 当前程序负责：
+ * 1. 初始化队列；
+ * 2. 写入4个整数并验证满队列保护；
+ * 3. 按写入顺序取出4个整数；
+ * 4. 验证空队列保护。
+ * 
  * @return 所有操作符合预期时返回EXIT_SUCCESS，否则返回EXIT_FAILURE。
  */
 int main(void)
@@ -91,6 +94,56 @@ int main(void)
 
     printf("Push 50 rejected as expected: %s\n",
         strerror(error_code));
+
+    /*
+     * 依次取出全部数据。
+     * 循环下标同时表示当前预期取出的数组元素位置。
+     */
+    for(size_t index = 0; index < value_count; index++){
+        int popped_value;
+
+        error_code = blocking_queue_pop(&queue, &popped_value);
+        if(error_code != 0){
+            fprintf(stderr, "Failed to pop: %s\n", strerror(error_code));
+            return EXIT_FAILURE;
+        }
+        
+         /*
+         * FIFO队列必须按照写入顺序返回数据。
+         */
+        if(popped_value != values[index]){
+            fprintf(stderr,
+                "FIFO check failed: expected %d, got %d\n",
+                values[index],
+                popped_value);
+
+            return EXIT_FAILURE;
+        }
+        printf("After pop %d: head=%zu, tail=%zu, count=%zu, closed=%s\n",
+            values[index],
+            queue.head,
+            queue.tail,
+            queue.count,
+            queue.closed ? "true" : "false");
+        }
+        /*
+        * 所有数据已经取完。队列尚未关闭，因此再次读取应该返回EAGAIN。
+         */
+        {
+        int unused_value;
+        
+        error_code = blocking_queue_pop(&queue, &unused_value);
+        }
+
+        if (error_code != EAGAIN) {
+        fprintf(stderr,
+                "Expected EAGAIN for an empty queue, but got %d\n",
+                error_code);
+
+        return EXIT_FAILURE;
+    }
+     printf("Pop rejected as expected: %s\n",
+           strerror(error_code));
 
     return EXIT_SUCCESS;
 }

@@ -51,4 +51,20 @@ int blocking_queue_init(blocking_queue_t *queue);
  */
 int blocking_queue_push(blocking_queue_t *queue, int value);
 
+/**
+ * @brief 从队头取出最早写入的整数。
+ *
+ * 当前是单线程、非阻塞版本。队列为空时不会等待，而是直接返回错误。
+ * 如果队列已经关闭但仍有剩余数据，允许消费者继续取完这些数据。
+ *
+ * @param queue 指向已经初始化的队列，不能为NULL。
+ * @param value 用于保存取出结果的指针，不能为NULL。
+ *
+ * @return 成功时返回0；
+ *         queue或value为NULL时返回EINVAL；
+ *         队列未关闭但暂时为空时返回EAGAIN；
+ *         队列已经关闭且没有剩余数据时返回ECANCELED。
+ */
+int blocking_queue_pop(blocking_queue_t *queue, int *value);
+
 #endif

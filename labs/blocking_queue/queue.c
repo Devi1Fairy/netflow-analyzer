@@ -65,4 +65,45 @@ int blocking_queue_push(blocking_queue_t *queue, int value)
     return 0;
 }
 
+int blocking_queue_pop(blocking_queue_t *queue, int *value)
+{
+    /*
+     * queue用于访问队列，value用于返回数据。
+     * 任意一个指针为NULL都不能继续执行。
+     */
+    if(queue == NULL || value == NULL){
+        return EINVAL;
+    }
+
+    /*
+     * count为0表示队列中没有有效数据。
+     *
+     * 队列尚未关闭时返回EAGAIN，表示当前暂时没有数据；
+     * 队列已经关闭时返回ECANCELED，表示以后也不会再有新数据。
+     */
+    if(queue->count == 0){
+        return queue->closed ? ECANCELED : EAGAIN;
+    }
+
+    /*
+     * head始终指向下一次应该读取的位置。
+     * 先读取数据，再移动head。
+     */
+    *value = queue->items[queue->head];
+
+    /*
+     * 取模运算保证head到达数组末尾后回到下标0，
+     * 从而形成循环队列。
+     */
+    queue->head = (queue->head + 1U) % QUEUE_CAPACITY;
+
+    /*
+     * 前面已经确认count不为0，因此这里减1不会造成
+     * size_t无符号整数下溢。
+     */
+    queue->count--;
+    
+    return 0;
+}
+
 
