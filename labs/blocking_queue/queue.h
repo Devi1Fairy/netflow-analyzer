@@ -67,4 +67,18 @@ int blocking_queue_push(blocking_queue_t *queue, int value);
  */
 int blocking_queue_pop(blocking_queue_t *queue, int *value);
 
+/**
+ * @brief 关闭队列，禁止生产者继续写入新数据。
+ *
+ * 关闭操作不会删除队列中已经存在的数据。消费者仍然可以调用
+ * blocking_queue_pop取完剩余数据；队列关闭且取空后，pop将返回
+ * ECANCELED。
+ *
+ * 重复关闭同一个队列是安全的，并且仍然返回成功。
+ *
+ * @param queue 指向已经初始化的队列，不能为NULL。
+ *
+ * @return 成功时返回0；queue为NULL时返回EINVAL。
+ */
+int blocking_queue_close(blocking_queue_t *queue);
 #endif

@@ -106,4 +106,20 @@ int blocking_queue_pop(blocking_queue_t *queue, int *value)
     return 0;
 }
 
+int blocking_queue_close(blocking_queue_t *queue)
+{
+    /*
+     * 关闭操作需要修改队列状态，因此必须先验证队列指针。
+     */
+    if(queue == NULL){
+        return EINVAL;
+    }
 
+     /*
+     * closed一旦设置为true，就不会再恢复为false。
+     * 重复执行该赋值不会破坏队列状态，因此close是幂等操作。
+     */
+    queue->closed = true;
+
+    return 0;
+}
