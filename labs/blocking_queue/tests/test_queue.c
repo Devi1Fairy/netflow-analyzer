@@ -594,6 +594,67 @@ static bool test_queue_close(void)
     return true;
 }
 
+/**
+ * @brief 验证队列销毁接口的基本行为。
+ *
+ * @return 正常队列能够销毁且NULL参数被拒绝时返回true。
+ */
+static bool test_queue_destroy(void)
+{
+    blocking_queue_t queue;
+    int error_code;
+
+    if (!initialize_test_queue(&queue, "queue destroy")) {
+        return false;
+    }
+
+    /*
+     * 先写入数据并关闭队列，模拟一个实际使用过的队列。
+     * destroy负责结束对象生命周期，不要求队列必须为空。
+     *
+     * 多线程版本中，调用者仍然必须保证所有工作线程已经退出。
+     */
+    error_code = blocking_queue_push(&queue, 10);
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Push before destroy failed: %s\n",
+                strerror(error_code));
+
+        return false;
+    }
+
+    error_code = blocking_queue_close(&queue);
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Close before destroy failed: %s\n",
+                strerror(error_code));
+
+        return false;
+    }
+
+    error_code = blocking_queue_destroy(&queue);
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Destroy initialized queue failed: %s\n",
+                strerror(error_code));
+
+        return false;
+    }
+
+    /*
+     * NULL不指向有效队列，接口必须返回EINVAL而不是发生崩溃。
+     */
+    error_code = blocking_queue_destroy(NULL);
+    if (error_code != EINVAL) {
+        fprintf(stderr,
+                "Destroy NULL: expected EINVAL, got %d\n",
+                error_code);
+
+        return false;
+    }
+
+    return true;
+}
 
 /**
  * @brief 队列单元测试程序入口。
@@ -649,6 +710,13 @@ int main(void)
         all_passed = false;
     }
     return all_passed ? EXIT_SUCCESS : EXIT_FAILURE;
+
+        if (test_queue_destroy()) {
+        printf("[PASS] queue destruction\n");
+    } else {
+        fprintf(stderr, "[FAIL] queue destruction\n");
+        all_passed = false;
+    }
 }
 
 

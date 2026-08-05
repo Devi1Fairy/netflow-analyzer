@@ -81,4 +81,21 @@ int blocking_queue_pop(blocking_queue_t *queue, int *value);
  * @return 成功时返回0；queue为NULL时返回EINVAL。
  */
 int blocking_queue_close(blocking_queue_t *queue);
+
+/**
+ * @brief 销毁队列并释放它拥有的资源。
+ *
+ * 调用该函数之前，调用者必须确保已经没有线程正在访问队列。
+ * 销毁后的队列不能继续执行push、pop或close，除非重新调用
+ * blocking_queue_init进行初始化。
+ *
+ * 当前单线程版本没有系统资源需要释放，因此暂时只清空普通状态。
+ * 后续加入互斥锁和条件变量后，该函数将负责销毁这些同步资源。
+ *
+ * @param queue 指向已经初始化的队列，不能为NULL。
+ *
+ * @return 成功时返回0；queue为NULL时返回EINVAL。
+ */
+int blocking_queue_destroy(blocking_queue_t *queue);
+
 #endif

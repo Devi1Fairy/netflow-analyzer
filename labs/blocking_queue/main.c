@@ -183,5 +183,21 @@ int main(void)
            queue.count,
            queue.closed ? "true" : "false");
 
+    /*
+    * 所有队列操作完成后销毁队列。
+    *
+    * 当前版本只是清空状态；后续版本将在这里释放互斥锁和条件变量。
+    */
+    error_code = blocking_queue_destroy(&queue);
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Failed to destroy queue: %s\n",
+                strerror(error_code));
+
+        return EXIT_FAILURE;
+    }
+
+    printf("Queue destroyed successfully.\n");
+
     return EXIT_SUCCESS;
 }

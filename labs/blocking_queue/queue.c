@@ -123,3 +123,23 @@ int blocking_queue_close(blocking_queue_t *queue)
 
     return 0;
 }
+
+int blocking_queue_destroy(blocking_queue_t *queue)
+{
+    /*
+    * 销毁操作需要访问queue指向的对象，因此必须先验证指针。
+    */
+   if(queue == NULL){
+        return EINVAL;
+   }
+
+    /*
+    * 当前结构体还没有互斥锁和条件变量，只需要清空普通成员。
+    *
+    * 下一步加入pthread_mutex_t后，会先调用pthread_mutex_destroy，
+    * 成功释放同步资源后再清空这些普通状态。
+    */
+   *queue = (blocking_queue_t){0};
+
+   return 0;
+}
