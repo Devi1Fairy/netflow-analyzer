@@ -76,7 +76,7 @@ if(BUILD_TESTING)
             blocking_queue
     )
 
-      # 测试代码同样必须保持零编译警告。
+    # 测试代码同样必须保持零编译警告。
     target_compile_options(
         queue_tests
         PRIVATE
@@ -87,7 +87,7 @@ if(BUILD_TESTING)
 
     # 将queue_tests注册到CTest。
     add_test(
-        NAME queue_initialization
+        NAME queue_unit_tests
         COMMAND queue_tests
     )
 endif()
