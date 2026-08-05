@@ -15,6 +15,35 @@ set(CMAKE_C_EXTENSIONS OFF)
 # BUILD_TESTING默认开启，同时允许使用add_test注册测试。
 include(CTest)
 
+# 提供一个可选开关，用于启用内存错误和未定义行为检查。
+# 默认关闭，只有配置时显式指定ENABLE_SANITIZERS=ON才会启用。
+option(
+    ENABLE_SANITIZERS
+    "Enable AddressSanitizer and UndefinedBehaviorSanitizer"
+    OFF
+)
+
+# 当前Sanitizer配置支持GCC和Clang。
+if(ENABLE_SANITIZERS)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        # 在编译阶段加入ASan和UBSan插桩。
+        add_compile_options(
+            -fsanitize=address,undefined
+            -fno-omit-frame-pointer
+        )
+
+        # 在链接阶段加入对应的Sanitizer运行库。
+        add_link_options(
+            -fsanitize=address,undefined
+        )
+    else()
+        message(
+            FATAL_ERROR
+            "ENABLE_SANITIZERS currently supports GCC and Clang only"
+        )
+    endif()
+endif()
+
 # 将队列实现编译成静态库。
 add_library(
     blocking_queue
