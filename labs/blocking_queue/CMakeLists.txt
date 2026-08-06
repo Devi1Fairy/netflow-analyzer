@@ -110,39 +110,79 @@ target_compile_options(
 
 # 只有开启BUILD_TESTING时才构建和注册测试程序。
 if(BUILD_TESTING)
-    # 创建队列测试程序。
-    add_executable(
-        queue_tests
-        tests/test_queue.c
+    # 使用CMake函数统一创建队列测试。
+    #
+    # target_name表示生成的可执行程序名称；
+    # source_file表示该测试程序的主要源文件。
+    #
+    # 所有测试都同时编译test_helpers.c，并链接blocking_queue库。
+    function(add_queue_test target_name source_file)
+        # 创建独立的测试可执行程序。
+        add_executable(
+            ${target_name}
+            ${source_file}
+            tests/test_helpers.c
+        )
+
+        # 测试程序调用blocking_queue提供的接口。
+        target_link_libraries(
+            ${target_name}
+            PRIVATE
+                blocking_queue
+        )
+
+        # test_helpers.h位于tests目录，因此添加测试头文件搜索路径。
+        target_include_directories(
+            ${target_name}
+            PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests
+        )
+
+        # 测试代码同样要求保持零编译警告。
+        target_compile_options(
+            ${target_name}
+            PRIVATE
+                -Wall
+                -Wextra
+                -Wpedantic
+        )
+
+        # 将可执行程序注册到CTest。
+        add_test(
+            NAME ${target_name}
+            COMMAND ${target_name}
+        )
+
+        # 并发错误可能导致线程一直等待。
+        # 超过10秒仍未结束时，由CTest终止测试。
+        set_tests_properties(
+            ${target_name}
+            PROPERTIES
+                TIMEOUT 10
+        )
+    endfunction()
+
+    # 基础数据结构测试：初始化、FIFO和环形回绕。
+    add_queue_test(
+        queue_basic_tests
+        tests/test_queue_basic.c
     )
 
-    # 测试程序使用与演示程序相同的队列实现。
-    target_link_libraries(
-        queue_tests
-        PRIVATE
-            blocking_queue
+    # 条件变量测试：not_empty和not_full。
+    add_queue_test(
+        queue_blocking_tests
+        tests/test_queue_blocking.c
     )
 
-    # 测试代码同样必须保持零编译警告。
-    target_compile_options(
-        queue_tests
-        PRIVATE
-            -Wall
-            -Wextra
-            -Wpedantic
+    # 生命周期测试：close和destroy。
+    add_queue_test(
+        queue_lifecycle_tests
+        tests/test_queue_lifecycle.c
     )
 
-    # 将queue_tests注册到CTest。
-    add_test(
-        NAME queue_unit_tests
-        COMMAND queue_tests
+    # 并发测试：生产者和消费者传输1000个整数。
+    add_queue_test(
+        queue_concurrent_tests
+        tests/test_queue_concurrent.c
     )
-    # 并发错误可能导致线程永久等待。
-    # 超过10秒仍未结束时，由CTest终止测试并报告超时。
-    set_tests_properties(
-        queue_unit_tests
-        PROPERTIES
-            TIMEOUT 10
-    )
-
 endif()

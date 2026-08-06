@@ -73,8 +73,7 @@ int blocking_queue_init(blocking_queue_t *queue);
 /**
  * @brief 将一个整数写入队尾。
  *
- * 当前是单线程、非阻塞版本。队列已满时不会等待，而是直接返回错误。
- * 后续加入条件变量后，队列已满时生产者将进入等待状态。
+ * 当前加入条件变量后，队列已满时生产者将进入等待状态。
  *
  * @param queue 指向已经初始化的队列，不能为NULL。
  * @param value 需要写入队列的整数。
@@ -89,7 +88,7 @@ int blocking_queue_push(blocking_queue_t *queue, int value);
 /**
  * @brief 从队头取出最早写入的整数。
  *
- * 当前是单线程、非阻塞版本。队列为空时不会等待，而是直接返回错误。
+ * 当前是加入条件变量后，队列为空时会等待。
  * 如果队列已经关闭但仍有剩余数据，允许消费者继续取完这些数据。
  *
  * @param queue 指向已经初始化的队列，不能为NULL。
