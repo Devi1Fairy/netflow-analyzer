@@ -142,7 +142,7 @@ int blocking_queue_push(blocking_queue_t *queue, int value)
     }
     
     /*
-    * 无论入队成功、队列关闭还是队列已满，都必须释放互斥锁。
+    * 无论入队成功、队列关闭还是同步操作失败，都必须释放互斥锁。
     *
     * 如果在持锁状态直接return，其他线程以后将永远无法获得该锁。
     */

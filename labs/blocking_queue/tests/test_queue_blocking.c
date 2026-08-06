@@ -1,6 +1,7 @@
 #include "queue.h"
 #include "test_helpers.h"
 
+#include <errno.h>
 #include <pthread.h>
 
 #include <stdbool.h>
@@ -339,6 +340,291 @@ static bool test_blocking_push_on_full_queue(void)
 }
 
 /**
+ * @brief 验证close能够结束空队列上的消费者等待。
+ *
+ * 测试创建一个消费者线程，让它对空队列调用pop。随后主线程关闭队列。
+ *
+ * 如果消费者已经等待not_empty，close广播not_empty后会将它唤醒；
+ * 如果消费者稍后才运行，它会直接发现队列已经关闭。
+ *
+ * 无论操作系统采用哪种线程调度顺序，消费者最终都必须返回ECANCELED，
+ * 不能永久停留在blocking_queue_pop中。
+ *
+ * @return 消费者以ECANCELED结束且线程被成功回收时返回true。
+ */
+static bool test_close_wakes_waiting_consumer(void)
+{
+    blocking_queue_t queue;
+    pthread_t consumer_thread;
+
+    consumer_thread_context_t consumer_context;
+    int error_code;
+
+    if (!initialize_test_queue(
+            &queue,
+            "close wakes waiting consumer")) {
+        return false;
+    }
+
+    consumer_context = (consumer_thread_context_t){
+        .queue = &queue,
+        .value = 0,
+        .error_code = 0
+    };
+
+    /*
+     * 队列当前为空。
+     *
+     * 消费者进入blocking_queue_pop后，会等待not_empty；
+     * 如果主线程先执行close，消费者随后也会立即得到ECANCELED。
+     */
+    error_code = pthread_create(&consumer_thread,
+                                NULL,
+                                consumer_thread_main,
+                                &consumer_context);
+
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Failed to create waiting consumer: %s\n",
+                strerror(error_code));
+
+        (void)destroy_test_queue(
+            &queue,
+            "close wakes waiting consumer");
+
+        return false;
+    }
+
+    /*
+     * close将closed设置为true，并广播not_empty和not_full。
+     *
+     * 正在等待not_empty的消费者被唤醒后，会重新获得mutex，
+     * 发现队列已经关闭且count等于0，然后返回ECANCELED。
+     */
+    error_code = blocking_queue_close(&queue);
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Failed to close queue for consumer: %s\n",
+                strerror(error_code));
+
+        /*
+         * 再次尝试关闭，尽量确保消费者能够结束。
+         * close具有幂等性，重复调用是安全的。
+         */
+        (void)blocking_queue_close(&queue);
+        (void)pthread_join(consumer_thread, NULL);
+        (void)destroy_test_queue(
+            &queue,
+            "close wakes waiting consumer");
+
+        return false;
+    }
+
+    /*
+     * 如果close没有正确结束消费者的等待，这里就会一直阻塞。
+     *
+     * CMake中设置的CTest超时时间会在10秒后终止测试并报告失败，
+     * 这也是该测试“自动检查死锁”的部分。
+     */
+    error_code = pthread_join(consumer_thread, NULL);
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Failed to join waiting consumer: %s\n",
+                strerror(error_code));
+
+        /*
+         * join失败后无法确定线程是否仍在使用queue，所以不能安全销毁。
+         */
+        return false;
+    }
+
+    if (consumer_context.error_code != ECANCELED) {
+        fprintf(stderr,
+                "Waiting consumer: expected ECANCELED, got %d\n",
+                consumer_context.error_code);
+
+        (void)destroy_test_queue(
+            &queue,
+            "close wakes waiting consumer");
+
+        return false;
+    }
+
+    /*
+     * 空队列被关闭后，消费者没有取得任何元素，count仍然应该为0。
+     */
+    if (!queue.closed || queue.count != 0) {
+        fprintf(stderr,
+                "Unexpected consumer-close state: "
+                "closed=%s, count=%zu\n",
+                queue.closed ? "true" : "false",
+                queue.count);
+
+        (void)destroy_test_queue(
+            &queue,
+            "close wakes waiting consumer");
+
+        return false;
+    }
+
+    return destroy_test_queue(
+        &queue,
+        "close wakes waiting consumer");
+}
+
+/**
+ * @brief 验证close能够结束满队列上的生产者等待。
+ *
+ * 测试先填满队列，再创建一个生产者线程尝试写入50。随后主线程关闭
+ * 队列。
+ *
+ * 如果生产者已经等待not_full，close广播not_full后会将它唤醒；
+ * 如果生产者稍后才运行，它会直接发现队列已经关闭。
+ *
+ * 生产者最终必须返回ECANCELED，而且50不能被写入队列。
+ *
+ * @return 生产者以ECANCELED结束且原有队列内容未改变时返回true。
+ */
+static bool test_close_wakes_waiting_producer(void)
+{
+    const int initial_values[] = {10, 20, 30, 40};
+    const size_t initial_count =
+        sizeof(initial_values) / sizeof(initial_values[0]);
+
+    blocking_queue_t queue;
+    pthread_t producer_thread;
+
+    producer_thread_context_t producer_context;
+    int error_code;
+
+    if (!initialize_test_queue(
+            &queue,
+            "close wakes waiting producer")) {
+        return false;
+    }
+
+    /*
+     * 先写满队列，使后续生产者没有可用空间。
+     */
+    for (size_t index = 0; index < initial_count; index++) {
+        error_code =
+            blocking_queue_push(&queue, initial_values[index]);
+
+        if (error_code != 0) {
+            fprintf(stderr,
+                    "Initial push failed at index %zu: %s\n",
+                    index,
+                    strerror(error_code));
+
+            (void)destroy_test_queue(
+                &queue,
+                "close wakes waiting producer");
+
+            return false;
+        }
+    }
+
+    producer_context = (producer_thread_context_t){
+        .queue = &queue,
+        .value = 50,
+        .error_code = 0
+    };
+
+    /*
+     * 队列当前已满。
+     *
+     * 生产者进入blocking_queue_push后，会等待not_full；
+     * 如果主线程先执行close，生产者随后会直接得到ECANCELED。
+     */
+    error_code = pthread_create(&producer_thread,
+                                NULL,
+                                producer_thread_main,
+                                &producer_context);
+
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Failed to create waiting producer: %s\n",
+                strerror(error_code));
+
+        (void)destroy_test_queue(
+            &queue,
+            "close wakes waiting producer");
+
+        return false;
+    }
+
+    /*
+     * close广播not_full，使可能正在等待空间的生产者重新检查closed。
+     *
+     * 关闭队列不是释放一个队列位置，因此生产者不能继续写入50，
+     * 而应该返回ECANCELED。
+     */
+    error_code = blocking_queue_close(&queue);
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Failed to close queue for producer: %s\n",
+                strerror(error_code));
+
+        (void)blocking_queue_close(&queue);
+        (void)pthread_join(producer_thread, NULL);
+        (void)destroy_test_queue(
+            &queue,
+            "close wakes waiting producer");
+
+        return false;
+    }
+
+    /*
+     * 等待生产者结束并回收线程资源。
+     *
+     * 如果close没有广播not_full，并且生产者已经进入等待，
+     * 这里将无法结束，最终由CTest的超时机制报告失败。
+     */
+    error_code = pthread_join(producer_thread, NULL);
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Failed to join waiting producer: %s\n",
+                strerror(error_code));
+
+        return false;
+    }
+
+    if (producer_context.error_code != ECANCELED) {
+        fprintf(stderr,
+                "Waiting producer: expected ECANCELED, got %d\n",
+                producer_context.error_code);
+
+        (void)destroy_test_queue(
+            &queue,
+            "close wakes waiting producer");
+
+        return false;
+    }
+
+    /*
+     * 写入50应该被拒绝，因此队列仍然包含原来的四个元素。
+     */
+    if (!queue.closed ||
+        queue.count != QUEUE_CAPACITY) {
+        fprintf(stderr,
+                "Unexpected producer-close state: "
+                "closed=%s, count=%zu\n",
+                queue.closed ? "true" : "false",
+                queue.count);
+
+        (void)destroy_test_queue(
+            &queue,
+            "close wakes waiting producer");
+
+        return false;
+    }
+
+    return destroy_test_queue(
+        &queue,
+        "close wakes waiting producer");
+}
+
+/**
  * @brief 条件变量阻塞测试程序入口。
  *
  * @return 所有阻塞测试通过时返回EXIT_SUCCESS，否则返回EXIT_FAILURE。
@@ -360,6 +646,22 @@ int main(void)
     } else {
         fprintf(stderr,
                 "[FAIL] blocking push on full queue\n");
+        all_passed = false;
+    }
+
+    if (test_close_wakes_waiting_consumer()) {
+        printf("[PASS] close wakes waiting consumer\n");
+    } else {
+        fprintf(stderr,
+                "[FAIL] close wakes waiting consumer\n");
+        all_passed = false;
+    }
+
+    if (test_close_wakes_waiting_producer()) {
+        printf("[PASS] close wakes waiting producer\n");
+    } else {
+        fprintf(stderr,
+                "[FAIL] close wakes waiting producer\n");
         all_passed = false;
     }
 

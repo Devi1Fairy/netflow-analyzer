@@ -73,7 +73,13 @@ int blocking_queue_init(blocking_queue_t *queue);
 /**
  * @brief 将一个整数写入队尾。
  *
- * 当前加入条件变量后，队列已满时生产者将进入等待状态。
+ * 如果队列已经填满，并且队列尚未关闭，调用线程会等待not_full条件变量。
+ * 消费者取出元素并释放空间后，等待中的生产者会被唤醒并继续尝试入队。
+ *
+ * 等待期间，函数会在内部释放mutex，使消费者能够访问并修改队列；
+ * 被唤醒后，函数会先重新获得mutex，再检查队列状态。
+ *
+ * 如果队列在等待期间被关闭，生产者会被唤醒并返回ECANCELED。
  *
  * @param queue 指向已经初始化的队列，不能为NULL。
  * @param value 需要写入队列的整数。
@@ -81,23 +87,29 @@ int blocking_queue_init(blocking_queue_t *queue);
  * @return 成功时返回0；
  *         queue为NULL时返回EINVAL；
  *         队列已经关闭时返回ECANCELED；
- *         队列已满时返回ENOSPC。
+ *         同步操作失败时返回对应的POSIX错误码。
  */
 int blocking_queue_push(blocking_queue_t *queue, int value);
 
 /**
  * @brief 从队头取出最早写入的整数。
  *
- * 当前是加入条件变量后，队列为空时会等待。
- * 如果队列已经关闭但仍有剩余数据，允许消费者继续取完这些数据。
+ * 如果队列为空，并且队列尚未关闭，调用线程会等待not_empty条件变量。
+ * 生产者成功写入元素后，等待中的消费者会被唤醒并继续尝试出队。
+ *
+ * 等待期间，函数会在内部释放mutex，使生产者能够访问并修改队列；
+ * 被唤醒后，函数会先重新获得mutex，再检查队列状态。
+ *
+ * 如果队列已经关闭但仍然存在剩余数据，消费者可以继续取出这些数据。
+ * 队列关闭且所有剩余数据都被取出后，函数返回ECANCELED。
  *
  * @param queue 指向已经初始化的队列，不能为NULL。
  * @param value 用于保存取出结果的指针，不能为NULL。
  *
  * @return 成功时返回0；
  *         queue或value为NULL时返回EINVAL；
- *         队列未关闭但暂时为空时返回EAGAIN；
- *         队列已经关闭且没有剩余数据时返回ECANCELED。
+ *         队列已经关闭且没有剩余数据时返回ECANCELED；
+ *         同步操作失败时返回对应的POSIX错误码。
  */
 int blocking_queue_pop(blocking_queue_t *queue, int *value);
 
