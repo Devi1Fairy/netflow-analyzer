@@ -1,6 +1,7 @@
 #ifndef BLOCKING_QUEUE_H
 #define BLOCKING_QUEUE_H
 
+#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -11,10 +12,13 @@
 #define QUEUE_CAPACITY 4U
 
 /**
- * @brief 保存有界队列的数据和运行状态。    
+ * @brief 保存有界队列的数据、运行状态和同步资源。
  *
- * 当前练习使用固定数组保存整数。后续会加入互斥锁和条件变量，
- * 使生产者和消费者能够安全地并发访问队列。
+ * mutex保护items、head、tail、count和closed，确保多个线程不能同时
+ * 修改队列状态。
+ *
+ * 并发环境中，调用者必须通过blocking_queue_push、
+ * blocking_queue_pop和blocking_queue_close访问队列，不能直接读写成员。
  */
 typedef struct {
     /* data */ 
@@ -23,6 +27,15 @@ typedef struct {
     size_t tail;                 /**< 下一次写入元素的位置。 */
     size_t count;                /**< 队列中当前有效元素的数量。 */
     bool closed;                 /**< true表示队列不再接收新元素。 */
+
+    /**
+     * 保护队列的全部共享状态。
+     *
+     * 它必须通过pthread_mutex_init初始化，并通过
+     * pthread_mutex_destroy销毁，不能直接复制。
+     */
+    pthread_mutex_t mutex;
+
 }blocking_queue_t;
 
 

@@ -1,0 +1,38 @@
+{
+    // VS Code调试配置文件的格式版本。
+    "version": "0.2.0",
+
+    // 一个工作区可以保存多套调试配置。
+    "configurations": [
+        {
+            // 显示在“运行和调试”下拉列表中的名称。
+            "name": "Debug queue_demo (CodeLLDB)",
+
+            // 使用已经安装的CodeLLDB扩展。
+            "type": "lldb",
+
+            // launch表示由调试器启动一个新进程。
+            "request": "launch",
+
+            // 指定CMake生成的queue_demo可执行程序。
+            "program": "${workspaceFolder}/labs/blocking_queue/build/queue_demo",
+
+            // queue_demo当前不需要命令行参数。
+            "args": [],
+
+            // 设置程序运行时的工作目录。
+            "cwd": "${workspaceFolder}/labs/blocking_queue",
+
+            /*
+             * 将stdout和stderr发送到VS Code调试控制台。
+             * 这样可以绕过Remote SSH集成终端的控制终端问题。
+             *
+             * console模式不能给程序输入键盘数据，但queue_demo不需要输入。
+             */
+            "terminal": "console",
+
+            // 不在main入口自动暂停，而是运行到我们设置的断点。
+            "stopOnEntry": false
+        }
+    ]
+}

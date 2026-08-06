@@ -35,6 +35,31 @@ static bool initialize_test_queue(blocking_queue_t *queue,
 }
 
 /**
+ * @brief 销毁测试场景使用的队列。
+ *
+ * @param queue 指向已经初始化的测试队列。
+ * @param test_name 当前测试名称，用于输出可定位的错误信息。
+ *
+ * @return 销毁成功时返回true，否则返回false。
+ */
+static bool destroy_test_queue(blocking_queue_t *queue,
+                               const char *test_name)
+{
+    const int error_code = blocking_queue_destroy(queue);
+
+    if (error_code != 0) {
+        fprintf(stderr,
+                "%s: blocking_queue_destroy failed: %s\n",
+                test_name,
+                strerror(error_code));
+
+        return false;
+    }
+
+    return true;
+}
+
+/**
  * @brief 验证队列初始化后的所有普通数据成员。
  *
  * @return 所有成员符合初始状态时返回true，否则返回false。
@@ -87,7 +112,7 @@ static bool test_queue_init(void)
         }
     }
 
-    return true;
+    return destroy_test_queue(&queue, "queue initialization");
 }
 
 /**
@@ -192,7 +217,7 @@ static bool test_partial_queue_fifo(void){
         return false;
     }
 
-    return true;
+    return destroy_test_queue(&queue, "partial queue FIFO");
 }
 
 /**
@@ -264,7 +289,7 @@ static bool test_full_queue(void)
         return false;
     }
 
-    return true;
+    return destroy_test_queue(&queue, "full queue");
 }
 
 /**
@@ -318,7 +343,7 @@ static bool test_empty_queue(void)
         return false;
     }
 
-    return true;
+    return  destroy_test_queue(&queue, "empty queue");
 }
 
 /**
@@ -469,7 +494,7 @@ static bool test_queue_wraparound(void)
         return false;
     }
 
-    return true;
+    return destroy_test_queue(&queue, "queue wraparound");
 }
 
 /**
@@ -591,7 +616,7 @@ static bool test_queue_close(void)
         return false;
     }
 
-    return true;
+    return destroy_test_queue(&queue, "queue close");
 }
 
 /**

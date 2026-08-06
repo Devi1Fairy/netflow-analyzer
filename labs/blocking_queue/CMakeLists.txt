@@ -4,6 +4,14 @@ cmake_minimum_required(VERSION 3.16)
 # 定义项目名称，并声明本项目使用C语言。
 project(blocking_queue_lib LANGUAGES C)
 
+# 优先使用-pthread编译和链接选项。
+# -pthread不仅负责链接线程库，也可能启用线程相关的编译器配置。
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+
+# 查找当前平台提供的线程支持，并创建Threads::Threads目标。
+# REQUIRED表示找不到线程支持时，CMake配置阶段直接报错。
+find_package(Threads REQUIRED)
+
 # 要求项目使用C11标准。
 set(CMAKE_C_STANDARD 11)
 # 如果编译器不支持C11，配置阶段直接报错。
@@ -49,6 +57,16 @@ add_library(
     blocking_queue
     STATIC
     queue.c
+)
+
+# 队列实现使用POSIX线程同步接口。
+#
+# 使用PUBLIC是因为blocking_queue是静态库，它的最终使用者
+# queue_demo和queue_tests也需要继承线程编译、链接参数。
+target_link_libraries(
+    blocking_queue
+    PUBLIC
+        Threads::Threads
 )
 
 # 将当前源码目录设置为公共头文件搜索目录。
