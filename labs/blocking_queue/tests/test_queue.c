@@ -5,6 +5,28 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <pthread.h>
+#include <sched.h>
+
+/*
+ * 并发测试传输1000个整数。
+ *
+ * 队列容量只有4，因此生产者和消费者会反复遇到队列满、队列空以及
+ * 数组下标循环归零，从而比只传输几个元素更容易暴露同步错误。
+ */
+#define CONCURRENT_TEST_ITEM_COUNT 1000U
+
+/**
+ * @brief 保存生产者线程运行所需的参数和执行结果。
+ *
+ * pthread_create只能给线程入口传递一个void指针，因此把多个参数
+ * 组合到一个上下文结构体中。
+ */
+typedef struct {
+    blocking_queue_t *queue; /**< 生产者和消费者共享的队列。 */
+    size_t item_count;       /**< 生产者需要写入的元素数量。 */
+    int error_code;          /**< 线程执行结果，0表示成功。 */
+} producer_thread_context_t;
 
 /**
  * @brief 为一个测试场景初始化独立队列。
@@ -682,6 +704,262 @@ static bool test_queue_destroy(void)
 }
 
 /**
+ * @brief 连续产生整数并写入队列，完成后关闭队列。
+ *
+ * 生产者依次写入0到item_count-1。队列暂时已满时让出CPU并重试；
+ * 遇到其他错误时记录错误，并关闭队列使消费者能够结束。
+ *
+ * @param argument 指向producer_thread_context_t的void指针。
+ *
+ * @return 本测试不通过线程返回值传递结果，固定返回NULL。
+ */
+static void *producer_thread_main(void *argument)
+{
+    /*
+     * C语言允许把void指针隐式转换为其他对象指针，
+     * 因此这里不需要进行显式强制类型转换。
+     */
+    producer_thread_context_t *context = argument;
+
+    for (size_t index = 0; index < context->item_count; index++) {
+        int error_code;
+
+        /*
+         * 当前队列还是非阻塞版本。
+         *
+         * ENOSPC表示消费者还没有腾出空间，它不是本测试中的真正失败；
+         * 生产者让出CPU后再次尝试写入同一个值。
+         */
+        do {
+            error_code =
+                blocking_queue_push(context->queue, (int)index);
+
+            if (error_code == ENOSPC) {
+                /*
+                 * 暂时把CPU执行机会让给消费者。
+                 *
+                 * 这仍属于轮询，后续会用条件变量替代。
+                 */
+                (void)sched_yield();
+            }
+        } while (error_code == ENOSPC);
+
+        if (error_code != 0) {
+            /*
+             * 保存线程错误，主测试线程会在pthread_join之后检查。
+             */
+            context->error_code = error_code;
+
+            /*
+             * 尽量关闭队列，避免消费者永远等待后续数据。
+             */
+            (void)blocking_queue_close(context->queue);
+
+            return NULL;
+        }
+    }
+
+    /*
+     * 生产者完成全部数据后关闭队列。
+     *
+     * 消费者取完剩余数据后，会从pop得到ECANCELED并结束循环。
+     */
+    context->error_code =
+        blocking_queue_close(context->queue);
+
+    return NULL;
+}
+
+/**
+ * @brief 验证一个生产者线程和一个消费者线程能够并发传输数据。
+ *
+ * 生产者线程依次写入0到999，当前测试线程同时读取数据并验证FIFO。
+ * 队列关闭且取空后，消费者收到ECANCELED并结束。
+ *
+ * @return 线程、队列状态和全部数据都符合预期时返回true。
+ */
+static bool test_concurrent_producer_consumer(void)
+{
+    blocking_queue_t queue;
+    pthread_t producer_thread;
+
+    producer_thread_context_t producer_context;
+
+    size_t received_count = 0;
+    bool fifo_order_valid = true;
+    int consumer_error = 0;
+    int error_code;
+
+    if (!initialize_test_queue(&queue,
+                               "concurrent producer-consumer")) {
+        return false;
+    }
+
+    /*
+     * 使用指定初始化器明确说明每个成员的含义。
+     *
+     * context的存储位于当前测试函数栈上，但测试会在函数返回前
+     * pthread_join生产者，因此线程使用期间该对象始终有效。
+     */
+    producer_context = (producer_thread_context_t){
+        .queue = &queue,
+        .item_count = CONCURRENT_TEST_ITEM_COUNT,
+        .error_code = 0
+    };
+
+    /*
+     * 创建生产者线程。
+     *
+     * 第三个参数是线程入口函数；
+     * 第四个参数是传给线程入口的上下文指针。
+     *
+     * pthread_create直接返回POSIX错误码，不通过errno报告错误。
+     */
+    error_code = pthread_create(&producer_thread,
+                                NULL,
+                                producer_thread_main,
+                                &producer_context);
+
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Failed to create producer thread: %s\n",
+                strerror(error_code));
+
+        (void)blocking_queue_destroy(&queue);
+        return false;
+    }
+
+    /*
+     * 当前测试线程充当消费者。
+     *
+     * 生产者线程和当前线程会在这一循环中同时访问queue，
+     * 从而真正验证mutex对共享状态的保护。
+     */
+    for (;;) {
+        int actual_value;
+
+        error_code =
+            blocking_queue_pop(&queue, &actual_value);
+
+        if (error_code == 0) {
+            /*
+             * 生产者按0、1、2……的顺序写入，因此消费者也必须按照
+             * 完全相同的顺序读取。
+             *
+             * 即使发现顺序错误，也继续把队列取空，避免生产者因
+             * 队列已满而无法结束。
+             */
+            if (actual_value != (int)received_count) {
+                fifo_order_valid = false;
+            }
+
+            received_count++;
+            continue;
+        }
+
+        if (error_code == EAGAIN) {
+            /*
+             * 队列当前暂时为空，但生产者还没有关闭队列。
+             * 让出CPU后继续等待生产者写入。
+             */
+            (void)sched_yield();
+            continue;
+        }
+
+        if (error_code == ECANCELED) {
+            /*
+             * 队列已经关闭并且没有剩余数据，消费过程正常结束。
+             */
+            break;
+        }
+
+        /*
+         * 其他错误不属于预期行为。
+         *
+         * 主动关闭队列，让生产者能够从重试循环中退出。
+         */
+        consumer_error = error_code;
+        (void)blocking_queue_close(&queue);
+        break;
+    }
+
+    /*
+     * 等待生产者线程结束并回收其线程资源。
+     *
+     * pthread_join之后，主线程才能安全读取producer_context中的
+     * 最终结果，并确认生产者不再访问queue。
+     */
+    error_code = pthread_join(producer_thread, NULL);
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Failed to join producer thread: %s\n",
+                strerror(error_code));
+
+        /*
+         * join失败时无法确认线程是否已经停止，因此不能安全地
+         * 销毁它可能仍在访问的队列。
+         */
+        return false;
+    }
+
+    if (producer_context.error_code != 0) {
+        fprintf(stderr,
+                "Producer thread failed: %s\n",
+                strerror(producer_context.error_code));
+
+        (void)blocking_queue_destroy(&queue);
+        return false;
+    }
+
+    if (consumer_error != 0) {
+        fprintf(stderr,
+                "Consumer failed: %s\n",
+                strerror(consumer_error));
+
+        (void)blocking_queue_destroy(&queue);
+        return false;
+    }
+
+    if (!fifo_order_valid) {
+        fprintf(stderr,
+                "Concurrent FIFO order check failed\n");
+
+        (void)blocking_queue_destroy(&queue);
+        return false;
+    }
+
+    if (received_count != CONCURRENT_TEST_ITEM_COUNT) {
+        fprintf(stderr,
+                "Expected to receive %u values, but got %zu\n",
+                CONCURRENT_TEST_ITEM_COUNT,
+                received_count);
+
+        (void)blocking_queue_destroy(&queue);
+        return false;
+    }
+
+    /*
+     * 两个线程都结束后才能直接检查普通成员。
+     *
+     * 并发运行期间不能绕过队列接口直接读取这些成员。
+     */
+    if (!queue.closed || queue.count != 0) {
+        fprintf(stderr,
+                "Unexpected final concurrent state: "
+                "closed=%s, count=%zu\n",
+                queue.closed ? "true" : "false",
+                queue.count);
+
+        (void)blocking_queue_destroy(&queue);
+        return false;
+    }
+
+    return destroy_test_queue(
+        &queue,
+        "concurrent producer-consumer");
+}
+
+/**
  * @brief 队列单元测试程序入口。
  *
  * 程序依次运行所有测试。任意测试失败都会把最终退出码设置为失败，
@@ -734,14 +1012,24 @@ int main(void)
         fprintf(stderr, "[FAIL] queue close lifecycle\n");
         all_passed = false;
     }
-    return all_passed ? EXIT_SUCCESS : EXIT_FAILURE;
-
-        if (test_queue_destroy()) {
+    
+    if (test_queue_destroy()) {
         printf("[PASS] queue destruction\n");
     } else {
         fprintf(stderr, "[FAIL] queue destruction\n");
         all_passed = false;
     }
+
+    if (test_concurrent_producer_consumer()) {
+        printf("[PASS] concurrent producer-consumer\n");
+    } else {
+        fprintf(stderr,
+                "[FAIL] concurrent producer-consumer\n");
+        all_passed = false;
+    }
+
+    return all_passed ? EXIT_SUCCESS : EXIT_FAILURE;
+
 }
 
 

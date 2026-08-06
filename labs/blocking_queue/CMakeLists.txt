@@ -137,4 +137,12 @@ if(BUILD_TESTING)
         NAME queue_unit_tests
         COMMAND queue_tests
     )
+    # 并发错误可能导致线程永久等待。
+    # 超过10秒仍未结束时，由CTest终止测试并报告超时。
+    set_tests_properties(
+        queue_unit_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
 endif()
