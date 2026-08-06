@@ -4,6 +4,8 @@
 
 int blocking_queue_init(blocking_queue_t *queue)
 {
+    int error_code;
+
     /*
      * 外部传入的指针不能直接信任。NULL不指向有效对象，
      * 如果继续通过它访问结构体成员，会产生未定义行为。
@@ -21,12 +23,41 @@ int blocking_queue_init(blocking_queue_t *queue)
     *queue = (blocking_queue_t){0};
 
     /*
-    * 使用默认互斥锁属性。
-    *
-    * 第二个参数为NULL表示不指定特殊属性。
-    * pthread函数成功时返回0，失败时直接返回POSIX错误码。
+    * 第一步：初始化保护共享状态的互斥锁。
     */
-    return pthread_mutex_init(&queue->mutex, NULL);
+    error_code = pthread_mutex_init(&queue->mutex, NULL);
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    /*
+    * 第二步：初始化消费者使用的not_empty条件变量。
+    *
+    * 如果失败，必须回滚前面已经初始化成功的mutex。
+    */
+    error_code = pthread_cond_init(&queue->not_empty, NULL);
+    if (error_code != 0) {
+        (void)pthread_mutex_destroy(&queue->mutex);
+        *queue = (blocking_queue_t){0};
+
+        return error_code;
+    }
+
+    /*
+    * 第三步：初始化生产者使用的not_full条件变量。
+    *
+    * 如果失败，需要按照初始化的相反顺序回滚not_empty和mutex。
+    */
+    error_code = pthread_cond_init(&queue->not_full, NULL);
+    if (error_code != 0) {
+        (void)pthread_cond_destroy(&queue->not_empty);
+        (void)pthread_mutex_destroy(&queue->mutex);
+        *queue = (blocking_queue_t){0};
+
+        return error_code;
+    
+    }
+    return 0;
 }
 
 int blocking_queue_push(blocking_queue_t *queue, int value)
@@ -52,25 +83,64 @@ int blocking_queue_push(blocking_queue_t *queue, int value)
         return lock_error;
     }
 
-     /*
-     * 状态检查必须在互斥锁内部完成。
-     *
-     * 如果在加锁前检查count，其他线程可能在检查完成后、
-     * 当前线程加锁前修改count，使检查结果失效。
-     */
-    if(queue->closed){
-        operation_error = ECANCELED;
-    }else if(queue->count == QUEUE_CAPACITY){
-        operation_error = ENOSPC;
-    }else{
+    /*
+    * 条件变量必须和一个受mutex保护的条件表达式配合使用。
+    *
+    * 这里真正等待的条件是：
+    *
+    *     queue->count < QUEUE_CAPACITY
+    *
+    * while而不是if的原因：
+    * 1. 条件变量允许虚假唤醒；
+    * 2. 多个生产者可能同时被唤醒；
+    * 3. 当前线程重新获得mutex前，其他生产者可能再次填满队列。
+    */
+    while (queue->count == QUEUE_CAPACITY &&
+        !queue->closed) {
         /*
-        * 下面三个修改共同构成一次完整的入队操作，
-        * 必须作为一个不可被其他线程打断的整体执行。
-        */
-        queue->items[queue->tail] = value;
-        queue->tail = (queue->tail + 1U) % QUEUE_CAPACITY;
-        queue->count++;
+         * pthread_cond_wait会以一个原子操作完成：
+         *
+         * 1. 释放queue->mutex；
+         * 2. 让当前线程睡眠；
+         * 3. 被唤醒后重新获得queue->mutex；
+         * 4. 返回当前函数。
+         *
+         * 如果等待时不释放mutex，消费者就无法pop，队列也永远
+         * 不可能出现空闲位置。
+         */
+        operation_error =
+            pthread_cond_wait(&queue->not_full,
+                              &queue->mutex);
+        if (operation_error != 0) {
+            break;
+        }
     }
+
+    if (operation_error == 0) {
+        /*
+         * 生产者可能因为close广播not_full而被唤醒。
+         *
+         * 被唤醒不等于获得了可写空间，所以必须先检查closed。
+         */
+        if (queue->closed) {
+            operation_error = ECANCELED;
+        } else {
+            queue->items[queue->tail] = value;
+            queue->tail =
+                (queue->tail + 1U) % QUEUE_CAPACITY;
+            queue->count++;
+
+            /*
+             * 成功增加一个元素后，队列一定不再为空。
+             *
+             * 一个新元素最多只需要唤醒一个消费者，因此使用signal，
+             * 不需要把所有消费者都唤醒。
+             */
+            operation_error =
+                pthread_cond_signal(&queue->not_empty);
+        }
+    }
+    
     /*
     * 无论入队成功、队列关闭还是队列已满，都必须释放互斥锁。
     *
@@ -103,22 +173,54 @@ int blocking_queue_pop(blocking_queue_t *queue, int *value)
     }
 
     /*
-    * count和closed必须在同一个临界区中读取。
-    *
-    * 否则一个线程可能刚判断队列为空，另一个线程就完成了入队，
-    * 导致当前线程依据已经失效的状态作出决定。
-    */
-    if(queue->count == 0){
-        operation_error =
-         queue->closed ? ECANCELED : EAGAIN;
-    }else{
+     * 消费者真正等待的条件是：
+     *
+     *     queue->count > 0
+     *
+     * 如果队列关闭，就不能继续等待新数据，因为以后不会再有生产者
+     * 写入。因此while条件还必须包含!queue->closed。
+     */
+    while (queue->count == 0 &&
+           !queue->closed) {
         /*
-         * 读取元素、移动head和减少count共同构成一次出队操作。
+         * 等待期间mutex会自动释放，使生产者能够获得mutex并push。
+         *
+         * 被唤醒后，pthread_cond_wait会先重新获得mutex，然后才返回。
          */
-        *value = queue->items[queue->head];
-        queue->head = (queue->head + 1U) % QUEUE_CAPACITY;
-        queue->count--;
+        operation_error =
+            pthread_cond_wait(&queue->not_empty,
+                              &queue->mutex);
+
+        if (operation_error != 0) {
+            break;
+        }
     }
+
+    if (operation_error == 0) {
+        /*
+         * while结束有两种可能：
+         *
+         * 1. count > 0：存在可读取的数据；
+         * 2. closed == true且count == 0：生产结束并且队列已取空。
+         */
+        if (queue->count == 0) {
+            operation_error = ECANCELED;
+        } else {
+            *value = queue->items[queue->head];
+            queue->head =
+                (queue->head + 1U) % QUEUE_CAPACITY;
+            queue->count--;
+
+            /*
+             * 成功取出一个元素后，队列一定不再是满队列。
+             *
+             * 一个空闲位置最多只需要唤醒一个生产者。
+             */
+            operation_error =
+                pthread_cond_signal(&queue->not_full);
+        }
+    }
+
 
     unlock_error = pthread_mutex_unlock(&queue->mutex);
     if (unlock_error != 0) {
@@ -130,6 +232,8 @@ int blocking_queue_pop(blocking_queue_t *queue, int *value)
 
 int blocking_queue_close(blocking_queue_t *queue)
 {
+    int operation_error = 0;
+    int broadcast_error;
     int lock_error;
     int unlock_error;
 
@@ -151,12 +255,40 @@ int blocking_queue_close(blocking_queue_t *queue)
      */
     queue->closed = true;
 
+    /*
+     * 唤醒所有等待数据的消费者。
+     *
+     * 如果队列中仍有数据，消费者可以继续取走；
+     * 如果队列已经为空，消费者会返回ECANCELED。
+     */
+    broadcast_error =
+        pthread_cond_broadcast(&queue->not_empty);
+
+    if (broadcast_error != 0) {
+        operation_error = broadcast_error;
+    }
+
+     /*
+     * 唤醒所有等待空间的生产者。
+     *
+     * 这些生产者重新获得mutex后会发现closed == true，
+     * 然后返回ECANCELED。
+     */
+    broadcast_error =
+        pthread_cond_broadcast(&queue->not_full);
+
+    if (operation_error == 0 &&
+        broadcast_error != 0) {
+        operation_error = broadcast_error;
+    }
+
+
     unlock_error = pthread_mutex_unlock(&queue->mutex);
     if (unlock_error != 0) {
         return unlock_error;
     }
 
-    return 0;
+    return operation_error;
 }
 
 int blocking_queue_destroy(blocking_queue_t *queue)
@@ -170,11 +302,23 @@ int blocking_queue_destroy(blocking_queue_t *queue)
    }
 
     /*
-    * destroy不能通过mutex自身来防止并发访问。
-    *
-    * 调用者必须首先停止并等待所有工作线程退出，确保已经没有线程
-    * 使用该队列，然后才能销毁互斥锁。
-    */
+     * 调用者必须保证没有线程仍在push、pop或等待条件变量。
+     *
+     * 按照初始化的相反顺序销毁同步资源：
+     *
+     * not_full → not_empty → mutex
+     */
+
+    destroy_error = pthread_cond_destroy(&queue->not_full);
+    if (destroy_error != 0) {
+        return destroy_error;
+    }
+
+    destroy_error = pthread_cond_destroy(&queue->not_empty);
+    if (destroy_error != 0) {
+        return destroy_error;
+    }
+
     destroy_error = pthread_mutex_destroy(&queue->mutex);
     if (destroy_error != 0) {
         return destroy_error;

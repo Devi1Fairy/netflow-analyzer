@@ -6,7 +6,6 @@
 #include <string.h>
 #include <errno.h>
 #include <pthread.h>
-#include <sched.h>
 
 /*
  * 并发测试传输1000个整数。
@@ -27,6 +26,18 @@ typedef struct {
     size_t item_count;       /**< 生产者需要写入的元素数量。 */
     int error_code;          /**< 线程执行结果，0表示成功。 */
 } producer_thread_context_t;
+
+/**
+ * @brief 保存单次消费者线程的输入和输出。
+ *
+ * 该上下文用于验证消费者能够等待not_empty，以及消费者取走数据后
+ * 能够唤醒等待not_full的生产者。
+ */
+typedef struct {
+    blocking_queue_t *queue; /**< 消费者访问的共享队列。 */
+    int value;               /**< 消费者成功取出的值。 */
+    int error_code;          /**< blocking_queue_pop的返回值。 */
+} consumer_thread_context_t;
 
 /**
  * @brief 为一个测试场景初始化独立队列。
@@ -80,6 +91,71 @@ static bool destroy_test_queue(blocking_queue_t *queue,
 
     return true;
 }
+
+/**
+ * @brief 从队列中取出一个整数。
+ *
+ * 如果队列为空，该线程会阻塞在not_empty条件变量上，直到生产者
+ * 写入数据或关闭队列。
+ *
+ * @param argument 指向consumer_thread_context_t的void指针。
+ *
+ * @return 测试结果保存在上下文中，线程固定返回NULL。
+ */
+static void *consumer_thread_main(void *argument)
+{
+    consumer_thread_context_t *context = argument;
+
+    context->error_code =
+        blocking_queue_pop(context->queue,
+                           &context->value);
+
+    return NULL;
+}
+
+/**
+ * @brief 连续产生整数并写入阻塞队列，完成后关闭队列。
+ *
+ * push现在会在队列已满时自动等待not_full，所以线程不再需要处理
+ * ENOSPC，也不再需要sched_yield轮询。
+ *
+ * @param argument 指向producer_thread_context_t的void指针。
+ *
+ * @return 测试结果保存在上下文中，线程固定返回NULL。
+ */
+static void *producer_thread_main(void *argument)
+{
+    /*
+     * C语言允许把void指针隐式转换为其他对象指针，
+     * 因此这里不需要进行显式强制类型转换。
+     */
+    producer_thread_context_t *context = argument;
+
+    for (size_t index = 0; index < context->item_count; index++) {
+        const int error_code =
+            blocking_queue_push(context->queue,
+                                (int)index);
+        if (error_code != 0) {
+            context->error_code = error_code;
+
+         /*
+        * 唤醒可能仍在等待not_empty的消费者，使测试能够结束。
+        */
+        (void)blocking_queue_close(context->queue);
+
+        return NULL;
+        }
+    }
+
+    /*
+     * 完成全部数据后关闭队列，同时唤醒所有仍在等待的线程。
+     */
+    context->error_code =
+        blocking_queue_close(context->queue);
+
+    return NULL;
+}
+
 
 /**
  * @brief 验证队列初始化后的所有普通数据成员。
@@ -243,29 +319,42 @@ static bool test_partial_queue_fifo(void){
 }
 
 /**
- * @brief 验证队列写满后不能继续写入。
+ * @brief 验证满队列中的生产者能在消费者释放空间后继续写入。
  *
- * @return 第五次入队返回ENOSPC且队列状态未被破坏时返回true。
+ * 测试先填满队列，再创建消费者线程取出最早的数据。主测试线程随后
+ * 写入999。如果push先发现队列已满，它会等待not_full；消费者pop后
+ * 会发送not_full信号，使push继续执行。
+ *
+ * @return 生产者成功写入且FIFO顺序保持正确时返回true。
  */
-static bool test_full_queue(void)
+static bool test_blocking_push_on_full_queue(void)
 {
-    blocking_queue_t queue;
+    const int expected_remaining[] = {2, 3, 4, 999};
+    const size_t expected_count =
+        sizeof(expected_remaining) /
+        sizeof(expected_remaining[0]);
 
-    if (!initialize_test_queue(&queue, "full queue")) {
+
+    blocking_queue_t queue;
+    pthread_t consumer_thread;
+    consumer_thread_context_t consumer_context;
+    int error_code;
+
+    if (!initialize_test_queue(&queue, "blocking push on full queue")) {
         return false;
     }
 
-    /*
-     * 写入恰好等于QUEUE_CAPACITY数量的元素，使队列达到满状态。
+     /*
+     * 写入1、2、3、4，使队列达到满状态。
      */
     for (size_t index = 0; index < QUEUE_CAPACITY; index++) {
         const int value = (int)(index + 1U);
-        const int error_code =
+        error_code =
             blocking_queue_push(&queue, value);
 
         if (error_code != 0) {
             fprintf(stderr,
-                    "Push before queue was full failed "
+                    "Initial push failed "
                     "at index %zu: %s\n",
                     index,
                     strerror(error_code));
@@ -274,98 +363,253 @@ static bool test_full_queue(void)
         }
     }
 
-    if (queue.count != QUEUE_CAPACITY) {
+    consumer_context = (consumer_thread_context_t){
+        .queue = &queue,
+        .value = 0,
+        .error_code = 0
+    };
+
+    /*
+     * 创建一个消费者，用于从满队列取出最早的元素1。
+     */
+    error_code = pthread_create(&consumer_thread,
+                                NULL,
+                                consumer_thread_main,
+                                &consumer_context);
+
+    if (error_code != 0) {
         fprintf(stderr,
-                "Expected full count=%u, got %zu\n",
-                QUEUE_CAPACITY,
-                queue.count);
+                "Failed to create consumer thread: %s\n",
+                strerror(error_code));
+
+        (void)blocking_queue_destroy(&queue);
+        return false;
+    }
+
+     /*
+     * 如果消费者尚未取出数据，这次push会阻塞在not_full上；
+     * 消费者pop后发送not_full信号，push才会继续写入999。
+     */
+    error_code = blocking_queue_push(&queue, 999);
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Blocking push failed: %s\n",
+                strerror(error_code));
+
+        (void)blocking_queue_close(&queue);
+        (void)pthread_join(consumer_thread, NULL);
+        (void)blocking_queue_destroy(&queue);
 
         return false;
     }
 
-    /*
-    * 队列已经装满，第五次入队必须被拒绝。
-    */
-    {
-        const int error_code =
-            blocking_queue_push(&queue, 999);
+    error_code = pthread_join(consumer_thread, NULL);
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Failed to join consumer thread: %s\n",
+                strerror(error_code));
 
-        if (error_code != ENOSPC) {
+        /*
+         * 无法确认消费者是否已经结束，因此不能销毁队列。
+         */
+        return false;
+    }
+
+    if (consumer_context.error_code != 0 ||
+        consumer_context.value != 1) {
+        fprintf(stderr,
+                "Consumer expected value 1, got value=%d, error=%d\n",
+                consumer_context.value,
+                consumer_context.error_code);
+
+        (void)blocking_queue_destroy(&queue);
+        return false;
+    }
+
+     /*
+     * 此时逻辑队列应该是2、3、4、999。
+     *
+     * 先关闭队列，使取完四个元素后的下一次pop能够返回ECANCELED，
+     * 而不是再次等待。
+     */
+error_code = blocking_queue_close(&queue);
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Close after blocking push failed: %s\n",
+                strerror(error_code));
+
+        (void)blocking_queue_destroy(&queue);
+        return false;
+    }
+
+    for (size_t index = 0;
+         index < expected_count;
+         index++) {
+        int actual_value;
+
+        error_code =
+            blocking_queue_pop(&queue, &actual_value);
+
+        if (error_code != 0 ||
+            actual_value != expected_remaining[index]) {
             fprintf(stderr,
-                    "Push to full queue: expected ENOSPC, got %d\n",
+                    "Remaining FIFO mismatch at index %zu: "
+                    "expected=%d, actual=%d, error=%d\n",
+                    index,
+                    expected_remaining[index],
+                    actual_value,
                     error_code);
 
+            (void)blocking_queue_destroy(&queue);
             return false;
         }
     }
 
-    /*
-     * 失败的入队不能改变已有元素数量。
-     */
-    if (queue.count != QUEUE_CAPACITY) {
-        fprintf(stderr,
-                "Rejected push changed count: expected %u, got %zu\n",
-                QUEUE_CAPACITY,
-                queue.count);
+    {
+        int unused_value;
 
+        error_code =
+            blocking_queue_pop(&queue, &unused_value);
+    }
+
+    if (error_code != ECANCELED) {
+        fprintf(stderr,
+                "Closed empty queue: expected ECANCELED, got %d\n",
+                error_code);
+
+        (void)blocking_queue_destroy(&queue);
         return false;
     }
 
-    return destroy_test_queue(&queue, "full queue");
+    return destroy_test_queue(
+        &queue,
+        "blocking push on full queue");
 }
 
 /**
- * @brief 验证未关闭的空队列不能读取数据。
+ * @brief 验证空队列中的消费者能等待生产者写入数据。
  *
- * @return pop返回EAGAIN且没有修改输出参数时返回true。
+ * 测试先创建消费者线程。消费者调用pop时，如果队列仍为空，就会
+ * 等待not_empty。主测试线程随后写入42并唤醒消费者。
+ *
+ * @return 消费者成功取得42且线程正常结束时返回true。
  */
-static bool test_empty_queue(void)
+static bool test_blocking_pop_on_empty_queue(void)
 {
     blocking_queue_t queue;
-    int output_value = 12345;
+    pthread_t consumer_thread;
+    consumer_thread_context_t consumer_context;
     int error_code;
 
-    if (!initialize_test_queue(&queue, "empty queue")) {
+    if (!initialize_test_queue(&queue, "blocking pop on empty queue")) {
         return false;
     }
 
-    error_code = blocking_queue_pop(&queue, &output_value);
+    consumer_context = (consumer_thread_context_t){
+        .queue = &queue,
+        .value = 0,
+        .error_code = 0
+    };
 
-    if (error_code != EAGAIN) {
+    /*
+     * 创建消费者线程。
+     *
+     * 如果消费者先运行，它会在空队列上等待not_empty；
+     * 如果主线程先运行并写入42，消费者随后也能正常取出42。
+     *
+     * 两种调度顺序都必须得到相同结果。
+     */
+    error_code = pthread_create(&consumer_thread,
+                                NULL,
+                                consumer_thread_main,
+                                &consumer_context);
+
+    if (error_code != 0) {
         fprintf(stderr,
-                "Pop from empty queue: expected EAGAIN, got %d\n",
-                error_code);
+                "Failed to create consumer thread: %s\n",
+                strerror(error_code));
 
+        (void)blocking_queue_destroy(&queue);
         return false;
     }
 
     /*
-     * pop失败时不能修改调用者提供的输出变量。
+     * 成功写入后，blocking_queue_push会signal not_empty。
      */
-    if (output_value != 12345) {
+    error_code = blocking_queue_push(&queue, 42);
+    if (error_code != 0) {
         fprintf(stderr,
-                "Failed pop modified output value: expected 12345, got %d\n",
-                output_value);
+                "Push for waiting consumer failed: %s\n",
+                strerror(error_code));
+        /*
+         * close会广播not_empty，使可能仍在等待的消费者退出。
+         */
+        (void)blocking_queue_close(&queue);
+        (void)pthread_join(consumer_thread, NULL);
+        (void)blocking_queue_destroy(&queue);
+
+        return false;
+    }
+    error_code = pthread_join(consumer_thread, NULL);
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Failed to join consumer thread: %s\n",
+                strerror(error_code));
 
         return false;
     }
 
-    if (queue.count != 0 ||
-        queue.head != 0 ||
-        queue.tail != 0 ||
-        queue.closed) {
+    if (consumer_context.error_code != 0) {
         fprintf(stderr,
-                "Empty pop changed queue state: "
-                "head=%zu, tail=%zu, count=%zu, closed=%s\n",
-                queue.head,
-                queue.tail,
-                queue.count,
-                queue.closed ? "true" : "false");
+                "Waiting consumer failed: %s\n",
+                strerror(consumer_context.error_code));
 
+        (void)blocking_queue_destroy(&queue);
         return false;
     }
 
-    return  destroy_test_queue(&queue, "empty queue");
+    if (consumer_context.value != 42) {
+        fprintf(stderr,
+                "Waiting consumer expected 42, got %d\n",
+                consumer_context.value);
+
+        (void)blocking_queue_destroy(&queue);
+        return false;
+    }
+
+    /*
+     * 消费者已经取走唯一的数据。关闭队列后，后续pop应立即返回
+     * ECANCELED，不会继续等待。
+     */
+    error_code = blocking_queue_close(&queue);
+    if (error_code != 0) {
+        fprintf(stderr,
+                "Close after blocking pop failed: %s\n",
+                strerror(error_code));
+
+        (void)blocking_queue_destroy(&queue);
+        return false;
+    }
+
+    {
+        int unused_value;
+
+        error_code =
+            blocking_queue_pop(&queue, &unused_value);
+    }
+
+    if (error_code != ECANCELED) {
+        fprintf(stderr,
+                "Pop after close: expected ECANCELED, got %d\n",
+                error_code);
+
+        (void)blocking_queue_destroy(&queue);
+        return false;
+    }
+
+    return destroy_test_queue(
+        &queue,
+        "blocking pop on empty queue");
 }
 
 /**
@@ -703,72 +947,6 @@ static bool test_queue_destroy(void)
     return true;
 }
 
-/**
- * @brief 连续产生整数并写入队列，完成后关闭队列。
- *
- * 生产者依次写入0到item_count-1。队列暂时已满时让出CPU并重试；
- * 遇到其他错误时记录错误，并关闭队列使消费者能够结束。
- *
- * @param argument 指向producer_thread_context_t的void指针。
- *
- * @return 本测试不通过线程返回值传递结果，固定返回NULL。
- */
-static void *producer_thread_main(void *argument)
-{
-    /*
-     * C语言允许把void指针隐式转换为其他对象指针，
-     * 因此这里不需要进行显式强制类型转换。
-     */
-    producer_thread_context_t *context = argument;
-
-    for (size_t index = 0; index < context->item_count; index++) {
-        int error_code;
-
-        /*
-         * 当前队列还是非阻塞版本。
-         *
-         * ENOSPC表示消费者还没有腾出空间，它不是本测试中的真正失败；
-         * 生产者让出CPU后再次尝试写入同一个值。
-         */
-        do {
-            error_code =
-                blocking_queue_push(context->queue, (int)index);
-
-            if (error_code == ENOSPC) {
-                /*
-                 * 暂时把CPU执行机会让给消费者。
-                 *
-                 * 这仍属于轮询，后续会用条件变量替代。
-                 */
-                (void)sched_yield();
-            }
-        } while (error_code == ENOSPC);
-
-        if (error_code != 0) {
-            /*
-             * 保存线程错误，主测试线程会在pthread_join之后检查。
-             */
-            context->error_code = error_code;
-
-            /*
-             * 尽量关闭队列，避免消费者永远等待后续数据。
-             */
-            (void)blocking_queue_close(context->queue);
-
-            return NULL;
-        }
-    }
-
-    /*
-     * 生产者完成全部数据后关闭队列。
-     *
-     * 消费者取完剩余数据后，会从pop得到ECANCELED并结束循环。
-     */
-    context->error_code =
-        blocking_queue_close(context->queue);
-
-    return NULL;
-}
 
 /**
  * @brief 验证一个生产者线程和一个消费者线程能够并发传输数据。
@@ -830,11 +1008,11 @@ static bool test_concurrent_producer_consumer(void)
     }
 
     /*
-     * 当前测试线程充当消费者。
-     *
-     * 生产者线程和当前线程会在这一循环中同时访问queue，
-     * 从而真正验证mutex对共享状态的保护。
-     */
+    * 当前测试线程充当消费者。
+    *
+    * pop会在空队列上等待not_empty，因此这里不再进行EAGAIN轮询。
+    * 生产者完成并关闭队列后，pop最终返回ECANCELED结束循环。
+    */
     for (;;) {
         int actual_value;
 
@@ -854,15 +1032,6 @@ static bool test_concurrent_producer_consumer(void)
             }
 
             received_count++;
-            continue;
-        }
-
-        if (error_code == EAGAIN) {
-            /*
-             * 队列当前暂时为空，但生产者还没有关闭队列。
-             * 让出CPU后继续等待生产者写入。
-             */
-            (void)sched_yield();
             continue;
         }
 
@@ -985,17 +1154,17 @@ int main(void)
         all_passed = false;
     }
 
-    if (test_full_queue()) {
-        printf("[PASS] full queue protection\n");
+    if (test_blocking_push_on_full_queue()) {
+        printf("[PASS] blocking push on full queue\n");
     } else {
-        fprintf(stderr, "[FAIL] full queue protection\n");
+        fprintf(stderr, "[FAIL] blocking push on full queue\n");
         all_passed = false;
     }
 
-    if (test_empty_queue()) {
-        printf("[PASS] empty queue protection\n");
+    if (test_blocking_pop_on_empty_queue()) {
+        printf("[PASS] blocking pop on empty queue\n");
     } else {
-        fprintf(stderr, "[FAIL] empty queue protection\n");
+        fprintf(stderr, "[FAIL] blocking pop on empty queue\n");
         all_passed = false;
     }
 

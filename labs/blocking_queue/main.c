@@ -170,7 +170,7 @@ int main(void)
 
         if (error_code != ECANCELED) {
         fprintf(stderr,
-                "Expected EAGAIN for an empty queue, but got %d\n",
+                "Expected ECANCELED for a closed empty queue, but got %d\n",
                 error_code);
 
         return EXIT_FAILURE;
@@ -184,9 +184,9 @@ int main(void)
            queue.closed ? "true" : "false");
 
     /*
-    * 所有队列操作完成后销毁队列。
+    * 所有操作和工作线程结束后销毁队列。
     *
-    * 当前版本只是清空状态；后续版本将在这里释放互斥锁和条件变量。
+    * destroy会释放not_full、not_empty和mutex。
     */
     error_code = blocking_queue_destroy(&queue);
     if (error_code != 0) {
