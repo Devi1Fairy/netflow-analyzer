@@ -25,6 +25,29 @@ add_library(
     message.c
 )
 
+# 将可靠流式收发函数构建成独立静态库。
+add_library(
+    stream_io
+    STATIC
+    stream_io.c
+)
+
+# 链接stream_io的目标可以找到stream_io.h。
+target_include_directories(
+    stream_io
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+# stream_io实现也要求保持零编译警告。
+target_compile_options(
+    stream_io
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
 # 将当前源码目录作为公共头文件搜索路径。
 target_include_directories(
     message_protocol
@@ -99,4 +122,40 @@ if(BUILD_TESTING)
         PROPERTIES
             TIMEOUT 5
     )
+
+        # 创建流式Socket收发单元测试程序。
+    add_executable(
+        stream_io_tests
+        tests/test_stream_io.c
+    )
+
+    # 测试程序调用stream_io中的send_all和recv_exact。
+    target_link_libraries(
+        stream_io_tests
+        PRIVATE
+            stream_io
+    )
+
+    # 测试代码保持零编译警告。
+    target_compile_options(
+        stream_io_tests
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+
+    # 注册到CTest。
+    add_test(
+        NAME stream_io_unit_tests
+        COMMAND stream_io_tests
+    )
+
+    # 网络错误可能导致阻塞，因此设置5秒超时。
+    set_tests_properties(
+        stream_io_unit_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+    
 endif()
