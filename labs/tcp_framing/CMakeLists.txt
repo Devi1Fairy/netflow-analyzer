@@ -25,6 +25,39 @@ add_library(
     message.c
 )
 
+# 将完整消息收发功能构建成静态库。
+add_library(
+    message_io
+    STATIC
+    message_io.c
+)
+
+# message_io.h属于该库的公共接口。
+target_include_directories(
+    message_io
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+# message_io组合使用消息编解码和可靠流式收发。
+#
+# PUBLIC表示最终链接message_io的程序也会自动获得这两个静态库。
+target_link_libraries(
+    message_io
+    PUBLIC
+        message_protocol
+        stream_io
+)
+
+# 为完整消息收发实现启用编译警告。
+target_compile_options(
+    message_io
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
 # 将可靠流式收发函数构建成独立静态库。
 add_library(
     stream_io
@@ -157,5 +190,38 @@ if(BUILD_TESTING)
         PROPERTIES
             TIMEOUT 5
     )
-    
+
+        # 创建完整消息收发测试程序。
+    add_executable(
+        message_io_tests
+        tests/test_message_io.c
+    )
+
+    # 测试程序链接message_io，并继承其依赖。
+    target_link_libraries(
+        message_io_tests
+        PRIVATE
+            message_io
+    )
+
+    target_compile_options(
+        message_io_tests
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+
+    # 注册第三组CTest。
+    add_test(
+        NAME message_io_unit_tests
+        COMMAND message_io_tests
+    )
+
+    set_tests_properties(
+        message_io_unit_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
 endif()
