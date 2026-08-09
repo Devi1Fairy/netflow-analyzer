@@ -97,6 +97,29 @@ target_compile_options(
         -Wpedantic
 )
 
+# 将TCP服务器创建、监听和关闭功能构建成静态库。
+add_library(
+    tcp_server
+    STATIC
+    tcp_server.c
+)
+
+# tcp_server.h是该库的公共接口。
+target_include_directories(
+    tcp_server
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+# TCP服务器实现保持零编译警告。
+target_compile_options(
+    tcp_server
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
 # 创建人工演示程序。
 add_executable(
     message_demo
@@ -113,6 +136,28 @@ target_link_libraries(
 # 演示程序同样要求保持零编译警告。
 target_compile_options(
     message_demo
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+# 创建TCP服务器人工演示程序。
+add_executable(
+    tcp_server_demo
+    server_main.c
+)
+
+# 演示程序使用TCP服务器静态库。
+target_link_libraries(
+    tcp_server_demo
+    PRIVATE
+        tcp_server
+)
+
+# 演示程序同样保持零编译警告。
+target_compile_options(
+    tcp_server_demo
     PRIVATE
         -Wall
         -Wextra
