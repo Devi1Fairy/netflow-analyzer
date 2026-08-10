@@ -120,6 +120,29 @@ target_compile_options(
         -Wpedantic
 )
 
+# 将TCP客户端连接功能构建成静态库。
+add_library(
+    tcp_client
+    STATIC
+    tcp_client.c
+)
+
+# tcp_client.h是该静态库对外提供的公共接口。
+target_include_directories(
+    tcp_client
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+# TCP客户端实现保持零编译警告。
+target_compile_options(
+    tcp_client
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
 # 创建人工演示程序。
 add_executable(
     message_demo
@@ -163,6 +186,29 @@ target_compile_options(
         -Wextra
         -Wpedantic
 )
+
+# 创建TCP客户端人工演示程序。
+add_executable(
+    tcp_client_demo
+    client_main.c
+)
+
+# 客户端演示程序调用tcp_client中的连接函数。
+target_link_libraries(
+    tcp_client_demo
+    PRIVATE
+        tcp_client
+)
+
+# 客户端演示程序同样保持零编译警告。
+target_compile_options(
+    tcp_client_demo
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
 
 # 只有开启BUILD_TESTING时才构建和注册自动化测试。
 if(BUILD_TESTING)
