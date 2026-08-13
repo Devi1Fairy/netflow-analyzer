@@ -1,10 +1,12 @@
 #include "tcp_client.h"
+#include "message_io.h"
 
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 
 /*
  * close声明在unistd.h中。
@@ -21,35 +23,51 @@
  */
 #define SERVER_PORT UINT16_C(9000)
 
+/*
+ * 当前演示程序发送的文本载荷。
+ *
+ * 数组实际包含最后的字符串结束符'\0'，但发送时不会把'\0'放入
+ * 网络载荷，因为消息头中的payload_length已经明确记录正文长度。
+ */
+static const char CLIENT_MESSAGE[] = "Hello from TCP client.";
+
 /**
- * @brief TCP客户端连接演示程序入口。
+ * @brief TCP客户端发送完整消息的演示入口。
  *
- * 当前程序只连接服务器，不发送业务消息。
+ * 程序执行顺序：
  *
- * @return 连接和关闭均成功时返回EXIT_SUCCESS，
+ * 1. 连接TCP服务器；
+ * 2. 发送一条MESSAGE_TYPE_TEXT消息；
+ * 3. 关闭客户端Socket。
+ *
+ * @return 连接、发送和关闭均成功时返回EXIT_SUCCESS，
  *         否则返回EXIT_FAILURE。
  */
 int main(void)
 {
+    /*
+     * sizeof(CLIENT_MESSAGE)包含末尾的'\0'。
+     *
+     * 减去1后得到真正需要发送的文本字节数。
+     * sizeof的结果类型是size_t，因此payload_length也使用size_t。
+     */
+    const size_t payload_length = sizeof(CLIENT_MESSAGE) - 1U;
+
+
     /*
      * -1表示当前没有有效的Socket文件描述符。
      */
     int client_fd = -1;
     int error_code;
 
-    printf("Connecting to TCP server %s:%u...\n",
-           SERVER_IP_ADDRESS,
-           (unsigned int)SERVER_PORT);
+    bool operation_failed = false;
 
-    error_code =
-        tcp_client_connect(SERVER_IP_ADDRESS,
-                           SERVER_PORT,
-                           &client_fd);
+    printf("Connecting to TCP server %s:%u...\n", SERVER_IP_ADDRESS, (unsigned int)SERVER_PORT);
+
+    error_code = tcp_client_connect(SERVER_IP_ADDRESS, SERVER_PORT, &client_fd);
 
     if (error_code != 0) {
-        fprintf(stderr,
-                "tcp_client_connect failed: %s\n",
-                strerror(error_code));
+        fprintf(stderr, "tcp_client_connect failed: %s\n", strerror(error_code));
 
         return EXIT_FAILURE;
     }
@@ -57,11 +75,35 @@ int main(void)
     printf("Connected to TCP server successfully.\n");
 
     /*
-     * 当前阶段只验证连接建立，所以连接成功后立即关闭Socket。
+     * message_send会自动完成：
      *
-     * 这里没有调用tcp_server.h中的connection_close，因为客户端
-     * 不应该为了关闭Socket而依赖服务器模块。后面可以把通用的
-     * Socket关闭功能提取到独立模块。
+     * 1. 构造协议版本和payload_length；
+     * 2. 编码固定12字节消息头；
+     * 3. 通过send_all发送完整消息头；
+     * 4. 通过send_all发送完整文本载荷。
+     *
+     * CLIENT_MESSAGE会自动转换成const void *，不会被message_send修改。
+     */
+    error_code = message_send(client_fd, MESSAGE_TYPE_TEXT, CLIENT_MESSAGE, payload_length);
+
+    if (error_code != 0) {
+        fprintf(stderr, "message_send failed: %s\n", strerror(error_code));
+
+         /*
+         * 如果发送过程中失败，连接中可能已经存在部分消息，
+         * 所以不能继续发送其他消息，只能关闭当前连接。
+         */
+        operation_failed = true;
+    }else {
+        printf("Message sent successfully.\n");
+        printf("Message type: %u\n", (unsigned int)MESSAGE_TYPE_TEXT);
+        printf("Payload length: %zu\n", payload_length);
+        printf("Payload: %s\n", CLIENT_MESSAGE);
+    }
+
+    /*
+     * 当前tcp_server模块中的connection_close不应该成为客户端依赖，
+     * 因此客户端暂时直接使用POSIX close关闭自己的Socket。
      */
     if (close(client_fd) != 0) {
         const int close_error = errno;
@@ -71,16 +113,13 @@ int main(void)
          */
         client_fd = -1;
 
-        fprintf(stderr,
-                "Failed to close client socket: %s\n",
-                strerror(close_error));
+        fprintf(stderr, "Failed to close client socket: %s\n", strerror(close_error));
 
-        return EXIT_FAILURE;
+        operation_failed = true;
+    }else {
+        client_fd = -1;
+        printf("Client connection closed.\n");
     }
 
-    client_fd = -1;
-
-    printf("Client connection closed.\n");
-
-    return EXIT_SUCCESS;
+    return operation_failed ? EXIT_FAILURE : EXIT_SUCCESS;
 }

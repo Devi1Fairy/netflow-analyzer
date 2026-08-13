@@ -176,6 +176,7 @@ target_link_libraries(
     tcp_server_demo
     PRIVATE
         tcp_server
+        message_io
 )
 
 # 演示程序同样保持零编译警告。
@@ -198,6 +199,7 @@ target_link_libraries(
     tcp_client_demo
     PRIVATE
         tcp_client
+        message_io
 )
 
 # 客户端演示程序同样保持零编译警告。
