@@ -93,6 +93,63 @@ target_compile_options(
         -Wpedantic
 )
 
+# 将三个线程入口函数构建成静态库。
+add_library(
+    pipeline_threads
+    STATIC
+    pipeline_threads.c
+)
+
+# pipeline_threads的公开头文件位于当前源码目录。
+target_include_directories(
+    pipeline_threads
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+# 线程处理函数调用pointer_queue接口。
+#
+# 使用PUBLIC是因为pipeline_threads.h本身包含pointer_queue.h，
+# 使用这个库的目标也需要知道pointer_queue的头文件和链接依赖。
+target_link_libraries(
+    pipeline_threads
+    PUBLIC
+        pointer_queue
+)
+
+# 线程处理代码保持零编译警告。
+target_compile_options(
+    pipeline_threads
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
+# 创建完整的多线程流水线演示程序。
+add_executable(
+    thread_pipeline_demo
+    pipeline_demo.c
+)
+
+# pipeline_demo直接调用pthread_create和pthread_join，因此明确链接
+# Threads::Threads，而不是只依赖间接传递。
+target_link_libraries(
+    thread_pipeline_demo
+    PRIVATE
+        pipeline_threads
+        Threads::Threads
+)
+
+# 演示程序保持零编译警告。
+target_compile_options(
+    thread_pipeline_demo
+    PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+)
+
 # 引入CTest，并创建BUILD_TESTING配置选项。
 include(CTest)
 
