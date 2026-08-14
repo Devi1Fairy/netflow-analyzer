@@ -92,3 +92,49 @@ target_compile_options(
         -Wextra
         -Wpedantic
 )
+
+# 引入CTest，并创建BUILD_TESTING配置选项。
+include(CTest)
+
+# 只有开启BUILD_TESTING时才构建并注册自动化测试。
+if(BUILD_TESTING)
+    # 创建统一的指针阻塞队列测试程序。
+    add_executable(
+        pointer_queue_tests
+        tests/test_pointer_queue.c
+    )
+
+    # 测试程序使用pointer_queue静态库。
+    #
+    # pointer_queue通过PUBLIC传递Threads::Threads依赖，
+    # 所以测试程序会自动继承正确的线程编译和链接配置。
+    target_link_libraries(
+        pointer_queue_tests
+        PRIVATE
+            pointer_queue
+    )
+
+    # 测试代码同样保持零编译警告。
+    target_compile_options(
+        pointer_queue_tests
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+
+    # 把测试程序注册到CTest。
+    add_test(
+        NAME pointer_queue_tests
+        COMMAND pointer_queue_tests
+    )
+
+    # 如果条件变量或关闭逻辑错误，线程可能永久等待。
+    #
+    # 超过10秒后CTest会终止程序并报告测试失败。
+    set_tests_properties(
+        pointer_queue_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+endif()
