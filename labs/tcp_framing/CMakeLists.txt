@@ -317,4 +317,46 @@ if(BUILD_TESTING)
             TIMEOUT 5
     )
 
+    # 创建A2真实IPv4 TCP最终验收测试程序。
+    add_executable(
+        tcp_framing_acceptance_tests
+        tests/test_tcp_integration.c
+    )
+
+    # 最终验收测试组合使用TCP连接和完整消息收发模块。
+    #
+    # message_io通过PUBLIC依赖自动传递message_protocol和stream_io，
+    # 因此这里不需要重复链接这两个底层库。
+    target_link_libraries(
+        tcp_framing_acceptance_tests
+        PRIVATE
+            tcp_server
+            tcp_client
+            message_io
+    )
+
+    # 验收测试代码同样保持零编译警告。
+    target_compile_options(
+        tcp_framing_acceptance_tests
+        PRIVATE
+            -Wall
+            -Wextra
+            -Wpedantic
+    )
+
+    # 把验收程序注册为一个CTest测试。
+    add_test(
+        NAME tcp_framing_acceptance
+        COMMAND tcp_framing_acceptance_tests
+    )
+
+    # 网络代码如果发生边界错误可能永久阻塞。
+    #
+    # CTest会在10秒后终止测试并报告失败，避免自动测试一直等待。
+    set_tests_properties(
+        tcp_framing_acceptance
+        PROPERTIES
+            TIMEOUT 10
+    )
+
 endif()
