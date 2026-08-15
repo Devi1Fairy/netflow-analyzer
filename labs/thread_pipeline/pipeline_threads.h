@@ -68,9 +68,22 @@ typedef struct {
     pointer_queue_t *result_queue;
 
     /**
+     * CSV输出文件路径。
+     *
+     * 当前只保存字符串地址，不复制字符串。调用者必须保证该字符串在
+     * 输出线程结束前始终有效。
+     */
+    const char *output_path;
+
+    /**
      * 记录成功输出的结果数量。
      */
     size_t output_count;
+
+    /**
+     * 记录成功写入CSV的结果行数量，不包括表头。
+     */
+    size_t written_count;
 
     /**
      * 保存输出线程的执行结果。
@@ -103,7 +116,10 @@ void *worker_thread_main(void *argument);
 /**
  * @brief 输出线程入口。
  *
- * 从结果队列取出结果，打印并释放结果对象。
+ * 从结果队列取出结果，将结果写入CSV，然后释放结果对象。
+ *
+ * 即使文件打开或写入失败，线程也会继续排空结果队列，避免上游线程
+ * 永久阻塞。
  *
  * @param argument 指向output_context_t。
  *

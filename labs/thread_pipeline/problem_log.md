@@ -89,3 +89,65 @@ glibc 2.39
 经验：
 
 当前机器不需要额外链接参数，不等于项目没有线程依赖。现代CMake应通过`find_package(Threads REQUIRED)`和`Threads::Threads`表达语义依赖，而不是根据某一台机器的链接结果删除配置。
+
+### 1.3 流水线程序成功，但CSV验收测试失败
+
+现象：
+
+```text
+50% tests passed, 1 tests failed out of 2
+thread_pipeline_acceptance (Failed)
+```
+
+使用详细模式重新运行失败测试：
+
+```bash
+ctest --test-dir build \
+      -R thread_pipeline_acceptance \
+      --output-on-failure \
+      -V
+```
+
+CTest报告：
+
+```text
+list sub-command GET requires at least three arguments
+```
+
+检查结果：
+
+- `thread_pipeline_demo`退出状态为0；
+- `pipeline_acceptance.csv`已经正常生成；
+- CSV包含1行表头和12行结果；
+- 失败位置是`verify_pipeline_csv.cmake`中的`list(GET)`。
+
+根因：
+
+CMake的`list(GET)`需要依次提供列表名、元素下标和输出变量。原代码漏写了表头所在的下标`0`：
+
+```cmake
+list(GET
+    csv_lines
+    csv_header
+)
+```
+
+正确写法：
+
+```cmake
+list(GET
+    csv_lines
+    0
+    csv_header
+)
+```
+
+经验：
+
+测试失败不一定表示业务代码失败。应使用CTest详细输出定位失败层次，并分别检查：
+
+1. 被测程序是否成功退出；
+2. 预期输出文件是否已经生成；
+3. 失败是否来自测试脚本自身。
+
+自动化测试代码同样是代码，也可能存在缺陷，需要独立检查和调试。

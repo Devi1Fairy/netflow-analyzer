@@ -194,4 +194,22 @@ if(BUILD_TESTING)
         PROPERTIES
             TIMEOUT 10
     )
+
+    # 完整运行五线程流水线，并验证生成的CSV内容。
+    add_test(
+        NAME thread_pipeline_acceptance
+        COMMAND
+            ${CMAKE_COMMAND}
+            "-DPIPELINE_PROGRAM=$<TARGET_FILE:thread_pipeline_demo>"
+            "-DOUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/pipeline_acceptance.csv"
+            -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/verify_pipeline_csv.cmake
+    )
+
+    # 流水线如果发生线程死锁，测试不能永久等待。
+    set_tests_properties(
+        thread_pipeline_acceptance
+        PROPERTIES
+            TIMEOUT 10
+    )
 endif()

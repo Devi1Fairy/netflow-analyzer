@@ -168,7 +168,7 @@ static void stop_partially_started_pipeline(pointer_queue_t *task_queue, pointer
  *
  * @return 流水线全部执行成功时返回EXIT_SUCCESS，否则返回EXIT_FAILURE。
  */
-int main(void)
+int main(int argc, char *argv[])
 {
     pointer_queue_t task_queue;
     pointer_queue_t result_queue;
@@ -183,9 +183,39 @@ int main(void)
 
     size_t started_worker_count = 0U;
 
+    /*
+    * CSV输出路径默认写到当前工作目录。
+    *
+    * 如果命令行提供一个参数，则使用用户指定的路径。
+    */
+    const char *output_path;
+
     bool pipeline_succeeded = true;
 
     int error_code;
+
+    /*
+    * argc包含程序名称本身：
+    *
+    * argc == 1：没有提供输出路径；
+    * argc == 2：提供了一个输出路径；
+    * argc > 2：参数数量错误。
+    */
+    if (argc > 2) {
+        fprintf(stderr, "Usage: %s [output_csv_path]\n", argv[0]);
+
+        return EXIT_FAILURE;
+    }
+
+    if (argc == 2) {
+        /*
+         * argv中的字符串在整个程序运行期间保持有效，所以可以把地址
+         * 交给输出线程上下文。
+         */
+        output_path = argv[1];
+    } else {
+        output_path = "pipeline_results.csv";
+    }
 
     error_code = pointer_queue_init(&task_queue);
 
@@ -207,7 +237,9 @@ int main(void)
 
     output_context = (output_context_t){
         .result_queue = &result_queue,
+        .output_path = output_path,
         .output_count = 0U,
+        .written_count = 0U,
         .error_code = 0
     };
 
@@ -381,6 +413,15 @@ int main(void)
         pipeline_succeeded = false;
     }
 
+    if (output_context.written_count != (size_t)PIPELINE_TASK_COUNT) {
+        fprintf(stderr,
+                "Expected %u CSV rows, but wrote %zu.\n",
+                PIPELINE_TASK_COUNT,
+                output_context.written_count);
+
+        pipeline_succeeded = false;
+    }
+
     /*
      * 正常情况下队列已经关闭并取空。
      *
@@ -398,7 +439,6 @@ int main(void)
         return EXIT_FAILURE;
     }
 
-    printf("Pipeline completed: %zu tasks processed.\n", output_context.output_count);
-
+     printf("Pipeline completed: %zu tasks written to %s.\n", output_context.written_count, output_path);
     return EXIT_SUCCESS;
 }

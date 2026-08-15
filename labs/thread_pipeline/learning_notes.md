@@ -177,3 +177,62 @@ result_queue暂管结果
 - `pop`返回非0：消费者没有获得对象，不能使用输出指针。
 
 队列本身只保存地址，不理解对象类型，也不会在正常销毁时自动释放对象。这里所说的“队列拥有”更准确地表示对象正在由队列暂管，等待所有权交给下一个消费者。异常清理时，主线程必须取出并释放队列中残留的对象。
+
+## 4. CMake脚本与CSV验收测试
+
+### 4.1 `.cmake`文件是什么
+
+`.cmake`文件使用CMake自己的脚本语言。通过下面的命令可以让CMake以脚本模式执行它：
+
+```bash
+cmake -P script.cmake
+```
+
+脚本模式不会编译C代码，也不会生成Makefile或Ninja构建规则，而是按照顺序执行`file`、`list`、`math`、`execute_process`和`message`等CMake命令。
+
+`CMakeLists.txt`主要负责描述如何配置、编译、链接和注册测试；独立的`.cmake`脚本适合执行构建过程之外的辅助工作，例如启动程序、准备测试文件和检查程序生成的文件。
+
+### 4.2 为什么CSV验收需要脚本
+
+以前的指针队列单元测试把数据直接传给C函数，并在测试程序内部判断返回值，因此测试可执行程序本身返回0或非0就足以表示通过或失败。
+
+当前需要验证的是完整系统行为：
+
+```text
+启动五线程流水线程序
+    ↓
+等待程序生成CSV
+    ↓
+读取CSV文件
+    ↓
+验证表头、行数和每个任务的计算结果
+```
+
+CTest默认只能根据被执行命令的退出状态判断成功或失败。流水线程序返回0能够证明运行过程没有报告错误，但不能单独证明CSV的内容完全正确。因此使用`verify_pipeline_csv.cmake`充当测试驱动器和结果检查器。
+
+### 4.3 CTest、CMake脚本和被测程序的关系
+
+```text
+CTest
+  ↓ 执行cmake -P
+verify_pipeline_csv.cmake
+  ↓ execute_process
+thread_pipeline_demo
+  ↓
+pipeline_acceptance.csv
+  ↑ file(STRINGS)读取并验证
+verify_pipeline_csv.cmake
+  ↓ 返回成功或FATAL_ERROR
+CTest
+```
+
+这种测试属于集成测试或验收测试，因为它验证线程、队列、计算、文件输出等多个组件组合后的最终行为。
+
+### 4.4 为什么选择CMake脚本
+
+- 项目已经依赖CMake，无需额外安装测试语言或框架；
+- 能被CTest直接调用；
+- Linux、Windows等使用CMake的平台都可以运行；
+- 当前CSV格式简单，CMake提供的文件和字符串操作已经足够。
+
+如果以后需要解析复杂CSV、大量数据或执行统计分析，CMake脚本会变得难以维护，此时更适合使用Python测试脚本或专门的测试工具。

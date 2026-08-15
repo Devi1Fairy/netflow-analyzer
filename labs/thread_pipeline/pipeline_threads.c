@@ -197,12 +197,64 @@ void *output_thread_main(void *argument)
 {
     output_context_t *context = (output_context_t *)argument;
 
+    FILE *output_file = NULL;
+
     if (context == NULL) {
         return NULL;
     }
 
     context->output_count = 0U;
+    context->written_count = 0U;
     context->error_code = 0;
+
+    /*
+     * result_queue和output_path都是输出线程运行所必需的参数。
+     */
+    if (context->result_queue == NULL || context->output_path == NULL) {
+        context->error_code = EINVAL;
+        return NULL;
+    }
+
+    /*
+     * 使用"w"模式创建CSV：
+     *
+     * - 文件不存在：创建新文件；
+     * - 文件已经存在：清空旧内容并重新写入。
+     *
+     * FILE *不是文件内容本身，而是C标准库管理文件流时使用的句柄。
+     * 文件流内部通常还包含缓冲区和底层文件描述符。
+     */
+    output_file = fopen(context->output_path, "w");
+
+    if (output_file == NULL) {
+        /*
+         * fopen失败时，errno保存具体错误原因，例如：
+         *
+         * - EACCES：没有写权限；
+         * - ENOENT：路径中的目录不存在；
+         * - EMFILE：进程打开的文件数量达到限制。
+         *
+         * 这里不能直接退出线程，否则没有消费者继续取结果，工作线程
+         * 可能阻塞在已满的result_queue中。
+         */
+        context->error_code = errno != 0 ? errno : EIO;
+    } else {
+        /*
+         * CSV第一行是字段名称。
+         *
+         * 统一的表头让Qt、Python和其他程序知道每一列的含义。
+         */
+        if (fprintf(output_file, "task_id,input_value," "output_value,worker_index\n") < 0) {
+            context->error_code = EIO;
+
+            /*
+             * 表头写入失败后，后续数据已经无法形成有效CSV。
+             * 关闭文件，但仍然继续排空结果队列。
+             */
+            (void)fclose(output_file);
+            output_file = NULL;
+        }
+    }
 
     for (;;) {
         void *raw_item = NULL;
@@ -215,47 +267,75 @@ void *output_thread_main(void *argument)
 
         if (pop_error == ECANCELED) {
             /*
-             * 主线程已经关闭结果队列，并且队列中的结果已经全部输出。
+             * 结果队列已经关闭，并且全部结果都已取完。
              */
             break;
         }
 
         if (pop_error != 0) {
-            context->error_code = pop_error;
+            if (context->error_code == 0) {
+                context->error_code = pop_error;
+            }
+
             break;
         }
 
         /*
-         * pop成功后，结果对象所有权属于输出线程。
+         * pop成功后，结果对象的所有权转移给输出线程。
          */
         result = (pipeline_result_t *)raw_item;
 
-        if (printf("task=%" PRIu64
-                   ", input=%" PRIu32
-                   ", output=%" PRIu64
-                   ", worker=%zu\n",
-                   result->task_id,
-                   result->input_value,
-                   result->output_value,
-                   result->worker_index) < 0) {
+        context->output_count++;
+
+        if (output_file != NULL) {
             /*
-             * EIO表示发生输入输出错误。
+             * 每个fprintf对应CSV中的一行数据。
              *
-             * 即使打印失败，也继续取出和释放后续对象，避免工作线程因
-             * 结果队列已满而永久阻塞。
+             * PRIu64和PRIu32用于可移植地输出固定宽度整数；
+             * worker_index是size_t，因此使用%zu。
              */
-            if (context->error_code == 0) {
-                context->error_code = EIO;
+            if (fprintf(output_file,
+                        "%" PRIu64
+                        ",%" PRIu32
+                        ",%" PRIu64
+                        ",%zu\n",
+                        result->task_id,
+                        result->input_value,
+                        result->output_value,
+                        result->worker_index) < 0) {
+                if (context->error_code == 0) {
+                    context->error_code = EIO;
+                }
+
+                /*
+                 * 一旦写入失败，继续写同一个文件通常没有意义。
+                 *
+                 * 关闭文件以后仍继续pop并free，保证流水线可以退出。
+                 */
+                (void)fclose(output_file);
+                output_file = NULL;
+            } else {
+                context->written_count++;
             }
         }
 
-        context->output_count++;
-
         /*
-         * 结果已经输出，不再需要，由最终消费者负责释放。
+         * 输出线程是结果对象的最终消费者。
          */
         free(result);
         result = NULL;
+    }
+
+    if (output_file != NULL) {
+        /*
+         * fclose会把C标准库缓冲区中的剩余数据刷新到底层文件，然后释放
+         * FILE对象及其相关资源。
+         */
+        if (fclose(output_file) != 0 && context->error_code == 0) {
+            context->error_code = errno != 0 ? errno : EIO;
+        }
+
+        output_file = NULL;
     }
 
     return NULL;
