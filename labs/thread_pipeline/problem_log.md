@@ -151,3 +151,51 @@ list(GET
 3. 失败是否来自测试脚本自身。
 
 自动化测试代码同样是代码，也可能存在缺陷，需要独立检查和调试。
+
+### 1.4 ThreadSanitizer启动时报告unexpected memory mapping
+
+现象：
+
+使用GCC 13.3.0和`-fsanitize=thread`构建后，部分测试在业务代码开始执行前失败：
+
+```text
+FATAL: ThreadSanitizer: unexpected memory mapping
+```
+
+同一次CTest运行中，压力测试可能通过，而其他测试可能在启动阶段失败，表现具有随机性。
+
+检查结果：
+
+- TSan生成的是PIE可执行程序；
+- 当前系统启用了进程地址空间随机化；
+- 错误信息中没有任何项目源码的数据竞争调用栈；
+- 使用`setarch x86_64 -R`仅关闭本次测试进程的地址随机化后，全部测试稳定通过。
+
+根因：
+
+ThreadSanitizer需要在进程地址空间中预留大范围影子内存。当前系统随机生成的内存映射偶尔与TSan要求的地址布局冲突，导致TSan运行时在程序正式执行前终止。这属于检测工具与当前地址空间布局的兼容性问题，不是项目已经发现了数据竞争。
+
+验证命令：
+
+```bash
+TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1 \
+setarch x86_64 -R \
+ctest --test-dir build-tsan --output-on-failure
+```
+
+验证结果：
+
+```text
+pointer_queue_tests               Passed
+thread_pipeline_acceptance       Passed
+thread_pipeline_stress           Passed
+100% tests passed
+```
+
+经验：
+
+- Sanitizer自身无法初始化和Sanitizer报告项目源码问题是两类不同故障；
+- 真正的数据竞争报告通常包含读写地址、线程编号和项目源码调用栈；
+- `setarch x86_64 -R`只影响其启动的进程树，不会永久修改系统全局设置；
+- 不应为了运行测试而直接修改系统全局ASLR配置；
+- ASan和TSan应使用不同构建目录，不能组合到同一个可执行程序中。

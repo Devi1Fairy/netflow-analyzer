@@ -155,6 +155,14 @@ include(CTest)
 
 # 只有开启BUILD_TESTING时才构建并注册自动化测试。
 if(BUILD_TESTING)
+
+    # CSV验收和压力测试使用Python标准库解析结果文件。   
+    find_package(
+        Python3 3.9
+        REQUIRED
+        COMPONENTS Interpreter
+    )
+
     # 创建统一的指针阻塞队列测试程序。
     add_executable(
         pointer_queue_tests
@@ -195,21 +203,47 @@ if(BUILD_TESTING)
             TIMEOUT 10
     )
 
-    # 完整运行五线程流水线，并验证生成的CSV内容。
+    # 使用12个任务验证完整流水线的基本功能。
     add_test(
         NAME thread_pipeline_acceptance
         COMMAND
-            ${CMAKE_COMMAND}
-            "-DPIPELINE_PROGRAM=$<TARGET_FILE:thread_pipeline_demo>"
-            "-DOUTPUT_FILE=${CMAKE_CURRENT_BINARY_DIR}/pipeline_acceptance.csv"
-            -P
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/verify_pipeline_csv.cmake
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/verify_pipeline_csv.py
+            --program
+            $<TARGET_FILE:thread_pipeline_demo>
+            --output
+            ${CMAKE_CURRENT_BINARY_DIR}/pipeline_acceptance.csv
+            --task-count
+            12
+            --timeout
+            8
     )
 
-    # 流水线如果发生线程死锁，测试不能永久等待。
     set_tests_properties(
         thread_pipeline_acceptance
         PROPERTIES
             TIMEOUT 10
+    )
+
+    # 使用10000个任务反复触发队列满、空、等待、唤醒和环绕。
+    add_test(
+        NAME thread_pipeline_stress
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/verify_pipeline_csv.py
+            --program
+            $<TARGET_FILE:thread_pipeline_demo>
+            --output
+            ${CMAKE_CURRENT_BINARY_DIR}/pipeline_stress.csv
+            --task-count
+            10000
+            --timeout
+            25
+    )
+
+    set_tests_properties(
+        thread_pipeline_stress
+        PROPERTIES
+            TIMEOUT 30
     )
 endif()

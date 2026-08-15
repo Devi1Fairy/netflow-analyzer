@@ -8,18 +8,97 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/*
+ * strtoumax和uintmax_t定义在inttypes.h中。
+ *
+ * strtoumax用于把命令行字符串安全地转换成无符号整数。
+ */
+#include <inttypes.h>
+/*
+ * 用户没有提供任务数量时，默认创建12个任务。
+ */
+#define DEFAULT_PIPELINE_TASK_COUNT 12U
 
 /*
- * 本次创建12个任务。
+ * 限制单次运行的最大任务数量。
  *
- * 任务数量大于队列容量4，可以实际触发生产者等待not_full。
+ * 防止错误参数让程序创建过大的CSV文件并长时间占用系统资源。
+ * 一百万的平方仍然可以安全保存在uint64_t中。
  */
-#define PIPELINE_TASK_COUNT 12U
+#define MAX_PIPELINE_TASK_COUNT 1000000U
 
 /*
  * 使用两个工作线程并行处理任务。
  */
 #define PIPELINE_WORKER_COUNT 2U
+
+/**
+ * @brief 把命令行字符串转换成任务数量。
+ *
+ * 合法输入必须满足：
+ *
+ * - 只包含十进制数字；
+ * - 大于0；
+ * - 不超过MAX_PIPELINE_TASK_COUNT。
+ *
+ * @param text 命令行提供的字符串。
+ * @param task_count 用于保存转换结果的输出参数。
+ *
+ * @return 成功时返回0；
+ *         格式错误时返回EINVAL；
+ *         数值超出允许范围时返回ERANGE。
+ */
+static int parse_task_count(const char *text, size_t *task_count)
+{
+    char *end = NULL;
+
+    uintmax_t parsed_value;
+
+    if (text == NULL || task_count == NULL) {
+        return EINVAL;
+    }
+
+    /*
+     * 严格要求第一个字符是数字。
+     *
+     * 这样可以拒绝负数、正号、空格和空字符串。
+     */
+    if (text[0] < '0' || text[0] > '9') {
+        return EINVAL;
+    }
+
+    /*
+     * strtoumax失败时通过errno报告ERANGE。
+     */
+    errno = 0;
+
+    parsed_value = strtoumax(text, &end, 10);
+
+    if (errno == ERANGE) {
+        return ERANGE;
+    }
+
+    /*
+     * end应该正好指向字符串结尾。
+     *
+     * 例如"100abc"只能转换前面的100，因此必须判为无效。
+     */
+    if (end == text || *end != '\0') {
+        return EINVAL;
+    }
+
+    if (parsed_value == 0U) {
+        return EINVAL;
+    }
+
+    if (parsed_value > (uintmax_t)MAX_PIPELINE_TASK_COUNT) {
+        return ERANGE;
+    }
+
+    *task_count = (size_t)parsed_value;
+
+    return 0;
+}
 
 /**
  * @brief 输出带POSIX错误信息的错误日志。
@@ -182,6 +261,10 @@ int main(int argc, char *argv[])
     output_context_t output_context;
 
     size_t started_worker_count = 0U;
+    /*
+     * 默认使用12个任务，命令行可以覆盖这个数量。
+     */
+    size_t task_count = (size_t)DEFAULT_PIPELINE_TASK_COUNT;
 
     /*
     * CSV输出路径默认写到当前工作目录。
@@ -195,26 +278,38 @@ int main(int argc, char *argv[])
     int error_code;
 
     /*
-    * argc包含程序名称本身：
-    *
-    * argc == 1：没有提供输出路径；
-    * argc == 2：提供了一个输出路径；
-    * argc > 2：参数数量错误。
-    */
-    if (argc > 2) {
-        fprintf(stderr, "Usage: %s [output_csv_path]\n", argv[0]);
+     * 命令行格式：
+     *
+     * thread_pipeline_demo [output_csv_path] [task_count]
+     *
+     * argc == 1：全部使用默认值；
+     * argc == 2：只指定CSV路径；
+     * argc == 3：同时指定CSV路径和任务数量。
+     */
+    if (argc > 3) {
+        fprintf(stderr, "Usage: %s " "[output_csv_path] " "[task_count]\n",argv[0]);
 
         return EXIT_FAILURE;
     }
 
-    if (argc == 2) {
+    if (argc >= 2) {
         /*
-         * argv中的字符串在整个程序运行期间保持有效，所以可以把地址
-         * 交给输出线程上下文。
+         * argv字符串在整个进程运行期间保持有效，所以可以把地址交给
+         * 输出线程上下文。
          */
         output_path = argv[1];
     } else {
         output_path = "pipeline_results.csv";
+    }
+
+    if (argc == 3) {
+        error_code = parse_task_count(argv[2], &task_count);
+
+        if (error_code != 0) {
+            fprintf(stderr, "Invalid task count '%s': %s\n", argv[2], strerror(error_code));
+
+            return EXIT_FAILURE;
+        }
     }
 
     error_code = pointer_queue_init(&task_queue);
@@ -294,7 +389,7 @@ int main(int argc, char *argv[])
 
     producer_context = (producer_context_t){
         .task_queue = &task_queue,
-        .task_count = PIPELINE_TASK_COUNT,
+        .task_count = task_count,
         .error_code = 0
     };
 
@@ -404,19 +499,19 @@ int main(int argc, char *argv[])
         pipeline_succeeded = false;
     }
 
-    if (output_context.output_count != (size_t)PIPELINE_TASK_COUNT) {
+    if (output_context.output_count != task_count) {
         fprintf(stderr,
-                "Expected %u results, but received %zu.\n",
-                PIPELINE_TASK_COUNT,
+                "Expected %zu results, but received %zu.\n",
+                task_count,
                 output_context.output_count);
 
         pipeline_succeeded = false;
     }
 
-    if (output_context.written_count != (size_t)PIPELINE_TASK_COUNT) {
+    if (output_context.written_count != task_count) {
         fprintf(stderr,
-                "Expected %u CSV rows, but wrote %zu.\n",
-                PIPELINE_TASK_COUNT,
+                "Expected %zu CSV rows, but wrote %zu.\n",
+                task_count,
                 output_context.written_count);
 
         pipeline_succeeded = false;
