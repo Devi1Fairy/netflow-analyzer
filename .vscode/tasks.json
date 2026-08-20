@@ -1,28 +1,75 @@
 {
+    // VS Code任务配置文件的格式版本。
+    "version": "2.0.0",
+
     "tasks": [
         {
-            "type": "cppbuild",
-            "label": "C/C++: gcc 生成活动文件",
-            "command": "/usr/bin/gcc",
+            // 生成Debug构建规则，并刷新compile_commands.json。
+            "label": "CMake: Configure Debug",
+            "type": "process",
+            "command": "cmake",
             "args": [
-                "-fdiagnostics-color=always",
-                "-g",
-                "${file}",
-                "-o",
-                "${fileDirname}/${fileBasenameNoExtension}"
+                "-S",
+                "${workspaceFolder}",
+                "-B",
+                "${workspaceFolder}/build",
+                "-DCMAKE_BUILD_TYPE=Debug",
+                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
             ],
             "options": {
-                "cwd": "${fileDirname}"
+                // 从项目根目录运行，保证相对路径含义固定。
+                "cwd": "${workspaceFolder}"
             },
+            "problemMatcher": []
+        },
+        {
+            // 编译根CMake项目中的静态库、主程序和测试程序。
+            "label": "CMake: Build Debug",
+            "type": "process",
+            "command": "cmake",
+            "args": [
+                "--build",
+                "${workspaceFolder}/build"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+
+            // 构建前先配置，新增源文件或修改CMakeLists.txt后也能生效。
+            "dependsOn": "CMake: Configure Debug",
+            "dependsOrder": "sequence",
+
+            // 将GCC错误和警告映射回编辑器中的源码位置。
             "problemMatcher": [
                 "$gcc"
             ],
+
+            // Ctrl+Shift+B默认执行这个任务。
             "group": {
                 "kind": "build",
                 "isDefault": true
+            }
+        },
+        {
+            // 编译成功后，通过CTest执行所有已注册测试。
+            "label": "CTest: Test Debug",
+            "type": "process",
+            "command": "ctest",
+            "args": [
+                "--test-dir",
+                "${workspaceFolder}/build",
+                "--output-on-failure"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
             },
-            "detail": "调试器生成的任务。"
+            "dependsOn": "CMake: Build Debug",
+            "dependsOrder": "sequence",
+            "problemMatcher": [],
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            }
         }
-    ],
-    "version": "2.0.0"
+    ]
 }

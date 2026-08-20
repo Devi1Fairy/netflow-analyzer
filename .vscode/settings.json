@@ -1,13 +1,14 @@
 {
-    // 指定顶层CMakeLists.txt所在的源码目录。
-    "cmake.sourceDirectory": "${workspaceFolder}/labs/blocking_queue",
+    // 根目录是正式主项目的CMake源码目录。
+    "cmake.sourceDirectory": "${workspaceFolder}",
 
-    // 统一将CMake生成文件和可执行程序放在项目的build目录。
-    "cmake.buildDirectory": "${workspaceFolder}/labs/blocking_queue/build",
+    // 主项目统一使用根目录下的build。
+    "cmake.buildDirectory": "${workspaceFolder}/build",
 
-    // 打开工作区后自动执行CMake配置，让编辑器及时获得最新构建信息。
+    // 打开工作区后自动配置项目。
     "cmake.configureOnOpen": true,
 
-    // 让CMake Tools向C/C++扩展提供头文件路径、宏和编译选项。
-    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools"
+    // 让C/C++扩展直接读取CMake导出的真实编译命令。
+    "C_Cpp.default.compileCommands":
+        "${workspaceFolder}/build/compile_commands.json"
 }
