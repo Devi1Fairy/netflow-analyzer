@@ -115,4 +115,40 @@ int byte_cursor_peek_u8(const byte_cursor_t *cursor,
 int byte_cursor_read_u8(byte_cursor_t *cursor,
                         uint8_t *value);
 
+/**
+ * @brief 读取一个网络字节序16位无符号整数。
+ *
+ * 函数成功时读取连续2字节，将其转换为主机可使用的uint16_t，
+ * 并把cursor的offset向后移动2字节。
+ *
+ * 函数失败时，不修改value，也不移动cursor。
+ *
+ * @param cursor 指向需要读取和移动的游标。
+ * @param value 指向保存16位读取结果的变量。
+ *
+ * @return 成功时返回0；
+ *         参数或游标状态无效时返回EINVAL；
+ *         剩余数据少于2字节时返回ENODATA。
+ */
+int byte_cursor_read_be16(byte_cursor_t *cursor,
+                          uint16_t *value);
+
+/**
+ * @brief 读取一个网络字节序32位无符号整数。
+ *
+ * 函数成功时读取连续4字节，将其转换为主机可使用的uint32_t，
+ * 并把cursor的offset向后移动4字节。
+ *
+ * 函数失败时，不修改value，也不移动cursor。
+ *
+ * @param cursor 指向需要读取和移动的游标。
+ * @param value 指向保存32位读取结果的变量。
+ *
+ * @return 成功时返回0；
+ *         参数或游标状态无效时返回EINVAL；
+ *         剩余数据少于4字节时返回ENODATA。
+ */
+int byte_cursor_read_be32(byte_cursor_t *cursor,
+                          uint32_t *value);
+
 #endif

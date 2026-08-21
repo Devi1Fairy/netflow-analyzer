@@ -325,6 +325,144 @@ static int test_u8_error_handling(void)
 }
 
 /**
+ * @brief 验证连续读取大端16位整数。
+ */
+static int test_read_be16(void)
+{
+    const uint8_t data[] = {
+        0x12U,
+        0x34U,
+        0xABU,
+        0xCDU
+    };
+
+    byte_cursor_t cursor;
+    uint16_t value = 0U;
+
+    TEST_CHECK(byte_cursor_init(&cursor, data, sizeof(data)) == 0);
+
+    TEST_CHECK(byte_cursor_read_be16(&cursor, &value) == 0);
+    TEST_CHECK(value == UINT16_C(0x1234));
+    TEST_CHECK(cursor.offset == 2U);
+    TEST_CHECK(byte_cursor_remaining(&cursor) == 2U);
+
+    TEST_CHECK(byte_cursor_read_be16(&cursor, &value) == 0);
+    TEST_CHECK(value == UINT16_C(0xABCD));
+    TEST_CHECK(cursor.offset == sizeof(data));
+    TEST_CHECK(byte_cursor_remaining(&cursor) == 0U);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证从非对齐起始地址读取大端32位整数。
+ */
+static int test_read_be32(void)
+{
+    const uint8_t data[] = {
+        0xFFU,
+        0x89U,
+        0xABU,
+        0xCDU,
+        0xEFU
+    };
+
+    byte_cursor_t cursor;
+    uint32_t value = 0U;
+
+    /*
+     * 从data[1]开始建立游标，而不是从数组首地址开始。
+     *
+     * 这模拟网络字段位于任意字节偏移的情况。我们的实现逐字节读取，
+     * 不依赖uint32_t地址对齐。
+     */
+    TEST_CHECK(
+        byte_cursor_init(&cursor,
+                         &data[1],
+                         sizeof(data) - 1U) == 0
+    );
+
+    TEST_CHECK(byte_cursor_read_be32(&cursor, &value) == 0);
+    TEST_CHECK(value == UINT32_C(0x89ABCDEF));
+    TEST_CHECK(cursor.offset == 4U);
+    TEST_CHECK(byte_cursor_remaining(&cursor) == 0U);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证多字节读取遇到截断数据时不会部分消费缓冲区。
+ */
+static int test_multibyte_error_handling(void)
+{
+    const uint8_t one_byte[] = {
+        0x12U
+    };
+
+    const uint8_t three_bytes[] = {
+        0x12U,
+        0x34U,
+        0x56U
+    };
+
+    byte_cursor_t cursor;
+    uint16_t value16 = UINT16_C(0xA5A5);
+    uint32_t value32 = UINT32_C(0xA5A5A5A5);
+
+    /*
+     * 只剩1字节，无法完成16位读取。
+     */
+    TEST_CHECK(
+        byte_cursor_init(&cursor,
+                         one_byte,
+                         sizeof(one_byte)) == 0
+    );
+
+    TEST_CHECK(
+        byte_cursor_read_be16(&cursor, &value16) == ENODATA
+    );
+
+    TEST_CHECK(value16 == UINT16_C(0xA5A5));
+    TEST_CHECK(cursor.offset == 0U);
+
+    /*
+     * 只剩3字节，无法完成32位读取。
+     */
+    TEST_CHECK(
+        byte_cursor_init(&cursor,
+                         three_bytes,
+                         sizeof(three_bytes)) == 0
+    );
+
+    TEST_CHECK(
+        byte_cursor_read_be32(&cursor, &value32) == ENODATA
+    );
+
+    TEST_CHECK(value32 == UINT32_C(0xA5A5A5A5));
+    TEST_CHECK(cursor.offset == 0U);
+
+    /*
+     * NULL输出地址属于参数错误，并且不能移动游标。
+     */
+    TEST_CHECK(byte_cursor_read_be16(&cursor, NULL) == EINVAL);
+    TEST_CHECK(cursor.offset == 0U);
+
+    TEST_CHECK(byte_cursor_read_be32(&cursor, NULL) == EINVAL);
+    TEST_CHECK(cursor.offset == 0U);
+
+    /*
+     * NULL游标属于参数错误，输出变量必须保持原值。
+     */
+    TEST_CHECK(byte_cursor_read_be16(NULL, &value16) == EINVAL);
+    TEST_CHECK(value16 == UINT16_C(0xA5A5));
+
+    TEST_CHECK(byte_cursor_read_be32(NULL, &value32) == EINVAL);
+    TEST_CHECK(value32 == UINT32_C(0xA5A5A5A5));
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 安全字节读取工具的基础测试入口。
  */
 int main(void)
@@ -371,5 +509,23 @@ int main(void)
 
     printf("[PASS] u8 error handling\n");
 
+    if (test_read_be16() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] read be16\n");
+
+    if (test_read_be32() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] read be32\n");
+
+    if (test_multibyte_error_handling() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] multibyte error handling\n");
+    
     return EXIT_SUCCESS;
 }

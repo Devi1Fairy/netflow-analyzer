@@ -49,23 +49,28 @@ size_t byte_cursor_remaining(const byte_cursor_t *cursor)
     return cursor->length - cursor->offset;
 }
 
-int byte_cursor_peek_u8(const byte_cursor_t *cursor,
-                        uint8_t *value)
+/**
+ * @brief 检查游标是否能够安全读取指定数量的字节。
+ *
+ * 这是byte_reader.c内部使用的辅助函数，因此使用static，不会成为
+ * 其他模块可以调用的全局符号。
+ *
+ * @param cursor 指向待检查的游标。
+ * @param required_length 本次操作要求的字节数。
+ *
+ * @return 可以读取时返回0；
+ *         参数或游标状态无效时返回EINVAL；
+ *         剩余数据不足时返回ENODATA。
+ */
+static int byte_cursor_require_bytes(const byte_cursor_t *cursor,
+                                     size_t required_length)
 {
-    /*
-     * cursor和输出参数value都必须指向有效对象。
-     *
-     * 先验证所有参数，再写入value，保证失败时输出变量保持不变。
-     */
-    if (cursor == NULL || value == NULL) {
+    if (cursor == NULL || required_length == 0U) {
         return EINVAL;
     }
 
     /*
-     * offset大于length表示游标已经越过缓冲区结尾。
-     *
-     * length大于0但data为NULL表示游标声称存在数据，却没有对应地址。
-     * 这两种情况都属于游标内部状态无效。
+     * 检查游标自身的不变量和数据地址。
      */
     if (cursor->offset > cursor->length ||
         (cursor->data == NULL && cursor->length > 0U)) {
@@ -73,16 +78,41 @@ int byte_cursor_peek_u8(const byte_cursor_t *cursor,
     }
 
     /*
-     * 剩余长度为0表示游标位于缓冲区结尾，没有字节可以查看。
+     * 统一检查本次操作要求的全部长度。
      *
-     * 此时返回ENODATA，但不修改value和offset。
+     * 例如read_be32必须在开始读取前确认完整的4字节都存在，不能读取
+     * 一部分并移动offset后才发现数据不足。
      */
-    if (byte_cursor_remaining(cursor) < 1U) {
+    if (byte_cursor_remaining(cursor) < required_length) {
         return ENODATA;
     }
 
+    return 0;
+}
+
+int byte_cursor_peek_u8(const byte_cursor_t *cursor,
+                        uint8_t *value)
+{
+    int error_code;
+
     /*
-     * 只有在参数、游标状态和剩余长度全部有效后，才访问原始缓冲区。
+     * 输出地址必须有效，否则无法保存读取结果。
+     */
+    if (value == NULL) {
+        return EINVAL;
+    }
+
+    /*
+     * 检查游标状态以及是否至少存在1字节。
+     */
+    error_code = byte_cursor_require_bytes(cursor, 1U);
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    /*
+     * 所有检查通过后才修改输出变量。
      */
     *value = cursor->data[cursor->offset];
 
@@ -118,6 +148,101 @@ int byte_cursor_read_u8(byte_cursor_t *cursor,
      * 也不会发生size_t溢出。
      */
     cursor->offset += 1U;
+
+    return 0;
+}
+
+int byte_cursor_read_be16(byte_cursor_t *cursor,
+                          uint16_t *value)
+{
+    int error_code;
+    size_t offset;
+    uint16_t decoded_value;
+
+    if (value == NULL) {
+        return EINVAL;
+    }
+
+    /*
+     * 在读取任何一个字节之前，先保证完整的2字节都存在。
+     */
+    error_code = byte_cursor_require_bytes(cursor, 2U);
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    /*
+     * 保存当前偏移，使下面的下标表达式更清楚。
+     */
+    offset = cursor->offset;
+
+    /*
+     * 大端16位整数的组合方式：
+     *
+     * 第0字节左移8位，放到结果的高8位；
+     * 第1字节保持不变，放到结果的低8位。
+     *
+     * 例如：
+     *
+     * 0x12 << 8 = 0x1200
+     * 0x1200 | 0x34 = 0x1234
+     */
+    decoded_value = (uint16_t)(
+        ((uint16_t)cursor->data[offset] << 8U) |
+        (uint16_t)cursor->data[offset + 1U]
+    );
+
+    /*
+     * 所有读取和计算都成功后，再提交输出值和新偏移。
+     */
+    *value = decoded_value;
+    cursor->offset += 2U;
+
+    return 0;
+}
+
+int byte_cursor_read_be32(byte_cursor_t *cursor,
+                          uint32_t *value)
+{
+    int error_code;
+    size_t offset;
+    uint32_t decoded_value;
+
+    if (value == NULL) {
+        return EINVAL;
+    }
+
+    /*
+     * 在访问缓冲区前确认完整的4字节都存在。
+     */
+    error_code = byte_cursor_require_bytes(cursor, 4U);
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    offset = cursor->offset;
+
+    /*
+     * 把大端的4个字节分别移动到32位结果中的正确位置：
+     *
+     * 字节0 → 位31～24
+     * 字节1 → 位23～16
+     * 字节2 → 位15～8
+     * 字节3 → 位7～0
+     *
+     * 每个字节必须先转换为uint32_t再移位，避免使用有符号int执行
+     * 24位左移时产生溢出或未定义行为。
+     */
+    decoded_value =
+        ((uint32_t)cursor->data[offset] << 24U) |
+        ((uint32_t)cursor->data[offset + 1U] << 16U) |
+        ((uint32_t)cursor->data[offset + 2U] << 8U) |
+        (uint32_t)cursor->data[offset + 3U];
+
+    *value = decoded_value;
+    cursor->offset += 4U;
 
     return 0;
 }
