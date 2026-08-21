@@ -78,4 +78,41 @@ int byte_cursor_init(byte_cursor_t *cursor,
  */
 size_t byte_cursor_remaining(const byte_cursor_t *cursor);
 
+/**
+ * @brief 查看游标当前位置的一个字节，但不移动游标。
+ *
+ * 函数成功时，把当前字节写入value指向的位置。
+ *
+ * 函数失败时，不修改value，也不修改cursor。
+ *
+ * @param cursor 指向只读游标。
+ * @param value 指向保存读取结果的uint8_t变量。
+ *
+ * @return 成功时返回0；
+ *         参数或游标状态无效时返回EINVAL；
+ *         没有剩余字节时返回ENODATA。
+ */
+int byte_cursor_peek_u8(const byte_cursor_t *cursor,
+                        uint8_t *value);
+
+/**
+ * @brief 读取游标当前位置的一个字节，并将游标向后移动一字节。
+ *
+ * 函数成功时：
+ *
+ * 1. 把当前字节写入value指向的位置；
+ * 2. 将cursor的offset增加1。
+ *
+ * 函数失败时，不修改value，也不移动cursor。
+ *
+ * @param cursor 指向需要读取和移动的游标。
+ * @param value 指向保存读取结果的uint8_t变量。
+ *
+ * @return 成功时返回0；
+ *         参数或游标状态无效时返回EINVAL；
+ *         没有剩余字节时返回ENODATA。
+ */
+int byte_cursor_read_u8(byte_cursor_t *cursor,
+                        uint8_t *value);
+
 #endif
