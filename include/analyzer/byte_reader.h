@@ -151,4 +151,44 @@ int byte_cursor_read_be16(byte_cursor_t *cursor,
 int byte_cursor_read_be32(byte_cursor_t *cursor,
                           uint32_t *value);
 
+/**
+ * @brief 复制游标当前位置开始的连续字节，并向后移动游标。
+ *
+ * destination必须能够容纳byte_count字节。由于C语言中的指针本身
+ * 不包含目标缓冲区容量，该容量由调用者负责保证。
+ *
+ * byte_count为0时操作成功，此时destination可以为NULL，游标不移动。
+ *
+ * 函数失败时，不修改destination，也不移动cursor。
+ *
+ * @param cursor 指向需要读取和移动的游标。
+ * @param destination 指向接收字节的目标缓冲区；
+ *                    byte_count为0时可以为NULL。
+ * @param byte_count 需要复制的字节数。
+ *
+ * @return 成功时返回0；
+ *         参数或游标状态无效时返回EINVAL；
+ *         剩余数据少于byte_count时返回ENODATA。
+ */
+int byte_cursor_read_bytes(byte_cursor_t *cursor,
+                           uint8_t *destination,
+                           size_t byte_count);
+
+/**
+ * @brief 安全跳过游标当前位置开始的指定数量字节。
+ *
+ * byte_count为0时操作成功，游标保持不变。
+ *
+ * 函数失败时不移动cursor。
+ *
+ * @param cursor 指向需要移动的游标。
+ * @param byte_count 需要跳过的字节数。
+ *
+ * @return 成功时返回0；
+ *         游标状态无效时返回EINVAL；
+ *         剩余数据少于byte_count时返回ENODATA。
+ */
+int byte_cursor_skip(byte_cursor_t *cursor,
+                     size_t byte_count);
+
 #endif

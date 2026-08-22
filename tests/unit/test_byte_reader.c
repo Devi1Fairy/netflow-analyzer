@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /**
  * @brief 检查一个测试条件。
@@ -463,6 +464,175 @@ static int test_multibyte_error_handling(void)
 }
 
 /**
+ * @brief 验证read_bytes能够复制包含0字节的二进制数据。
+ */
+static int test_read_bytes(void)
+{
+    const uint8_t data[] = {
+        0x10U,
+        0x00U,
+        0x30U,
+        0x40U
+    };
+
+    const uint8_t expected[] = {
+        0x10U,
+        0x00U,
+        0x30U
+    };
+
+    uint8_t destination[sizeof(expected)] = {0U};
+    byte_cursor_t cursor;
+
+    TEST_CHECK(byte_cursor_init(&cursor, data, sizeof(data)) == 0);
+
+    TEST_CHECK(
+        byte_cursor_read_bytes(&cursor,
+                               destination,
+                               sizeof(destination)) == 0
+    );
+
+    /*
+     * memcmp按照明确长度比较二进制数据，不受中间0x00影响。
+     */
+    TEST_CHECK(
+        memcmp(destination,
+               expected,
+               sizeof(expected)) == 0
+    );
+
+    TEST_CHECK(cursor.offset == sizeof(destination));
+    TEST_CHECK(byte_cursor_remaining(&cursor) == 1U);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证read_bytes失败和零长度读取的状态语义。
+ */
+static int test_read_bytes_error_handling(void)
+{
+    const uint8_t data[] = {
+        0x11U,
+        0x22U
+    };
+
+    const uint8_t unchanged[] = {
+        0xA5U,
+        0xA5U,
+        0xA5U
+    };
+
+    uint8_t destination[] = {
+        0xA5U,
+        0xA5U,
+        0xA5U
+    };
+
+    byte_cursor_t cursor;
+
+    TEST_CHECK(byte_cursor_init(&cursor, data, sizeof(data)) == 0);
+
+    /*
+     * 零长度读取是合法空操作，允许destination为NULL。
+     */
+    TEST_CHECK(
+        byte_cursor_read_bytes(&cursor, NULL, 0U) == 0
+    );
+
+    TEST_CHECK(cursor.offset == 0U);
+
+    /*
+     * 非零长度读取必须提供目标地址。
+     */
+    TEST_CHECK(
+        byte_cursor_read_bytes(&cursor, NULL, 1U) == EINVAL
+    );
+
+    TEST_CHECK(cursor.offset == 0U);
+
+    /*
+     * 源数据只有2字节，但要求读取3字节。
+     */
+    TEST_CHECK(
+        byte_cursor_read_bytes(&cursor,
+                               destination,
+                               sizeof(destination)) == ENODATA
+    );
+
+    /*
+     * 失败后目标缓冲区和游标位置都必须保持不变。
+     */
+    TEST_CHECK(
+        memcmp(destination,
+               unchanged,
+               sizeof(destination)) == 0
+    );
+
+    TEST_CHECK(cursor.offset == 0U);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证skip能够安全移动游标，并拒绝超出剩余长度。
+ */
+static int test_skip(void)
+{
+    const uint8_t data[] = {
+        0x10U,
+        0x20U,
+        0x30U,
+        0x40U
+    };
+
+    byte_cursor_t cursor;
+
+    TEST_CHECK(byte_cursor_init(&cursor, data, sizeof(data)) == 0);
+
+    /*
+     * 零长度跳过是合法空操作。
+     */
+    TEST_CHECK(byte_cursor_skip(&cursor, 0U) == 0);
+    TEST_CHECK(cursor.offset == 0U);
+
+    /*
+     * 跳过前2字节。
+     */
+    TEST_CHECK(byte_cursor_skip(&cursor, 2U) == 0);
+    TEST_CHECK(cursor.offset == 2U);
+    TEST_CHECK(byte_cursor_remaining(&cursor) == 2U);
+
+    /*
+     * SIZE_MAX远大于剩余长度。
+     *
+     * 函数必须先比较剩余长度，而不能直接执行offset + SIZE_MAX。
+     */
+    TEST_CHECK(byte_cursor_skip(&cursor, SIZE_MAX) == ENODATA);
+    TEST_CHECK(cursor.offset == 2U);
+
+    /*
+     * 剩余2字节，但要求跳过3字节，也必须失败且不移动。
+     */
+    TEST_CHECK(byte_cursor_skip(&cursor, 3U) == ENODATA);
+    TEST_CHECK(cursor.offset == 2U);
+
+    /*
+     * 恰好跳过剩余2字节。
+     */
+    TEST_CHECK(byte_cursor_skip(&cursor, 2U) == 0);
+    TEST_CHECK(cursor.offset == sizeof(data));
+    TEST_CHECK(byte_cursor_remaining(&cursor) == 0U);
+
+    /*
+     * NULL游标属于参数错误。
+     */
+    TEST_CHECK(byte_cursor_skip(NULL, 0U) == EINVAL);
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 安全字节读取工具的基础测试入口。
  */
 int main(void)
@@ -526,6 +696,24 @@ int main(void)
     }
 
     printf("[PASS] multibyte error handling\n");
+
+        if (test_read_bytes() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] read bytes\n");
+
+    if (test_read_bytes_error_handling() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] read bytes error handling\n");
+
+    if (test_skip() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] skip\n");
     
     return EXIT_SUCCESS;
 }

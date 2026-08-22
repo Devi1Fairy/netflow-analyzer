@@ -1,6 +1,7 @@
 #include "analyzer/byte_reader.h"
 
 #include <errno.h>
+#include <string.h>
 
 int byte_cursor_init(byte_cursor_t *cursor,
                      const uint8_t *data,
@@ -65,7 +66,7 @@ size_t byte_cursor_remaining(const byte_cursor_t *cursor)
 static int byte_cursor_require_bytes(const byte_cursor_t *cursor,
                                      size_t required_length)
 {
-    if (cursor == NULL || required_length == 0U) {
+    if (cursor == NULL) {
         return EINVAL;
     }
 
@@ -243,6 +244,82 @@ int byte_cursor_read_be32(byte_cursor_t *cursor,
 
     *value = decoded_value;
     cursor->offset += 4U;
+
+    return 0;
+}
+
+int byte_cursor_read_bytes(byte_cursor_t *cursor,
+                           uint8_t *destination,
+                           size_t byte_count)
+{
+    int error_code;
+
+    /*
+     *读取非零数量字节时必须提供目标地址。
+     *
+     *零长度读取不会访问destination，因此允许destination为NULL。
+     */
+    if (destination == NULL && byte_count > 0U) {
+        return EINVAL;
+    }
+
+    /*
+     * 在复制任何字节之前，先检查游标状态和完整源数据长度。
+     */
+    error_code = byte_cursor_require_bytes(cursor, byte_count);
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    /*
+     * byte_count为0时不调用memcpy。
+     *
+     * 这样即使空游标的data和destination都是NULL，也不会把空指针
+     * 传给内存复制函数。
+     */
+    if (byte_count == 0U) {
+        return 0;
+    }
+
+    /*
+     * 网络数据是任意二进制字节，可能包含0x00，因此不能使用strlen、
+     * strcpy等字符串函数。memcpy严格按照byte_count复制。
+     */
+    memcpy(destination, cursor->data + cursor->offset, byte_count);
+
+    /*
+     * require_bytes已经保证：
+     *
+     * byte_count <= length - offset
+     *
+     * 所以这里的加法不会超过length，也不会发生size_t溢出。
+     */
+    cursor->offset += byte_count;
+
+    return 0;
+}
+
+int byte_cursor_skip(byte_cursor_t *cursor,
+                     size_t byte_count)
+{
+    int error_code;
+
+    /*
+     * 在移动游标前检查完整长度。
+     */
+    error_code = byte_cursor_require_bytes(cursor, byte_count);
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    /*
+     * 不访问数据内容，只更新下一次读取位置。
+     *
+     * byte_count为0时，这是一条合法的空操作。
+     */
+    cursor->offset += byte_count;
 
     return 0;
 }

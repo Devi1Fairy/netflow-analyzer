@@ -10,5 +10,6 @@
 
     // 让C/C++扩展直接读取CMake导出的真实编译命令。
     "C_Cpp.default.compileCommands":
-        "${workspaceFolder}/build/compile_commands.json"
+        "${workspaceFolder}/build/compile_commands.json",
+        "commentTranslate.source": "Google"
 }
