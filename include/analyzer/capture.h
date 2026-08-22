@@ -2,6 +2,7 @@
 #define NETFLOW_ANALYZER_CAPTURE_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 /*
  * 用于接收采集模块错误说明的建议缓冲区大小。
@@ -35,6 +36,29 @@ typedef enum {
 } capture_link_type_t;
 
 /**
+ * @brief 表示一次离线数据包读取的正常状态。
+ *
+ * 函数返回值用于表示操作是否出错；这个枚举用于区分成功读取到
+ * 数据包和正常到达文件末尾。
+ */
+typedef enum {
+    /**
+     * 尚未产生有效读取状态。
+     */
+    CAPTURE_READ_STATUS_UNKNOWN = 0,
+
+    /**
+     * 成功取得一条数据包。
+     */
+    CAPTURE_READ_STATUS_PACKET = 1,
+
+    /**
+     * PCAP文件已经读取完毕。
+     */
+    CAPTURE_READ_STATUS_END_OF_FILE = 2
+} capture_read_status_t;
+
+/**
  * @brief 离线采集句柄的不透明类型。
  *
  * 头文件只声明类型，不公开结构体成员。调用者不能直接访问内部的
@@ -43,6 +67,53 @@ typedef enum {
  * 对象由capture_open_offline创建，由capture_close释放。
  */
 typedef struct capture capture_t;
+
+/**
+ * @brief 表示libpcap返回的一条只读数据包视图。
+ *
+ * 该结构体不拥有data指向的内存，调用者不能修改或释放data。
+ *
+ * data及其内容只保证在下一次调用capture_next_packet之前有效。
+ * 如果需要跨越下一次读取继续保存数据，调用者必须复制
+ * captured_length字节。
+ */
+typedef struct {
+    /**
+     * 捕获时间戳中的整数秒。
+     *
+     * int64_t提供明确的64位有符号范围，便于后续保存较长时间范围的
+     * Unix时间戳。
+     */
+    int64_t timestamp_seconds;
+
+    /**
+     * 当前秒内的微秒部分，合法范围通常为0～999999。
+     *
+     * 当前使用pcap_open_offline，因此libpcap以微秒精度提供时间戳。
+     */
+    int32_t timestamp_microseconds;
+
+    /**
+     * 实际捕获并保存在data中的字节数。
+     *
+     * 后续初始化byte_cursor时必须使用这个长度，不能使用wire_length。
+     */
+    uint32_t captured_length;
+
+    /**
+     * 数据包在线路上的原始长度。
+     *
+     * 该字段用于流量统计，但不能作为data的可访问范围。
+     */
+    uint32_t wire_length;
+
+    /**
+     * 指向libpcap内部管理的只读数据。
+     *
+     * 调用者不能free，也不能通过这个指针修改数据。
+     */
+    const uint8_t *data;
+} capture_packet_view_t;
 
 /**
  * @brief 打开一个离线PCAP文件。
@@ -109,5 +180,37 @@ const char *capture_get_error(const capture_t *capture);
  * @param capture 指向保存采集对象地址的指针变量。
  */
 void capture_close(capture_t **capture);
+
+/**
+ * @brief 从离线PCAP中读取下一条数据包。
+ *
+ * 成功取得数据包时：
+ *
+ * - 返回0；
+ * - status设置为CAPTURE_READ_STATUS_PACKET；
+ * - packet填入时间戳、捕获长度、线路长度和数据地址。
+ *
+ * 正常到达文件末尾时：
+ *
+ * - 返回0；
+ * - status设置为CAPTURE_READ_STATUS_END_OF_FILE；
+ * - packet保持原值不变。
+ *
+ * 函数失败时不修改packet和status。
+ *
+ * packet->data由libpcap拥有，只保证在下一次调用本函数之前有效。
+ *
+ * @param capture 指向已经打开的离线采集对象。
+ * @param packet 指向用于接收数据包视图的结构体。
+ * @param status 指向用于接收读取状态的变量。
+ *
+ * @return 成功读取或正常到达文件末尾时返回0；
+ *         参数无效时返回EINVAL；
+ *         libpcap暂时没有返回数据时返回EAGAIN；
+ *         libpcap读取失败时返回EIO。
+ */
+int capture_next_packet(capture_t *capture,
+                        capture_packet_view_t *packet,
+                        capture_read_status_t *status);
 
 #endif

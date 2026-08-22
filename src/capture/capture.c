@@ -211,3 +211,95 @@ void capture_close(capture_t **capture)
      */
     *capture = NULL;
 }
+
+int capture_next_packet(capture_t *capture,
+                        capture_packet_view_t *packet,
+                        capture_read_status_t *status)
+{
+    struct pcap_pkthdr *native_header = NULL;
+    const u_char *native_data = NULL;
+
+    capture_packet_view_t new_packet;
+    int native_result;
+
+    if (capture == NULL ||
+        capture->native_handle == NULL ||
+        packet == NULL ||
+        status == NULL) {
+        return EINVAL;
+    }
+
+    /*
+     * pcap_next_ex通过两个输出参数返回：
+     *
+     * native_header：时间戳、caplen和wirelen；
+     * native_data：数据包原始字节地址。
+     *
+     * 二者都由libpcap管理，调用者不能释放。
+     */
+    native_result = pcap_next_ex(
+        capture->native_handle,
+        &native_header,
+        &native_data
+    );
+
+    if (native_result == 1) {
+        /*
+         * 返回1表示成功取得一条数据包。
+         *
+         * pcap_open_offline默认以微秒精度返回时间戳，因此tv_usec
+         * 表示当前秒内的微秒数。
+         */
+        new_packet = (capture_packet_view_t){
+            .timestamp_seconds = (int64_t)native_header->ts.tv_sec,
+
+            .timestamp_microseconds = (int32_t)native_header->ts.tv_usec,
+
+            .captured_length = (uint32_t)native_header->caplen,
+
+            .wire_length = (uint32_t)native_header->len,
+
+            /*
+             * u_char是libpcap使用的无符号字节类型。
+             *
+             * 项目公开接口统一使用uint8_t表示原始二进制字节。
+             */
+            .data = (const uint8_t *)native_data
+        };
+
+        /*
+         * 完整转换成功后再发布输出结果。
+         */
+        *packet = new_packet;
+        *status = CAPTURE_READ_STATUS_PACKET;
+
+        return 0;
+    }
+
+    if (native_result == PCAP_ERROR_BREAK) {
+        /*
+         * 对离线PCAP而言，PCAP_ERROR_BREAK表示文件已经读取完毕，
+         * 不是错误。
+         *
+         * 此时只更新status，不修改packet。
+         */
+        *status = CAPTURE_READ_STATUS_END_OF_FILE;
+
+        return 0;
+    }
+
+    if (native_result == 0) {
+        /*
+         * 返回0主要用于实时抓包超时。当前对象是离线PCAP，正常情况
+         * 不应该出现，但仍然显式转换为EAGAIN。
+         */
+        return EAGAIN;
+    }
+
+    /*
+     * PCAP_ERROR以及其他负数状态表示libpcap读取失败。
+     *
+     * 调用者可以通过capture_get_error取得详细错误说明。
+     */
+    return EIO;
+}

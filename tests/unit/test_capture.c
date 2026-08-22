@@ -18,6 +18,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <stdint.h>
+#include <string.h>
 
 #define TEST_CHECK(condition)                                      \
     do {                                                           \
@@ -32,43 +34,56 @@
     } while (false)
 
 /**
- * @brief 创建一个有效但不包含数据包的Ethernet PCAP测试文件。
+ * @brief 创建一个用于测试的Ethernet PCAP文件。
  *
- * 测试直接调用libpcap只用于准备输入文件。真正被测试的打开、查询和
- * 关闭行为仍然通过项目的capture接口完成。
+ * packet_data为NULL且captured_length为0时，只写入PCAP文件头，
+ * 创建一个没有数据包的空PCAP。
+ *
+ * packet_data非NULL时，写入一条具有固定时间戳的数据包。
  *
  * path_template必须以六个X结尾，供mkstemp替换为唯一文件名。
  */
-static int create_empty_ethernet_pcap(char *path_template)
+static int create_ethernet_pcap(char *path_template,
+                                const uint8_t *packet_data,
+                                uint32_t captured_length,
+                                uint32_t wire_length)
 {
     int file_descriptor;
     int close_error;
+
     pcap_t *dead_handle;
     pcap_dumper_t *dumper;
 
-    /*
-     * mkstemp以原子方式创建唯一临时文件，避免多个测试进程使用
-     * 相同文件名。
-     */
+    struct pcap_pkthdr packet_header = {
+        .ts = {
+            .tv_sec = 1700000000,
+            .tv_usec = 123456
+        },
+        .caplen = 0U,
+        .len = 0U
+    };
+
+    if (path_template == NULL ||
+        (packet_data == NULL && captured_length > 0U) ||
+        captured_length > wire_length) {
+        return EINVAL;
+    }
+
     file_descriptor = mkstemp(path_template);
 
     if (file_descriptor == -1) {
         return errno;
     }
 
-    /*
-     * 后面由pcap_dump_open重新打开该路径，因此先关闭mkstemp返回的
-     * 文件描述符。
-     */
     if (close(file_descriptor) != 0) {
         close_error = errno;
         (void)remove(path_template);
+
         return close_error;
     }
 
     /*
-     * pcap_open_dead创建一个不抓包的libpcap句柄，只用来描述
-     * 链路类型和最大捕获长度。
+     * 创建一个描述Ethernet链路类型和最大捕获长度的虚拟句柄。
      */
     dead_handle = pcap_open_dead(DLT_EN10MB, 65535);
 
@@ -77,10 +92,6 @@ static int create_empty_ethernet_pcap(char *path_template)
         return ENOMEM;
     }
 
-    /*
-     * pcap_dump_open会创建PCAP文件头。即使不写入任何数据包，
-     * 最终文件仍然是一个合法的空PCAP。
-     */
     dumper = pcap_dump_open(dead_handle, path_template);
 
     if (dumper == NULL) {
@@ -92,6 +103,21 @@ static int create_empty_ethernet_pcap(char *path_template)
         (void)remove(path_template);
 
         return EIO;
+    }
+
+    if (packet_data != NULL) {
+        packet_header.caplen = captured_length;
+        packet_header.len = wire_length;
+
+        /*
+         * pcap_dump的第一个参数沿用了libpcap回调函数的u_char *
+         * 参数形式。按照libpcap接口约定，把dumper转换后传入。
+         *
+         * 第二个参数是数据包元信息，第三个参数是实际字节。
+         */
+        pcap_dump((u_char *)dumper,
+                  &packet_header,
+                  (const u_char *)packet_data);
     }
 
     pcap_dump_close(dumper);
@@ -188,7 +214,7 @@ static int test_open_empty_ethernet_capture(void)
     int remove_error;
     bool error_string_available;
 
-    create_error = create_empty_ethernet_pcap(pcap_path);
+    create_error = create_ethernet_pcap(pcap_path, NULL, 0U, 0U);
 
     TEST_CHECK(create_error == 0);
 
@@ -237,6 +263,185 @@ static int test_open_empty_ethernet_capture(void)
     return EXIT_SUCCESS;
 }
 
+/**
+ * @brief 验证能够读取一条数据包，并在下一次读取时报告文件结束。
+ */
+static int test_capture_packet_reading(void)
+{
+    /*
+     * 这18字节模拟：
+     *
+     * 6字节目标MAC；
+     * 6字节源MAC；
+     * 2字节EtherType；
+     * 4字节负载。
+     *
+     * 当前测试只验证capture模块原样返回字节，不解析字段含义。
+     */
+    const uint8_t expected_data[] = {
+        0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U,
+        0x66U, 0x77U, 0x88U, 0x99U, 0xAAU, 0xBBU,
+        0x08U, 0x00U,
+        0xDEU, 0xADU, 0xBEU, 0xEFU
+    };
+
+    char pcap_path[] =
+        "/tmp/netflow-analyzer-packet-XXXXXX";
+
+    char error_buffer[CAPTURE_ERROR_BUFFER_SIZE] = {0};
+
+    /*
+     * received_data属于测试自身。
+     *
+     * 必须在下一次capture_next_packet之前复制数据，因为libpcap
+     * 返回的数据地址在下一次读取后可能失效。
+     */
+    uint8_t received_data[sizeof(expected_data)] = {0U};
+
+    capture_t *capture = NULL;
+
+    capture_packet_view_t packet = {
+        .timestamp_seconds = 0,
+        .timestamp_microseconds = 0,
+        .captured_length = 0U,
+        .wire_length = 0U,
+        .data = NULL
+    };
+
+    capture_read_status_t first_status =
+        CAPTURE_READ_STATUS_UNKNOWN;
+
+    capture_read_status_t second_status =
+        CAPTURE_READ_STATUS_UNKNOWN;
+
+    int create_error;
+    int open_error;
+    int null_packet_error = EINVAL;
+    int null_status_error = EINVAL;
+    int first_read_error = EINVAL;
+    int second_read_error = EINVAL;
+    int remove_error;
+
+    int64_t timestamp_seconds = 0;
+    int32_t timestamp_microseconds = 0;
+    uint32_t captured_length = 0U;
+    uint32_t wire_length = 0U;
+
+    bool data_copied = false;
+
+    create_error = create_ethernet_pcap(
+        pcap_path,
+        expected_data,
+        (uint32_t)sizeof(expected_data),
+        UINT32_C(60)
+    );
+
+    TEST_CHECK(create_error == 0);
+
+    open_error = capture_open_offline(
+        pcap_path,
+        &capture,
+        error_buffer,
+        sizeof(error_buffer)
+    );
+
+    if (open_error == 0) {
+        /*
+         * 无效输出参数必须在调用pcap_next_ex之前被拒绝，
+         * 因此不能消耗文件中的第一条数据包。
+         */
+        null_packet_error = capture_next_packet(
+            capture,
+            NULL,
+            &first_status
+        );
+
+        null_status_error = capture_next_packet(
+            capture,
+            &packet,
+            NULL
+        );
+
+        first_read_error = capture_next_packet(
+            capture,
+            &packet,
+            &first_status
+        );
+
+        if (first_read_error == 0 && first_status == CAPTURE_READ_STATUS_PACKET) {
+            timestamp_seconds = packet.timestamp_seconds;
+            timestamp_microseconds = packet.timestamp_microseconds;
+            captured_length = packet.captured_length;
+            wire_length = packet.wire_length;
+
+            /*
+             * 只有确认指针有效且长度与目标数组一致后才能复制。
+             */
+            if (packet.data != NULL &&
+                packet.captured_length ==
+                    (uint32_t)sizeof(received_data)) {
+                memcpy(received_data,
+                       packet.data,
+                       sizeof(received_data));
+
+                data_copied = true;
+            }
+        }
+
+        /*
+         * 文件只有一条数据包，所以第二次读取应该到达EOF。
+         *
+         * 调用之后不再访问第一次返回的packet.data。
+         */
+        second_read_error = capture_next_packet(
+            capture,
+            &packet,
+            &second_status
+        );
+    }
+
+    /*
+     * 在执行断言前完成资源清理。
+     */
+    capture_close(&capture);
+    remove_error = remove(pcap_path);
+
+    TEST_CHECK(open_error == 0);
+    TEST_CHECK(error_buffer[0] == '\0');
+
+    TEST_CHECK(null_packet_error == EINVAL);
+    TEST_CHECK(null_status_error == EINVAL);
+
+    TEST_CHECK(first_read_error == 0);
+    TEST_CHECK(first_status == CAPTURE_READ_STATUS_PACKET);
+
+    TEST_CHECK(timestamp_seconds == INT64_C(1700000000));
+    TEST_CHECK(timestamp_microseconds == INT32_C(123456));
+    TEST_CHECK(
+        captured_length == (uint32_t)sizeof(expected_data)
+    );
+    TEST_CHECK(wire_length == UINT32_C(60));
+
+    TEST_CHECK(data_copied);
+
+    TEST_CHECK(
+        memcmp(received_data,
+               expected_data,
+               sizeof(expected_data)) == 0
+    );
+
+    TEST_CHECK(second_read_error == 0);
+    TEST_CHECK(
+        second_status ==
+            CAPTURE_READ_STATUS_END_OF_FILE
+    );
+
+    TEST_CHECK(capture == NULL);
+    TEST_CHECK(remove_error == 0);
+
+    return EXIT_SUCCESS;
+}
+
 int main(void)
 {
     if (test_capture_open_error_handling() != EXIT_SUCCESS) {
@@ -250,6 +455,12 @@ int main(void)
     }
 
     printf("[PASS] open empty Ethernet capture\n");
+
+    if (test_capture_packet_reading() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }   
+
+    printf("[PASS] capture packet reading\n");
 
     return EXIT_SUCCESS;
 }
