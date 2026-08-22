@@ -47,6 +47,20 @@ function(enable_project_warnings target_name)
     )
 endfunction()
 
+# 使用pkg-config查找系统中的libpcap开发包。
+find_package(PkgConfig REQUIRED)
+
+# IMPORTED_TARGET会创建PkgConfig::PCAP目标。
+#
+# 这个目标包含libpcap所需的头文件目录、链接库和平台相关参数，
+# 不需要手动硬编码-lpcap或/usr/include路径。
+pkg_check_modules(
+    PCAP
+    REQUIRED
+    IMPORTED_TARGET
+    libpcap
+)
+
 # app及未来核心模块构建成静态库。
 #
 # main程序和单元测试都链接这个库，避免测试复制业务代码。
@@ -55,6 +69,7 @@ add_library(
     STATIC
     src/app/app.c
     src/common/byte_reader.c
+    src/capture/capture.c
 )
 
 # PUBLIC表示使用analyzer_core的目标自动继承公开头文件目录。
@@ -62,6 +77,14 @@ target_include_directories(
     analyzer_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+# capture.c内部使用libpcap，但公开头文件不暴露pcap_t，
+# 因此该实现依赖声明为PRIVATE。
+target_link_libraries(
+    analyzer_core
+    PRIVATE
+        PkgConfig::PCAP
 )
 
 # 把CMake项目版本作为字符串宏传给app.c。
@@ -157,4 +180,35 @@ if(BUILD_TESTING)
         PROPERTIES
             TIMEOUT 5
     )
+
+    # 创建离线采集模块测试程序。
+    add_executable(
+        capture_tests
+        tests/unit/test_capture.c
+    )
+
+    # analyzer_core提供capture接口实现。
+    #
+    # 测试程序还直接调用libpcap创建临时PCAP输入文件，因此这里也需要
+    # 显式链接PkgConfig::PCAP。
+    target_link_libraries(
+        capture_tests
+        PRIVATE
+            analyzer_core
+            PkgConfig::PCAP
+    )
+
+    enable_project_warnings(capture_tests)
+
+    add_test(
+        NAME capture_tests
+        COMMAND capture_tests
+    )
+
+    set_tests_properties(
+        capture_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
 endif()
