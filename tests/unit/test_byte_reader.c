@@ -633,6 +633,140 @@ static int test_skip(void)
 }
 
 /**
+ * @brief 验证子游标引用正确区域，并拥有独立的读取位置。
+ */
+static int test_read_slice(void)
+{
+    const uint8_t data[] = {
+        0x10U,
+        0x20U,
+        0x30U,
+        0x40U,
+        0x50U
+    };
+
+    byte_cursor_t parent;
+    byte_cursor_t slice;
+    uint8_t value = 0U;
+
+    TEST_CHECK(byte_cursor_init(&parent, data, sizeof(data)) == 0);
+
+    /*
+     * 先跳过第一个字节，使切片从data[1]开始。
+     */
+    TEST_CHECK(byte_cursor_skip(&parent, 1U) == 0);
+
+    /*
+     * 从父游标当前位置取得3字节子区域：
+     *
+     * 0x20 0x30 0x40
+     */
+    TEST_CHECK(
+        byte_cursor_read_slice(&parent, 3U, &slice) == 0
+    );
+
+    /*
+     * 子游标直接引用原数组，不复制数据。
+     */
+    TEST_CHECK(slice.data == &data[1]);
+    TEST_CHECK(slice.length == 3U);
+    TEST_CHECK(slice.offset == 0U);
+
+    /*
+     * 父游标已经消费了1 + 3字节，只剩最后的0x50。
+     */
+    TEST_CHECK(parent.offset == 4U);
+    TEST_CHECK(byte_cursor_remaining(&parent) == 1U);
+
+    /*
+     * 读取子游标只会修改slice.offset，不会继续修改parent.offset。
+     */
+    TEST_CHECK(byte_cursor_read_u8(&slice, &value) == 0);
+    TEST_CHECK(value == 0x20U);
+    TEST_CHECK(slice.offset == 1U);
+    TEST_CHECK(parent.offset == 4U);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证切片创建失败及零长度切片的状态语义。
+ */
+static int test_read_slice_error_handling(void)
+{
+    const uint8_t data[] = {
+        0x11U,
+        0x22U
+    };
+
+    const uint8_t original_slice_data[] = {
+        0xA5U
+    };
+
+    byte_cursor_t parent;
+    byte_cursor_t empty_parent;
+
+    /*
+     * 设置可识别的原始状态，用于确认失败时slice不会被修改。
+     */
+    byte_cursor_t slice = {
+        .data = original_slice_data,
+        .length = sizeof(original_slice_data),
+        .offset = 0U
+    };
+
+    TEST_CHECK(byte_cursor_init(&parent, data, sizeof(data)) == 0);
+
+    /*
+     * 父游标只有2字节，但要求创建3字节切片。
+     */
+    TEST_CHECK(
+        byte_cursor_read_slice(&parent, 3U, &slice) == ENODATA
+    );
+
+    TEST_CHECK(parent.offset == 0U);
+    TEST_CHECK(slice.data == original_slice_data);
+    TEST_CHECK(slice.length == sizeof(original_slice_data));
+    TEST_CHECK(slice.offset == 0U);
+
+    /*
+     * 没有提供输出结构体时返回EINVAL。
+     */
+    TEST_CHECK(
+        byte_cursor_read_slice(&parent, 1U, NULL) == EINVAL
+    );
+
+    TEST_CHECK(parent.offset == 0U);
+
+    /*
+     * 父游标和子游标不能使用同一个结构体。
+     */
+    TEST_CHECK(
+        byte_cursor_read_slice(&parent, 1U, &parent) == EINVAL
+    );
+
+    TEST_CHECK(parent.data == data);
+    TEST_CHECK(parent.length == sizeof(data));
+    TEST_CHECK(parent.offset == 0U);
+
+    /*
+     * 从空游标创建零长度切片是合法操作。
+     */
+    TEST_CHECK(byte_cursor_init(&empty_parent, NULL, 0U) == 0);
+
+    TEST_CHECK(
+        byte_cursor_read_slice(&empty_parent, 0U, &slice) == 0
+    );
+
+    TEST_CHECK(slice.data == NULL);
+    TEST_CHECK(slice.length == 0U);
+    TEST_CHECK(slice.offset == 0U);
+    TEST_CHECK(empty_parent.offset == 0U);
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 安全字节读取工具的基础测试入口。
  */
 int main(void)
@@ -714,6 +848,18 @@ int main(void)
     }
 
     printf("[PASS] skip\n");
+
+    if (test_read_slice() != EXIT_SUCCESS) {
+    return EXIT_FAILURE;
+}
+
+    printf("[PASS] read slice\n");
+
+    if (test_read_slice_error_handling() != EXIT_SUCCESS) {
+    return EXIT_FAILURE;
+    }
+
+    printf("[PASS] read slice error handling\n");
     
     return EXIT_SUCCESS;
 }

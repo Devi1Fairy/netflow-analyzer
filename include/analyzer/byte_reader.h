@@ -191,4 +191,39 @@ int byte_cursor_read_bytes(byte_cursor_t *cursor,
 int byte_cursor_skip(byte_cursor_t *cursor,
                      size_t byte_count);
 
+/**
+ * @brief 读取指定长度的字节区域，并为该区域创建子游标。
+ *
+ * 函数不会复制原始数据。slice只借用父游标所引用缓冲区中的一段
+ * 连续区域，因此原始缓冲区必须在slice使用期间保持有效。
+ *
+ * 函数成功时：
+ *
+ * 1. slice从父游标当前位置开始；
+ * 2. slice的length等于byte_count；
+ * 3. slice的offset初始化为0；
+ * 4. 父游标的offset向后移动byte_count字节。
+ *
+ * 父游标和子游标分别保存自己的offset。读取子游标不会继续移动
+ * 父游标，但二者引用的是同一块底层字节缓冲区。
+ *
+ * byte_count为0时操作成功，并创建一个空切片。
+ *
+ * cursor和slice不能指向同一个byte_cursor_t结构体，因为一个结构体
+ * 无法同时保存父游标状态和子游标状态。
+ *
+ * 函数失败时，不修改cursor，也不修改slice。
+ *
+ * @param cursor 指向需要读取和移动的父游标。
+ * @param byte_count 子游标能够访问的字节数。
+ * @param slice 指向用于保存子游标的结构体。
+ *
+ * @return 成功时返回0；
+ *         参数或游标状态无效时返回EINVAL；
+ *         剩余数据少于byte_count时返回ENODATA。
+ */
+int byte_cursor_read_slice(byte_cursor_t *cursor,
+                           size_t byte_count,
+                           byte_cursor_t *slice);                     
+
 #endif

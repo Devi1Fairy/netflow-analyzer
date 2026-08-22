@@ -323,3 +323,64 @@ int byte_cursor_skip(byte_cursor_t *cursor,
 
     return 0;
 }
+
+int byte_cursor_read_slice(byte_cursor_t *cursor,
+                           size_t byte_count,
+                           byte_cursor_t *slice)
+{
+    int error_code;
+    const uint8_t *slice_data;
+    byte_cursor_t new_slice;
+
+    /*
+     * slice必须提供用于保存结果的结构体地址。
+     *
+     * cursor和slice也不能是同一个结构体，否则写入slice时会覆盖
+     * 尚未完成更新的父游标状态。
+     */
+    if (slice == NULL || slice == cursor) {
+        return EINVAL;
+    }
+
+    /*
+     * 在创建任何输出结果前，检查父游标状态和完整的可用长度。
+     *
+     * 这样可以保证失败时cursor和slice都保持原值。
+     */
+    error_code = byte_cursor_require_bytes(cursor, byte_count);
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    /*
+     * 子游标不分配、不复制内存，只引用父游标当前位置开始的区域。
+     *
+     * 空游标允许data为NULL。此时不能对NULL执行指针加法，因此需要
+     * 单独保留NULL。
+     */
+    slice_data = cursor->data;
+
+    if (slice_data != NULL) {
+        slice_data += cursor->offset;
+    }
+
+    /*
+     * 先在局部变量中构造完整结果，所有检查成功后再发布给调用者。
+     */
+    new_slice = (byte_cursor_t){
+        .data = slice_data,
+        .length = byte_count,
+        .offset = 0U
+    };
+
+    *slice = new_slice;
+
+    /*
+     * require_bytes已经保证byte_count不超过剩余长度，因此这里不会
+     * 让offset越过length，也不会发生size_t溢出。
+     */
+    cursor->offset += byte_count;
+
+    return 0;
+}
