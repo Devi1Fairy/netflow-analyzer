@@ -70,6 +70,7 @@ add_library(
     src/app/app.c
     src/common/byte_reader.c
     src/capture/capture.c
+    src/protocol/packet_info.c
 )
 
 # PUBLIC表示使用analyzer_core的目标自动继承公开头文件目录。
@@ -207,6 +208,35 @@ if(BUILD_TESTING)
 
     set_tests_properties(
         capture_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+        # 创建统一数据包结果对象的单元测试程序。
+    add_executable(
+        packet_info_tests
+        tests/unit/test_packet_info.c
+    )
+
+    # 测试程序通过核心静态库调用packet_info接口实现。
+    target_link_libraries(
+        packet_info_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    # 为测试启用与正式代码相同的严格编译警告。
+    enable_project_warnings(packet_info_tests)
+
+    # 将测试程序注册到CTest。
+    add_test(
+        NAME packet_info_tests
+        COMMAND packet_info_tests
+    )
+
+    # 防止测试发生异常死循环时永久阻塞测试流程。
+    set_tests_properties(
+        packet_info_tests
         PROPERTIES
             TIMEOUT 5
     )
