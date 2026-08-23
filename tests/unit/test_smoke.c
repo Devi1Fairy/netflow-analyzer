@@ -36,6 +36,8 @@ static int test_context_lifecycle(void)
     TEST_CHECK(context.initialized);
     TEST_CHECK(!context.stop_requested);
     TEST_CHECK(context.command == APP_COMMAND_HELP);
+    TEST_CHECK(context.capture_path == NULL);
+    TEST_CHECK(context.error_message[0] == '\0');
 
     TEST_CHECK(app_request_stop(&context) == 0);
 
@@ -49,6 +51,8 @@ static int test_context_lifecycle(void)
     app_cleanup(&context);
 
     TEST_CHECK(!context.initialized);
+    TEST_CHECK(context.capture_path == NULL);
+    TEST_CHECK(context.error_message[0] == '\0');
 
     return EXIT_SUCCESS;
 }
@@ -126,6 +130,103 @@ static int test_invalid_argument(void)
 }
 
 /**
+ * @brief 验证离线读取命令及PCAP路径能够正确保存。
+ */
+static int test_read_capture_command(void)
+{
+    app_context_t context;
+
+    char *arguments[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        NULL
+    };
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    TEST_CHECK(
+        app_parse_arguments(&context, 3, arguments) == 0
+    );
+
+    TEST_CHECK(
+        context.command ==
+            APP_COMMAND_READ_CAPTURE
+    );
+
+    /*
+     * context借用argv[2]的地址，没有复制字符串。
+     */
+    TEST_CHECK(context.capture_path == arguments[2]);
+
+    TEST_CHECK(
+        strcmp(context.capture_path,
+               "sample.pcap") == 0
+    );
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证读取不存在的PCAP时能够保存详细错误信息。
+ */
+static int test_missing_capture_file(void)
+{
+    app_context_t context;
+
+    char *arguments[] = {
+        "netflow-analyzer",
+        "--read",
+        "/proc/self/netflow-analyzer-missing.pcap",
+        NULL
+    };
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    TEST_CHECK(
+        app_parse_arguments(&context, 3, arguments) == 0
+    );
+
+    TEST_CHECK(app_run(&context) == EIO);
+
+    /*
+     * app_run没有直接打印错误，而是把详细原因交给main决定如何显示。
+     */
+    TEST_CHECK(context.error_message[0] != '\0');
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证--read没有提供文件路径时会被拒绝。
+ */
+static int test_missing_capture_argument(void)
+{
+    app_context_t context;
+
+    char *arguments[] = {
+        "netflow-analyzer",
+        "--read",
+        NULL
+    };
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    TEST_CHECK(
+        app_parse_arguments(&context, 2, arguments) ==
+            EINVAL
+    );
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 阶段0冒烟测试入口。
  */
 int main(void)
@@ -153,6 +254,24 @@ int main(void)
     }
 
     printf("[PASS] invalid argument\n");
+
+    if (test_read_capture_command() != EXIT_SUCCESS) {
+    return EXIT_FAILURE;
+    }
+
+    printf("[PASS] read capture command\n");
+
+    if (test_missing_capture_file() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] missing capture file\n");
+
+    if (test_missing_capture_argument() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] missing capture argument\n");
 
     return EXIT_SUCCESS;
 }

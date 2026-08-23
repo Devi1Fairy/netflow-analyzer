@@ -53,15 +53,23 @@ int main(int argc, char *argv[])
     error_code = app_run(&context);
 
     if (error_code != 0) {
+        const char *error_message = context.error_message[0] != '\0' ? context.error_message : strerror(error_code);
+
         fprintf(stderr,
                 "Application failed: %s\n",
-                strerror(error_code));
+                error_message);
 
         app_cleanup(&context);
 
         return EXIT_FAILURE;
     }
 
+     /*
+     * 即使程序成功运行，也统一执行应用清理。
+     *
+     * 当前app_context_t还没有长期持有动态资源，但以后加入线程、
+     * 队列和输出文件后，成功路径同样必须释放这些资源。
+     */
     app_cleanup(&context);
 
     return EXIT_SUCCESS;

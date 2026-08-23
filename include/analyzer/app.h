@@ -3,6 +3,14 @@
 
 #include <stdbool.h>
 
+/*
+ * 应用层错误信息缓冲区大小。
+ *
+ * app_run会把底层模块的错误转换成带有操作上下文的消息，
+ * main只负责统一显示。
+ */
+#define APP_ERROR_MESSAGE_SIZE 512U
+
 /**
  * @brief 表示主程序本次准备执行的命令。
  *
@@ -10,7 +18,12 @@
  */
 typedef enum {
     APP_COMMAND_HELP = 0,
-    APP_COMMAND_VERSION
+    APP_COMMAND_VERSION,
+
+    /**
+     * 从离线PCAP文件读取并显示数据包概要。
+     */
+    APP_COMMAND_READ_CAPTURE
 } app_command_t;
 
 /**
@@ -30,6 +43,22 @@ typedef struct {
      * 上下文不拥有这个字符串，因此不能对它调用free。
      */
     const char *program_name;
+
+    /**
+     * 离线PCAP文件路径。
+     *
+     * 该指针借用argv中的字符串地址，不拥有字符串，也不能free。
+     *
+     * 只有command为APP_COMMAND_READ_CAPTURE时才应该使用。
+     */
+    const char *capture_path;
+
+    /**
+     * 保存应用层最近一次可读错误说明。
+     *
+     * 该数组属于app_context_t本身，不需要单独free。
+     */
+    char error_message[APP_ERROR_MESSAGE_SIZE];
 
     /**
      * true表示程序已经收到停止请求。
@@ -65,6 +94,7 @@ int app_context_init(app_context_t *context);
  * - 无参数；
  * - --help或-h；
  * - --version或-V。
+ * - --read FILE或-r FILE
  *
  * @param context 指向已经初始化的应用上下文。
  * @param argc main函数收到的参数数量。
@@ -86,7 +116,7 @@ int app_parse_arguments(app_context_t *context,
  *         已请求停止时返回ECANCELED；
  *         输出失败时返回EIO。
  */
-int app_run(const app_context_t *context);
+int app_run(app_context_t *context);
 
 /**
  * @brief 请求应用程序停止。
