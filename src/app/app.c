@@ -1,5 +1,8 @@
 #include "analyzer/app.h"
 #include "analyzer/capture.h"
+#include "analyzer/ethernet.h"
+#include "analyzer/packet_info.h"
+
 
 #include <errno.h>
 #include <inttypes.h>
@@ -46,6 +49,138 @@ static int app_print_help(const char *program_name)
         return EIO;
     }
 
+    return 0;
+}
+
+/**
+ * @brief 解析并输出一条捕获数据包的Ethernet概要。
+ *
+ * packet->data由libpcap管理，只保证在下一次capture_next_packet
+ * 调用前有效。因此本函数必须在返回前完成所有解析，不能保存data。
+ *
+ * Ethernet头部截断属于单条数据包问题，不终止整个PCAP读取流程。
+ * 其他参数、状态或输出错误会返回给上层。
+ *
+ * @param packet_number 当前数据包在预览结果中的序号。
+ * @param packet 指向libpcap返回的只读数据包视图。
+ *
+ * @return 成功输出时返回0；
+ *         参数或解析状态无效时返回EINVAL；
+ *         终端输出失败时返回EIO。
+ */
+static int app_print_packet_preview(size_t packet_number, const capture_packet_view_t *packet)
+{
+    packet_info_t packet_info;
+
+    char source_mac[ETHERNET_MAC_STRING_SIZE];
+    char destination_mac[ETHERNET_MAC_STRING_SIZE];
+
+    int error_code;
+
+    if (packet == NULL) {
+        return EINVAL;
+    }
+
+    /*
+     * packet_info只复制时间戳和长度，不保存packet.data地址。
+     *
+     * 所以packet_info中的数值结果不会因为libpcap读取下一包而失效。
+     */
+    error_code = packet_info_init(
+        &packet_info,
+        packet->timestamp_seconds,
+        packet->timestamp_microseconds,
+        packet->captured_length,
+        packet->wire_length
+    );
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    /*
+     * 解析边界必须使用captured_length。
+     *
+     * wire_length可能大于实际保存的数据长度，不能用它访问packet.data。
+     */
+    error_code = ethernet_parse(
+        packet->data,
+        (size_t)packet->captured_length,
+        &packet_info
+    );
+
+    if (error_code == ENODATA) {
+        /*
+         * 单个截断包不应导致整个PCAP分析停止。
+         *
+         * 输出已有的捕获元数据和错误位置，然后继续读取下一条数据包。
+         */
+        if (printf(
+                "Packet %zu: "
+                "timestamp=%" PRId64 ".%06" PRId32 " "
+                "caplen=%" PRIu32 " "
+                "wirelen=%" PRIu32 " "
+                "ethernet=truncated "
+                "error_offset=%zu\n",
+                packet_number,
+                packet_info.timestamp_seconds,
+                packet_info.timestamp_microseconds,
+                packet_info.captured_length,
+                packet_info.wire_length,
+                packet_info.error_offset) < 0) {
+            return EIO;
+        }
+
+        return 0;
+    }
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    error_code = ethernet_format_mac(
+        packet_info.source_mac,
+        source_mac,
+        sizeof(source_mac)
+    );
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    error_code = ethernet_format_mac(
+        packet_info.destination_mac,
+        destination_mac,
+        sizeof(destination_mac)
+    );
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    if (printf(
+            "Packet %zu: "
+            "timestamp=%" PRId64 ".%06" PRId32 " "
+            "caplen=%" PRIu32 " "
+            "wirelen=%" PRIu32 " "
+            "src=%s "
+            "dst=%s "
+            "ethertype=0x%04" PRIx16 "\n",
+            packet_number,
+            packet_info.timestamp_seconds,
+            packet_info.timestamp_microseconds,
+            packet_info.captured_length,
+            packet_info.wire_length,
+            source_mac,
+            destination_mac,
+            packet_info.ether_type) < 0) {
+        return EIO;
+    }
+
+    /*
+     * 当前只完成Ethernet解析，IPv4等网络层还没有解析，
+     * 所以这里暂时不调用packet_info_mark_complete。
+     */
     return 0;
 }
 
@@ -172,32 +307,29 @@ static int app_run_capture_preview(app_context_t *context)
         }
 
         displayed_packet_count += 1U;
+        /*
+         * 必须在下一次capture_next_packet之前完成当前包解析。
+         *
+         * app_print_packet_preview不会保存packet.data，只把解析出的
+         * 数值字段和MAC字节复制到当前栈上的packet_info中。
+         */
+        error_code = app_print_packet_preview(
+            displayed_packet_count,
+            &packet
+        );
 
-        if (printf(
-                "Packet %zu: "
-                "timestamp=%" PRId64 ".%06" PRId32 " "
-                "caplen=%" PRIu32 " "
-                "wirelen=%" PRIu32 "\n",
-                displayed_packet_count,
-                packet.timestamp_seconds,
-                packet.timestamp_microseconds,
-                packet.captured_length,
-                packet.wire_length) < 0) {
+        if (error_code != 0) {
             (void)snprintf(
                 context->error_message,
                 sizeof(context->error_message),
-                "failed to write packet information"
+                "failed to preview packet %zu: %s",
+                displayed_packet_count,
+                strerror(error_code)
             );
 
             capture_close(&capture);
-            return EIO;
+            return error_code;
         }
-
-        /*
-         * 当前循环只使用元数据，不保存packet.data。
-         *
-         * 下一次capture_next_packet可能使本次packet.data失效。
-         */
     }
 
     if (printf("Displayed packets: %zu\n", displayed_packet_count) < 0) {

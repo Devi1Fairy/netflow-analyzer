@@ -11,6 +11,8 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "analyzer/capture.h"
+#include "analyzer/ethernet.h"
+#include "analyzer/packet_info.h"
 
 #include <errno.h>
 #include <pcap/pcap.h>
@@ -276,7 +278,8 @@ static int test_capture_packet_reading(void)
      * 2字节EtherType；
      * 4字节负载。
      *
-     * 当前测试只验证capture模块原样返回字节，不解析字段含义。
+     * 测试先验证capture模块原样返回字节，再在下一次读取前把
+     * libpcap返回的数据交给packet_info和Ethernet解析器。
      */
     const uint8_t expected_data[] = {
         0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U,
@@ -308,6 +311,13 @@ static int test_capture_packet_reading(void)
         .data = NULL
     };
 
+    /*
+     * parsed_packet只保存复制后的数值和MAC字节，不保存packet.data。
+     *
+     * 因此即使后面再次调用capture_next_packet，解析结果仍然有效。
+     */
+    packet_info_t parsed_packet = {0};
+
     capture_read_status_t first_status =
         CAPTURE_READ_STATUS_UNKNOWN;
 
@@ -321,6 +331,8 @@ static int test_capture_packet_reading(void)
     int first_read_error = EINVAL;
     int second_read_error = EINVAL;
     int remove_error;
+    int packet_info_error = EINVAL;
+    int ethernet_error = EINVAL;
 
     int64_t timestamp_seconds = 0;
     int32_t timestamp_microseconds = 0;
@@ -386,6 +398,25 @@ static int test_capture_packet_reading(void)
 
                 data_copied = true;
             }
+
+            /*
+             * libpcap返回的数据地址只保证在下一次读取前有效，
+             * 所以必须在这里完成当前包的Ethernet解析。
+             */
+            packet_info_error = packet_info_init(
+                &parsed_packet,
+                packet.timestamp_seconds,
+                packet.timestamp_microseconds,
+                packet.captured_length,
+                packet.wire_length
+            );
+
+            if (packet_info_error == 0) {
+                ethernet_error = ethernet_parse(
+                    packet.data,
+                    (size_t)packet.captured_length,
+                    &parsed_packet
+                );
         }
 
         /*
@@ -399,6 +430,7 @@ static int test_capture_packet_reading(void)
             &second_status
         );
     }
+}
 
     /*
      * 在执行断言前完成资源清理。
@@ -429,6 +461,82 @@ static int test_capture_packet_reading(void)
                expected_data,
                sizeof(expected_data)) == 0
     );
+
+    /*
+     * 验证真实链路：
+     *
+     * 临时PCAP → libpcap → capture_packet_view_t
+     * → packet_info_t → Ethernet解析结果。
+     */
+    TEST_CHECK(packet_info_error == 0);
+    TEST_CHECK(ethernet_error == 0);
+    TEST_CHECK(parsed_packet.initialized);
+    TEST_CHECK(parsed_packet.has_ethernet);
+
+    TEST_CHECK(
+        parsed_packet.timestamp_seconds ==
+            INT64_C(1700000000)
+    );
+
+    TEST_CHECK(
+        parsed_packet.timestamp_microseconds ==
+            INT32_C(123456)
+    );
+
+    TEST_CHECK(
+        parsed_packet.captured_length ==
+            (uint32_t)sizeof(expected_data)
+    );
+
+    TEST_CHECK(
+        parsed_packet.wire_length ==
+            UINT32_C(60)
+    );
+
+    TEST_CHECK(
+        memcmp(
+            parsed_packet.destination_mac,
+            expected_data,
+            PACKET_MAC_ADDRESS_LENGTH
+        ) == 0
+    );
+
+    TEST_CHECK(
+        memcmp(
+            parsed_packet.source_mac,
+            expected_data +
+                PACKET_MAC_ADDRESS_LENGTH,
+            PACKET_MAC_ADDRESS_LENGTH
+        ) == 0
+    );
+
+    TEST_CHECK(
+        parsed_packet.ether_type ==
+            ETHERNET_TYPE_IPV4
+    );
+
+    TEST_CHECK(
+        parsed_packet.network_payload_offset ==
+            ETHERNET_HEADER_LENGTH
+    );
+
+    TEST_CHECK(
+        parsed_packet.network_payload_length ==
+            sizeof(expected_data) -
+                ETHERNET_HEADER_LENGTH
+    );
+
+    /*
+     * PCAP中只保存了18字节，但wirelen记录为60字节，
+     * 因此捕获结果应该被识别为snaplen截断。
+     *
+     * Ethernet头部仍然完整，所以Ethernet解析可以成功。
+     */
+    TEST_CHECK(
+        packet_info_capture_is_truncated(
+            &parsed_packet
+        )
+    );    
 
     TEST_CHECK(second_read_error == 0);
     TEST_CHECK(
