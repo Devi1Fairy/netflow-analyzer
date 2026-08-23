@@ -49,10 +49,17 @@ int packet_info_init(packet_info_t *info,
      * 是保存事实，而不是在初始化时丢弃异常输入。
      */
     new_info = (packet_info_t){
+
         .timestamp_seconds = timestamp_seconds,
         .timestamp_microseconds = timestamp_microseconds,
         .captured_length = captured_length,
         .wire_length = wire_length,
+        .has_ethernet = false,
+        .destination_mac = {0},
+        .source_mac = {0},
+        .ether_type = UINT16_C(0),
+        .network_payload_offset = 0U,
+        .network_payload_length = 0U,
         .parse_status = PACKET_PARSE_STATUS_NOT_STARTED,
         .error_layer = PACKET_PARSE_LAYER_NONE,
         .error_code = 0,

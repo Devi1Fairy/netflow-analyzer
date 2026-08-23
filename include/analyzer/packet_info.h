@@ -5,6 +5,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/*
+ * Ethernet MAC地址固定包含6个字节。
+ *
+ * 统一结果对象使用自己的项目级常量，不依赖libpcap或平台头文件。
+ */
+#define PACKET_MAC_ADDRESS_LENGTH 6U
+
 /**
  * @brief 表示一条数据包当前的解析状态。
  *
@@ -116,6 +123,46 @@ typedef struct {
      * 任何协议字段访问都只能以该长度作为边界。
      */
     uint32_t captured_length;
+
+    /**
+     * true表示Ethernet头部已经成功解析。
+     *
+     * false时不能使用下面的MAC地址、EtherType和网络层范围。
+     */
+    bool has_ethernet;
+
+    /**
+     * Ethernet帧中的目标MAC地址。
+     *
+     * 数组按照网络中出现的字节顺序保存，不需要进行大小端转换。
+     */
+    uint8_t destination_mac[PACKET_MAC_ADDRESS_LENGTH];
+
+    /**
+     * Ethernet帧中的源MAC地址。
+     */
+    uint8_t source_mac[PACKET_MAC_ADDRESS_LENGTH];
+
+    /**
+     * Ethernet II头部中的EtherType。
+     *
+     * 该字段已经从网络大端序转换成主机可以直接比较的uint16_t。
+     */
+    uint16_t ether_type;
+
+    /**
+     * 网络层负载相对于整个数据包起始位置的偏移。
+     *
+     * 普通Ethernet II头部解析成功后，该值为14。
+     */
+    size_t network_payload_offset;
+
+    /**
+     * 当前实际捕获到的网络层负载长度。
+     *
+     * 该值基于captured_length计算，不能根据wire_length计算。
+     */
+    size_t network_payload_length;
 
     /**
      * 数据包在线路上的原始长度，也就是wirelen。

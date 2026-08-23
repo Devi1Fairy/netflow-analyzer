@@ -71,6 +71,7 @@ add_library(
     src/common/byte_reader.c
     src/capture/capture.c
     src/protocol/packet_info.c
+    src/protocol/ethernet.c
 )
 
 # PUBLIC表示使用analyzer_core的目标自动继承公开头文件目录。
@@ -237,6 +238,34 @@ if(BUILD_TESTING)
     # 防止测试发生异常死循环时永久阻塞测试流程。
     set_tests_properties(
         packet_info_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+    # 创建Ethernet II解析器单元测试程序。
+    add_executable(
+        ethernet_tests
+        tests/unit/test_ethernet.c
+    )
+
+    # Ethernet解析器、packet_info和byte_cursor都由核心库提供。
+    target_link_libraries(
+        ethernet_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    # 使用与正式代码相同的严格编译警告。
+    enable_project_warnings(ethernet_tests)
+
+    # 把Ethernet测试注册到CTest。
+    add_test(
+        NAME ethernet_tests
+        COMMAND ethernet_tests
+    )
+
+    set_tests_properties(
+        ethernet_tests
         PROPERTIES
             TIMEOUT 5
     )
