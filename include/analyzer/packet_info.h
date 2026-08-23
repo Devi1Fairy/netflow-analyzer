@@ -165,6 +165,117 @@ typedef struct {
     size_t network_payload_length;
 
     /**
+     * true表示IPv4头部已经成功解析。
+     *
+     * false时不能使用下面的IPv4字段。
+     */
+    bool has_ipv4;
+
+    /**
+     * IPv4头部的实际字节数。
+     *
+     * IPv4使用IHL字段记录头部包含多少个32位字，
+     * 因此合法长度范围是20～60字节。
+     *
+     * uint8_t已经足够保存这个范围。
+     */
+    uint8_t ipv4_header_length;
+
+    /**
+     * IPv4头部声明的数据报总长度。
+     *
+     * 包含IPv4头部和IPv4负载，不包含Ethernet头部。
+     */
+    uint16_t ipv4_total_length;
+
+    /**
+     * IPv4标识字段。
+     *
+     * 分片属于同一个原始数据报时，通常具有相同的标识值。
+     */
+    uint16_t ipv4_identification;
+
+    /**
+     * IPv4 DF标志。
+     *
+     * true表示Don't Fragment，即不允许路由器对数据报分片。
+     */
+    bool ipv4_dont_fragment;
+
+    /**
+     * IPv4 MF标志。
+     *
+     * true表示More Fragments，后面仍然存在其他分片。
+     */
+    bool ipv4_more_fragments;
+
+    /**
+     * IPv4分片偏移。
+     *
+     * 该数值的单位是8字节，不是普通的字节偏移。
+     */
+    uint16_t ipv4_fragment_offset;
+
+    /**
+     * IPv4生存时间TTL。
+     *
+     * 数据包每经过一个路由器，TTL通常减1。
+     */
+    uint8_t ipv4_ttl;
+
+    /**
+     * IPv4上层协议号。
+     *
+     * 常见值：
+     *
+     * 1  表示ICMP；
+     * 6  表示TCP；
+     * 17 表示UDP。
+     */
+    uint8_t ipv4_protocol;
+
+    /**
+     * IPv4头部校验和。
+     *
+     * 当前阶段只读取并保存，不执行校验。
+     */
+    uint16_t ipv4_header_checksum;
+
+    /**
+     * IPv4源地址的32位数值形式。
+     *
+     * 例如192.168.1.10保存为0xC0A8010A。
+     * 使用整数便于比较、哈希和建立五元组流表。
+     */
+    uint32_t source_ipv4;
+
+    /**
+     * IPv4目标地址的32位数值形式。
+     */
+    uint32_t destination_ipv4;
+
+    /**
+     * IPv4负载相对于整个Ethernet帧起始位置的偏移。
+     */
+    size_t ipv4_payload_offset;
+
+    /**
+     * 当前捕获缓冲区内实际可以访问的IPv4负载长度。
+     *
+     * 该长度同时受captured_length和ipv4_total_length约束，
+     * 不会把Ethernet填充字节误认为IPv4负载。
+     */
+    size_t ipv4_payload_length;
+
+    /**
+     * true表示IPv4头部完整，但IPv4数据报负载没有完整捕获。
+     *
+     * 这种情况下IPv4头部解析仍然可以成功；后续解析器再判断
+     * TCP、UDP或ICMP头部是否拥有足够字节。
+     */
+    bool ipv4_payload_truncated;
+
+    /**
      * 数据包在线路上的原始长度，也就是wirelen。
      *
      * 该长度可以用于流量统计，但不能作为内存访问边界。

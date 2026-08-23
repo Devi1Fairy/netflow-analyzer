@@ -72,6 +72,7 @@ add_library(
     src/capture/capture.c
     src/protocol/packet_info.c
     src/protocol/ethernet.c
+    src/protocol/ipv4.c
 )
 
 # PUBLIC表示使用analyzer_core的目标自动继承公开头文件目录。
@@ -266,6 +267,35 @@ if(BUILD_TESTING)
 
     set_tests_properties(
         ethernet_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+        # 创建IPv4解析器单元测试程序。
+    add_executable(
+        ipv4_tests
+        tests/unit/test_ipv4.c
+    )
+
+    # IPv4解析器及其依赖都由analyzer_core提供。
+    target_link_libraries(
+        ipv4_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    # 测试代码使用和正式代码相同的严格警告。
+    enable_project_warnings(ipv4_tests)
+
+    # 将IPv4测试注册到CTest自动化测试集合。
+    add_test(
+        NAME ipv4_tests
+        COMMAND ipv4_tests
+    )
+
+    # 防止意外死循环永久阻塞测试流程。
+    set_tests_properties(
+        ipv4_tests
         PROPERTIES
             TIMEOUT 5
     )
