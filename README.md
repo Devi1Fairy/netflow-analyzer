@@ -1,259 +1,256 @@
 # Netflow Analyzer
 
-基于 Linux C11 的网络流量分析与异常检测学习项目。
-
-项目将从离线 PCAP 文件读取开始，逐步实现 Ethernet、IPv4、TCP、UDP、ICMP 协议解析、五元组流量聚合、应用层协议识别和基础异常检测，并在核心功能稳定后扩展到实时抓包、多线程流水线、机器学习分析和 ARM Linux 部署。
+基于Linux C11的网络流量分析与异常检测学习项目。项目面向嵌入式Linux应用开发和网络协议分析岗位，逐步实现数据包采集、协议解析、双向流量聚合、异常检测、可视化与ARM Linux部署。
 
 ## 当前版本
 
-当前版本：`v0.0.1` 开发阶段。
+当前源码版本：`v0.1.0`。
 
-目前已经建立可构建、可运行和可测试的主项目骨架，包括：
-
-- 使用 CMake 组织多文件 C11 工程；
-- 将核心应用逻辑构建为静态库；
-- 提供命令行帮助和版本输出；
-- 建立应用上下文的初始化、运行、停止和清理流程；
-- 使用 CTest 运行 C 语言冒烟测试；
-- 启用 `-Wall`、`-Wextra` 和 `-Wpedantic` 编译警告；
-- 导出 `compile_commands.json`，供 VS Code 和静态分析工具使用。
-
-当前版本还没有读取或解析真实网络数据包。协议解析功能会在后续阶段逐步加入。
-
-## 项目目标
-
-项目计划形成以下处理链路：
+`v0.0.1`只建立了可构建、可运行、可测试的工程骨架；`v0.1.0`已经形成第一条可用的离线分析链路：
 
 ```text
-PCAP 文件 / 实时网卡
-          │
-          ▼
-      libpcap 采集
-          │
-          ▼
-Ethernet / IPv4 / TCP / UDP / ICMP
-          │
-          ▼
-     五元组双向流表
-          │
-          ├──────────────┐
-          ▼              ▼
-    应用协议解析       规则异常检测
-          │              │
-          └──────┬───────┘
-                 ▼
-        CSV / JSON / 日志 / 告警
+离线PCAP
+   │
+   ▼
+libpcap读取
+   │
+   ▼
+Ethernet II → IPv4 → TCP / UDP / ICMP
+   │
+   ▼
+规范化双向五元组
+   │
+   ▼
+流表聚合 → 逐包预览 + 流汇总
 ```
 
-核心程序首先使用 C11 完成。Python 主要用于自动化测试、数据分析和后期机器学习；图形化显示计划在核心分析链路稳定后使用 C++/Qt 实现。
+因此，`v0.1.0`可以视为一个完整版本迭代，但不是整个项目完成。它具备明确输入、完整处理链、可观察输出和自动化验收；实时抓包、流过期、应用层协议、异常检测、可视化和开发板部署仍属于后续版本。
 
-## 当前目录结构
+## v0.1.0已经实现
+
+- 使用libpcap读取离线Ethernet PCAP文件；
+- 使用带边界检查的字节游标读取二进制网络数据；
+- 统一记录时间戳、`caplen`、`wirelen`、原始数据视图和解析状态；
+- 解析Ethernet II、IPv4、TCP、UDP和ICMP头部；
+- 识别不支持、格式错误、捕获截断和IPv4分片等状态；
+- 按IPv4协议号把负载分发到TCP、UDP或ICMP解析器；
+- 使用规范化双向五元组把正向和反向数据包归入同一条流；
+- 分方向统计包数、字节数、首包时间和末包时间；
+- 使用调用者提供存储的定长流表完成离线聚合；
+- 分析PCAP中的全部数据包，同时只预览前5个包，避免大量输出淹没终端；
+- 提供13个C语言单元测试和1个Python端到端验收测试；
+- 通过CMake组织构建、严格编译警告、CTest和`compile_commands.json`。
+
+## 当前版本边界
+
+当前版本有意保持实现简单，便于先验证数据模型和处理链：
+
+- 只读取离线PCAP，还不能直接监听网卡；
+- 只支持Ethernet链路类型和IPv4，不支持VLAN、IPv6与隧道封装；
+- 不做IPv4分片重组、TCP流重组和校验和验证；
+- 流表容量固定为256条，并使用线性查找；
+- 流记录尚无超时淘汰机制；
+- 尚未解析DNS、HTTP等应用层协议；
+- 尚未实现规则异常检测、机器学习、Qt界面或云端展示；
+- ARM Linux开发板部署等待硬件到达后验证，不作为`v0.1.0`的发布阻塞项。
+
+## 项目目录
 
 ```text
 netflow-analyzer/
-├── CMakeLists.txt               # 根项目构建配置
-├── README.md                    # 项目介绍与使用说明
+├── CMakeLists.txt
+├── README.md
+├── CHANGELOG.md
 ├── include/analyzer/
-│   └── app.h                    # 应用层公开接口
+│   ├── app.h
+│   ├── byte_reader.h
+│   ├── capture.h
+│   ├── packet_info.h
+│   ├── ethernet.h
+│   ├── ipv4.h
+│   ├── tcp.h
+│   ├── udp.h
+│   ├── icmp.h
+│   ├── ipv4_dispatch.h
+│   ├── flow_key.h
+│   ├── flow_record.h
+│   └── flow_table.h
 ├── src/
-│   ├── main.c                   # 程序入口和退出状态转换
-│   └── app/
-│       └── app.c                # 应用生命周期和顶层调度
-├── tests/unit/
-│   └── test_smoke.c             # 阶段0冒烟测试
-├── labs/                        # 正式项目开始前的热身实验
-│   ├── blocking_queue/          # 有界阻塞队列
-│   ├── tcp_framing/             # TCP消息分帧
-│   └── thread_pipeline/         # 多线程流水线
-└── docs/
-    └── problem_log.md           # 正式项目实际问题记录
+│   ├── main.c
+│   ├── app/app.c
+│   ├── common/byte_reader.c
+│   ├── capture/capture.c
+│   ├── protocol/
+│   │   ├── packet_info.c
+│   │   ├── ethernet.c
+│   │   ├── ipv4.c
+│   │   ├── tcp.c
+│   │   ├── udp.c
+│   │   ├── icmp.c
+│   │   └── ipv4_dispatch.c
+│   └── flow/
+│       ├── flow_key.c
+│       ├── flow_record.c
+│       └── flow_table.c
+├── tests/
+│   ├── unit/
+│   └── integration/test_offline_flow.py
+├── scripts/check_target_env.sh
+├── docs/problem_log.md
+└── labs/
 ```
 
-`build/` 和 `build-release/` 是 CMake 生成的构建目录，不属于源代码，不应提交到 Git。
+`build/`和`build-release/`是CMake生成的构建目录，不属于源代码，不应提交到Git。
 
 ## 环境要求
 
-当前阶段需要：
+正式程序需要：
 
 - Linux；
-- 支持 C11 的 GCC 或 Clang；
-- CMake 3.16 或更高版本；
-- Make 或 Ninja 等 CMake 后端构建工具。
+- 支持C11的GCC或Clang；
+- CMake 3.16或更高版本；
+- Make或Ninja；
+- pkg-config；
+- libpcap开发包。
 
-在 Ubuntu 中可以安装基础构建工具：
+启用测试时还需要Python 3。Python只负责端到端验收，不是正式程序的运行依赖。
+
+Ubuntu安装命令：
 
 ```bash
-# 刷新软件包索引，使 apt 获得当前可用的软件版本信息。
+# 更新本机的软件包索引。
 sudo apt update
 
-# 安装 GCC、标准构建工具、CMake 和 Ninja。
-sudo apt install build-essential cmake ninja-build
+# 安装C/CMake构建环境、Ninja、libpcap开发包和测试解释器。
+sudo apt install build-essential cmake ninja-build pkg-config libpcap-dev python3
 ```
 
-后续进入 PCAP 读取阶段时还会使用 `libpcap-dev`，当前阶段暂不依赖它。
-
-## Debug 构建
+## Debug构建
 
 在项目根目录执行：
 
 ```bash
-# -S . 表示源码目录是当前目录。
-# -B build 表示把所有生成文件放入 build，避免污染源码目录。
-# Debug 会保留调试信息，适合日常开发和断点调试。
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+# -S .指定当前目录为源码目录。
+# -B build把生成文件放入build目录。
+# Debug保留调试信息，适合日常开发、GDB和单元测试。
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 
-# 根据 build 中已经生成的构建规则编译所有目标。
+# 根据build中生成的规则编译全部目标。
 cmake --build build
 ```
 
 主要构建产物：
 
 ```text
-build/bin/netflow-analyzer       命令行主程序
-build/bin/analyzer_smoke_tests   冒烟测试程序
-build/lib/libanalyzer_core.a     核心静态库
+build/bin/netflow-analyzer    命令行主程序
+build/bin/*_tests             C语言单元测试程序
+build/lib/libanalyzer_core.a  核心静态库
 ```
 
-## Release 构建
+如果`build`已经使用其他CMake生成器配置，不要直接切换`-G Ninja`。可以继续使用原生成器，或新建另一个构建目录。
 
-Debug 和 Release 使用不同目录，避免两种配置的目标文件相互覆盖：
+## Release构建
 
 ```bash
-# Release 构建通常启用编译优化，适合发布和性能测试。
-cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+# Release启用编译优化。
+# BUILD_TESTING=OFF表示发布构建不生成测试目标，也不要求Python。
+cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
 
-# 编译 Release 目标。
+# 编译发布程序。
 cmake --build build-release
 ```
 
-Release 主程序位于：
+Release主程序位于`build-release/bin/netflow-analyzer`。
 
-```text
-build-release/bin/netflow-analyzer
-```
-
-## 运行程序
-
-无参数运行时显示帮助：
+## 命令行使用
 
 ```bash
-./build/bin/netflow-analyzer
-```
-
-显式显示帮助：
-
-```bash
+# 显示帮助和所有可用参数。
 ./build/bin/netflow-analyzer --help
-```
 
-显示版本：
-
-```bash
+# 显示由CMake项目版本传入的程序版本。
 ./build/bin/netflow-analyzer --version
+
+# 读取并分析一个离线PCAP文件。
+./build/bin/netflow-analyzer --read /path/to/input.pcap
 ```
 
-传入未知参数时，程序会向标准错误输出提示，并返回非零退出状态：
-
-```bash
-./build/bin/netflow-analyzer --unknown
-```
-
-当前支持的参数：
+当前参数：
 
 | 参数 | 作用 |
 |---|---|
-| `-h`、`--help` | 显示帮助信息 |
-| `-V`、`--version` | 显示程序版本 |
+| `-h`、`--help` | 显示帮助 |
+| `-V`、`--version` | 显示版本 |
+| `-r FILE`、`--read FILE` | 分析离线PCAP文件 |
 
-## 运行测试
+离线分析会先显示文件与链路类型，再预览前5个数据包。程序仍会处理文件中的所有数据包，最后输出总包数、预览包数和双向流汇总。
 
-先完成构建，再执行：
+## 自动化测试
 
 ```bash
-# --test-dir 指定包含 CTest 配置的构建目录。
-# --output-on-failure 让失败测试显示详细输出，便于定位问题。
+# 先编译，确保测试程序和主程序都是最新版本。
+cmake --build build
+
+# 执行CMake已经注册的全部测试。
+# --output-on-failure只在失败时展开测试输出，便于定位问题。
 ctest --test-dir build --output-on-failure
 ```
 
-也可以验证 Release 构建：
+当前共14项测试：
+
+- 13项C语言单元测试，分别验证字节读取、抓包封装、数据模型、各层协议解析、分发、流键、流记录和流表；
+- 1项Python端到端测试，生成确定性的6包PCAP，启动真实命令行程序并验证完整分析、5包预览和双向流统计。
+
+只运行端到端验收：
 
 ```bash
-ctest --test-dir build-release --output-on-failure
+# -R按测试名称筛选，只运行离线流聚合验收。
+ctest --test-dir build -R offline_flow_acceptance --output-on-failure
 ```
-
-当前冒烟测试覆盖：
-
-- 应用上下文初始化、停止和清理；
-- 无参数时选择帮助命令；
-- 版本参数解析和版本号；
-- 未知参数拒绝。
 
 ## 模块职责
 
-当前调用关系：
+| 模块 | 当前职责 |
+|---|---|
+| `main.c` | 调用应用接口，并把错误码转换为进程退出状态 |
+| `app.c` | 解析CLI参数，组织PCAP读取、协议解析、流表更新和输出 |
+| `byte_reader` | 对无符号字节执行边界检查、跳过、读取和切片 |
+| `capture` | 隔离libpcap类型和错误信息，对上层提供稳定接口 |
+| `packet_info` | 保存一个数据包的元数据、原始视图和解析结果 |
+| `ethernet` | 解析MAC地址、EtherType和Ethernet负载 |
+| `ipv4` | 解析IPv4头部、地址、长度、协议号和负载 |
+| `tcp`、`udp`、`icmp` | 解析对应传输层或控制协议字段 |
+| `ipv4_dispatch` | 根据IPv4协议号选择具体解析器 |
+| `flow_key` | 生成与方向无关的规范化双向五元组 |
+| `flow_record` | 保存一条流及两个方向的统计信息 |
+| `flow_table` | 查找或创建流记录，并把数据包聚合到对应方向 |
 
-```text
-main.c
-  └── app.c
-        ├── 初始化应用上下文
-        ├── 解析命令行参数
-        ├── 调度当前命令
-        ├── 接收停止请求
-        └── 清理应用资源
+## ARM Linux部署准备
+
+开发板到达前不需要提前宣称“部署完成”。仓库中的环境检查脚本只做准备性检查，不安装软件，也不修改系统：
+
+```bash
+# 在开发电脑上检查通用构建依赖；非ARM只会给出提示。
+sh scripts/check_target_env.sh
+
+# 开发板到达后，要求目标必须是ARM，并检查完整测试环境。
+sh scripts/check_target_env.sh --expect-arm --with-tests
 ```
 
-`main.c` 只负责程序入口、顶层调用顺序和退出状态转换。`app.c` 负责组织整个应用的生命周期，但不会承载所有具体功能。
+首次上板计划采用目标机原生编译：先确认依赖，再完成Release构建、离线PCAP分析和结果对比。原生流程稳定后，再评估交叉编译工具链。
 
-后续协议解析、采集、流表、检测和输出会分别放入独立模块，`app.c` 只负责按照正确顺序调用它们。
+## 后续迭代
 
-## 开发路线
+建议按以下顺序推进：
 
-主要阶段如下：
+1. 为流记录增加空闲超时和淘汰策略；
+2. 将定长线性流表演进为可扩展哈希流表；
+3. 增加CSV或JSON结构化输出，方便Qt、Python和云端复用；
+4. 接入实时抓包、BPF过滤、信号退出和运行统计；
+5. 把实验中的阻塞队列和线程流水线接入正式分析链；
+6. 增加TCP状态跟踪、流重组与DNS、HTTP等应用层解析；
+7. 实现规则异常检测，再准备机器学习特征与模型；
+8. 开发板到达后完成ARM Linux原生构建与运行验收；
+9. 在稳定的数据接口之上实现Qt上位机，并按需要扩展云端展示。
 
-1. 建立最小工程骨架；
-2. 实现安全字节读取工具；
-3. 使用 libpcap 离线读取 PCAP；
-4. 建立统一数据包结果对象；
-5. 解析 Ethernet 和 IPv4；
-6. 解析 TCP、UDP 和 ICMP；
-7. 完成第一次 ARM Linux 开发板部署：交叉编译当前程序，在目标板上读取同一份离线 PCAP，并与开发机结果对照；
-8. 实现五元组双向流表；
-9. 输出 CSV/JSON 和运行统计；
-10. 解析 DNS、MQTT 或 Modbus TCP；
-11. 实现端口扫描和高频连接等基础异常规则；
-12. 增加实时抓包，并在目标板网卡上验证抓包权限和链路类型；
-13. 接入多线程处理流水线；
-14. 完成目标板部署验收：处理依赖库、配置、日志、退出信号、长期运行和资源占用问题；
-15. 完善自动化测试、交叉编译检查和质量检查；
-16. 根据时间继续扩展机器学习分析和 Qt 图形化显示。
-
-### 嵌入式Linux落地目标
-
-开发板部署不是项目完成后的附加演示，而是项目主线中的工程验证。计划分为两个阶段：
-
-第一次上板安排在基础协议解析完成之后，目标是尽早打通：
-
-- 使用 CMake toolchain 文件选择 ARM 交叉编译器；
-- 正确配置 sysroot、目标架构头文件和目标版本的 libpcap；
-- 使用 `file`检查可执行程序的目标架构；
-- 将程序和测试 PCAP 传到开发板；
-- 在开发板上运行离线解析，并与 x86 开发机的输出进行对照。
-
-第二次上板安排在实时抓包和多线程流水线完成之后，目标是验证完整应用：
-
-- 从开发板的真实网卡抓包，并处理抓包权限；
-- 验证动态库、配置文件、日志目录和启动参数；
-- 验证 SIGINT/SIGTERM 停止流程和资源清理；
-- 测量 CPU、内存、丢包数量和持续运行稳定性；
-- 根据部署环境决定是否增加 systemd 服务文件或启动脚本。
-
-Qt 界面和较重的机器学习推理不要求必须运行在资源有限的开发板上。可以让开发板负责采集、解析和初步检测，再把结果发送给上位机显示和分析；是否全部部署到板端，要根据开发板算力和实际岗位方向决定。
-
-## 开发原则
-
-- 先检查数据长度，再读取任何协议字段；
-- 先完成离线、单线程的正确版本，再加入实时抓包和多线程；
-- 每个动态资源都必须有明确的所有者和释放位置；
-- 每个功能至少包含正常输入和边界输入测试；
-- 提交前保持零新增编译警告，并运行相关自动化测试；
-- 实际遇到的问题和解决过程记录在 `docs/` 或对应实验目录中。
+版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)。
