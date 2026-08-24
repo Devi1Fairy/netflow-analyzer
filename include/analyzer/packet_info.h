@@ -275,6 +275,92 @@ typedef struct {
      */
     bool ipv4_payload_truncated;
 
+        /**
+     * true表示TCP头部已经成功解析。
+     *
+     * false时不能使用后面的TCP字段。
+     */
+    bool has_tcp;
+
+    /**
+     * TCP源端口。
+     *
+     * 端口是16位无符号整数，合法范围为0～65535。
+     * 后续将与源IP、目标IP、目标端口和协议号共同组成五元组。
+     */
+    uint16_t tcp_source_port;
+
+    /**
+     * TCP目标端口。
+     */
+    uint16_t tcp_destination_port;
+
+    /**
+     * TCP序列号。
+     *
+     * 序列号描述当前TCP报文携带数据在字节流中的位置，
+     * 是后续实现乱序处理和TCP流重组的关键字段。
+     */
+    uint32_t tcp_sequence_number;
+
+    /**
+     * TCP确认号。
+     *
+     * ACK标志有效时，该字段通常表示接收方期望收到的下一个序列号。
+     */
+    uint32_t tcp_acknowledgment_number;
+
+    /**
+     * TCP头部实际长度，单位为字节。
+     *
+     * TCP头部长度由Data Offset字段给出，合法范围为20～60字节。
+     */
+    uint8_t tcp_header_length;
+
+    /**
+     * TCP控制标志的位集合。
+     *
+     * 使用uint16_t是因为现代TCP共有9个控制标志，
+     * 8位uint8_t无法同时保存NS、CWR、ECE等全部标志。
+     */
+    uint16_t tcp_flags;
+
+    /**
+     * TCP接收窗口大小。
+     *
+     * 该字段用于TCP流量控制。窗口扩大选项将在后续TCP选项解析中处理。
+     */
+    uint16_t tcp_window_size;
+
+    /**
+     * TCP校验和。
+     *
+     * 当前阶段只读取并保存，不执行校验。
+     */
+    uint16_t tcp_checksum;
+
+    /**
+     * TCP紧急指针。
+     *
+     * 只有URG控制标志有效时，该字段才具有协议意义。
+     */
+    uint16_t tcp_urgent_pointer;
+
+    /**
+     * TCP负载相对于完整Ethernet帧起始位置的偏移。
+     */
+    size_t tcp_payload_offset;
+
+    /**
+     * 当前捕获缓冲区中实际可以访问的TCP负载长度。
+     */
+    size_t tcp_payload_length;
+
+    /**
+     * true表示TCP头部完整，但TCP负载没有被完整捕获。
+     */
+    bool tcp_payload_truncated;
+
     /**
      * 数据包在线路上的原始长度，也就是wirelen。
      *

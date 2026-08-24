@@ -73,6 +73,7 @@ add_library(
     src/protocol/packet_info.c
     src/protocol/ethernet.c
     src/protocol/ipv4.c
+    src/protocol/tcp.c
 )
 
 # PUBLIC表示使用analyzer_core的目标自动继承公开头文件目录。
@@ -296,6 +297,35 @@ if(BUILD_TESTING)
     # 防止意外死循环永久阻塞测试流程。
     set_tests_properties(
         ipv4_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+    # 创建TCP解析器单元测试程序。
+    add_executable(
+        tcp_tests
+        tests/unit/test_tcp.c
+    )
+
+    # TCP解析器及其Ethernet、IPv4等依赖由核心库提供。
+    target_link_libraries(
+        tcp_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    # 使用与正式代码相同的严格编译警告。
+    enable_project_warnings(tcp_tests)
+
+    # 把TCP测试注册到CTest自动化测试集合。
+    add_test(
+        NAME tcp_tests
+        COMMAND tcp_tests
+    )
+
+    # 防止测试意外死循环。
+    set_tests_properties(
+        tcp_tests
         PROPERTIES
             TIMEOUT 5
     )
