@@ -3,6 +3,8 @@
 #include "analyzer/ethernet.h"
 #include "analyzer/packet_info.h"
 #include "analyzer/ipv4.h"
+#include "analyzer/icmp.h"
+#include "analyzer/ipv4_dispatch.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -50,6 +52,39 @@ static int app_print_help(const char *program_name)
     }
 
     return 0;
+}
+
+/**
+ * @brief 把常见ICMP类型转换成适合命令行显示的名称。
+ *
+ * @param type ICMP消息类型。
+ *
+ * @return 指向静态字符串的只读指针。
+ */
+static const char *app_icmp_type_name(uint8_t type)
+{
+    switch (type) {
+    case ICMP_TYPE_ECHO_REPLY:
+        return "echo-reply";
+
+    case ICMP_TYPE_DESTINATION_UNREACHABLE:
+        return "destination-unreachable";
+
+    case ICMP_TYPE_REDIRECT:
+        return "redirect";
+
+    case ICMP_TYPE_ECHO_REQUEST:
+        return "echo-request";
+
+    case ICMP_TYPE_TIME_EXCEEDED:
+        return "time-exceeded";
+
+    case ICMP_TYPE_PARAMETER_PROBLEM:
+        return "parameter-problem";
+
+    default:
+        return "unknown";
+    }
 }
 
 /**
@@ -281,9 +316,36 @@ static int app_print_packet_preview(
     }
 
     /*
-     * protocol只打印数值，暂时不转换成TCP、UDP或ICMP文本。
+     * IPv4解析完成后，根据protocol字段分发TCP、UDP或ICMP。
+     */
+    error_code = ipv4_dispatch_payload(
+        packet->data,
+        (size_t)packet->captured_length,
+        &packet_info
+    );
+
+    /*
+     * 下面三类错误可以由单个异常或暂不支持的数据包造成。
      *
-     * 下一阶段实现传输层分发后，再根据协议号调用对应解析器。
+     * 它们应当显示在当前数据包结果中，但不终止整个PCAP读取：
+     *
+     * ENODATA：必要上层头部未完整捕获；
+     * EBADMSG：上层协议字段组合不合法；
+     * ENOTSUP：协议或IPv4分片暂不支持。
+     *
+     * EINVAL等错误更可能来自程序调用顺序错误，因此仍返回上层。
+     */
+    if (error_code != 0 &&
+        error_code != ENODATA &&
+        error_code != EBADMSG &&
+        error_code != ENOTSUP) {
+        return error_code;
+    }
+
+    /*
+     * 先输出所有IPv4数据包共有的信息。
+     *
+     * 这里暂时不换行，后面的协议分支会补充协议字段并结束当前行。
      */
     if (printf(
             "Packet %zu: "
@@ -296,9 +358,8 @@ static int app_print_packet_preview(
             "src_ip=%s "
             "dst_ip=%s "
             "ttl=%u "
-            "protocol=%u "
             "ip_length=%" PRIu16 " "
-            "ip_payload_truncated=%s\n",
+            "ip_payload_truncated=%s ",
             packet_number,
             packet_info.timestamp_seconds,
             packet_info.timestamp_microseconds,
@@ -310,18 +371,137 @@ static int app_print_packet_preview(
             source_ipv4,
             destination_ipv4,
             (unsigned int)packet_info.ipv4_ttl,
-            (unsigned int)packet_info.ipv4_protocol,
             packet_info.ipv4_total_length,
-            packet_info.ipv4_payload_truncated
-                ? "true"
-                : "false") < 0) {
+            packet_info.ipv4_payload_truncated ? "true" : "false") < 0) {
         return EIO;
     }
 
     /*
-     * 目前尚未解析TCP、UDP或ICMP，因此不把整个数据包标记为完成。
+     * 协议分发失败时，输出错误状态并继续读取下一包。
      */
-    return 0;
+    if (error_code != 0) {
+        const char *upper_state;
+
+        if (error_code == ENODATA) {
+            upper_state = "truncated";
+        } else if (error_code == EBADMSG) {
+            upper_state = "malformed";
+        } else {
+            upper_state = "unsupported";
+        }
+
+        if (printf(
+                "protocol_number=%u "
+                "upper=%s "
+                "error_offset=%zu\n",
+                (unsigned int)packet_info.ipv4_protocol,
+                upper_state,
+                packet_info.error_offset) < 0) {
+            return EIO;
+        }
+
+        return 0;
+    }
+
+    /*
+     * 分发器成功后，恰好有一种上层协议结果有效。
+     */
+    if (packet_info.has_tcp) {
+        if (printf(
+                "protocol=TCP "
+                "src_port=%" PRIu16 " "
+                "dst_port=%" PRIu16 " "
+                "sequence=%" PRIu32 " "
+                "acknowledgment=%" PRIu32 " "
+                "flags=0x%03" PRIx16 " "
+                "payload_length=%zu "
+                "payload_truncated=%s\n",
+                packet_info.tcp_source_port,
+                packet_info.tcp_destination_port,
+                packet_info.tcp_sequence_number,
+                packet_info.tcp_acknowledgment_number,
+                packet_info.tcp_flags,
+                packet_info.tcp_payload_length,
+                packet_info.tcp_payload_truncated
+                    ? "true"
+                    : "false") < 0) {
+            return EIO;
+        }
+
+        return 0;
+    }
+
+    if (packet_info.has_udp) {
+        if (printf(
+                "protocol=UDP "
+                "src_port=%" PRIu16 " "
+                "dst_port=%" PRIu16 " "
+                "udp_length=%" PRIu16 " "
+                "payload_length=%zu "
+                "payload_truncated=%s\n",
+                packet_info.udp_source_port,
+                packet_info.udp_destination_port,
+                packet_info.udp_length,
+                packet_info.udp_payload_length,
+                packet_info.udp_payload_truncated
+                    ? "true"
+                    : "false") < 0) {
+            return EIO;
+        }
+
+        return 0;
+    }
+
+    if (packet_info.has_icmp) {
+        if (packet_info.icmp_has_echo_fields) {
+            if (printf(
+                    "protocol=ICMP "
+                    "type=%s "
+                    "code=%u "
+                    "identifier=%" PRIu16 " "
+                    "sequence=%" PRIu16 " "
+                    "payload_length=%zu "
+                    "payload_truncated=%s\n",
+                    app_icmp_type_name(
+                        packet_info.icmp_type
+                    ),
+                    (unsigned int)packet_info.icmp_code,
+                    packet_info.icmp_identifier,
+                    packet_info.icmp_sequence,
+                    packet_info.icmp_payload_length,
+                    packet_info.icmp_payload_truncated
+                        ? "true"
+                        : "false") < 0) {
+                return EIO;
+            }
+        } else {
+            if (printf(
+                    "protocol=ICMP "
+                    "type=%s "
+                    "type_number=%u "
+                    "code=%u "
+                    "payload_length=%zu "
+                    "payload_truncated=%s\n",
+                    app_icmp_type_name(
+                        packet_info.icmp_type
+                    ),
+                    (unsigned int)packet_info.icmp_type,
+                    (unsigned int)packet_info.icmp_code,
+                    packet_info.icmp_payload_length,
+                    packet_info.icmp_payload_truncated
+                        ? "true"
+                        : "false") < 0) {
+                return EIO;
+            }
+        }
+
+        return 0;
+    }
+
+    /*
+     * 分发器返回成功却没有任何协议结果，说明程序内部状态不一致。
+     */
+    return EIO;
 }
 
 /**

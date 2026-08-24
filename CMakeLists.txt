@@ -76,6 +76,7 @@ add_library(
     src/protocol/tcp.c
     src/protocol/udp.c
     src/protocol/icmp.c
+    src/protocol/ipv4_dispatch.c
 )
 
 # PUBLIC表示使用analyzer_core的目标自动继承公开头文件目录。
@@ -384,6 +385,34 @@ if(BUILD_TESTING)
 
     set_tests_properties(
         icmp_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+    # 创建IPv4上层协议分发器单元测试程序。
+    add_executable(
+        ipv4_dispatch_tests
+        tests/unit/test_ipv4_dispatch.c
+    )
+
+    # 分发器和各协议解析器由核心静态库提供。
+    target_link_libraries(
+        ipv4_dispatch_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    # 启用与正式代码相同的严格编译警告。
+    enable_project_warnings(ipv4_dispatch_tests)
+
+    # 注册到CTest自动化测试集合。
+    add_test(
+        NAME ipv4_dispatch_tests
+        COMMAND ipv4_dispatch_tests
+    )
+
+    set_tests_properties(
+        ipv4_dispatch_tests
         PROPERTIES
             TIMEOUT 5
     )
