@@ -78,6 +78,7 @@ add_library(
     src/protocol/icmp.c
     src/protocol/ipv4_dispatch.c
     src/flow/flow_key.c
+    src/flow/flow_record.c
 )
 
 # PUBLIC表示使用analyzer_core的目标自动继承公开头文件目录。
@@ -219,7 +220,7 @@ if(BUILD_TESTING)
             TIMEOUT 5
     )
 
-        # 创建统一数据包结果对象的单元测试程序。
+    # 创建统一数据包结果对象的单元测试程序。
     add_executable(
         packet_info_tests
         tests/unit/test_packet_info.c
@@ -276,7 +277,7 @@ if(BUILD_TESTING)
             TIMEOUT 5
     )
 
-        # 创建IPv4解析器单元测试程序。
+    # 创建IPv4解析器单元测试程序。
     add_executable(
         ipv4_tests
         tests/unit/test_ipv4.c
@@ -334,7 +335,7 @@ if(BUILD_TESTING)
             TIMEOUT 5
     )
 
-        # 创建UDP解析器单元测试程序。
+    # 创建UDP解析器单元测试程序。
     add_executable(
         udp_tests
         tests/unit/test_udp.c
@@ -362,7 +363,7 @@ if(BUILD_TESTING)
             TIMEOUT 5
     )
 
-        # 创建ICMP解析器单元测试程序。
+    # 创建ICMP解析器单元测试程序。
     add_executable(
         icmp_tests
         tests/unit/test_icmp.c
@@ -442,6 +443,34 @@ if(BUILD_TESTING)
 
     set_tests_properties(
         flow_key_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+    # 创建单条流记录单元测试程序。
+    add_executable(
+        flow_record_tests
+        tests/unit/test_flow_record.c
+    )
+
+    # 流记录、流键和packet_info由核心静态库提供。
+    target_link_libraries(
+        flow_record_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    # 启用与正式代码相同的严格编译警告。
+    enable_project_warnings(flow_record_tests)
+
+    # 注册到CTest自动化测试集合。
+    add_test(
+        NAME flow_record_tests
+        COMMAND flow_record_tests
+    )
+
+    set_tests_properties(
+        flow_record_tests
         PROPERTIES
             TIMEOUT 5
     )
