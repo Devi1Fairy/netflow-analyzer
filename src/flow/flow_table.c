@@ -3,6 +3,30 @@
 #include <errno.h>
 
 /**
+ * @brief 判断timestamp是否早于或等于cutoff。
+ *
+ * 调用本函数前，调用者必须保证两个指针都有效，
+ * 且microseconds位于0到999999之间。
+ */
+static bool flow_timestamp_at_or_before(
+    const flow_timestamp_t *timestamp,
+    const flow_timestamp_t *cutoff)
+{
+    if (timestamp->seconds < cutoff->seconds) {
+        return true;
+    }
+
+    if (timestamp->seconds > cutoff->seconds) {
+        return false;
+    }
+
+    /*
+     * 秒数相同时，再比较当前秒内的微秒部分。
+     */
+    return timestamp->microseconds <= cutoff->microseconds;
+}
+
+/**
  * @brief 在线性数组中查找流键对应的下标。
  *
  * @return 找到时返回true并写入index；
@@ -170,6 +194,95 @@ int flow_table_process_packet(
      */
     *record = result_record;
     *created = result_created;
+
+    return 0;
+}
+
+int flow_table_expire_before(
+    flow_table_t *table,
+    const flow_timestamp_t *cutoff,
+    size_t *expired_count)
+{
+    size_t old_count;
+    size_t read_index;
+    size_t write_index;
+    size_t result_expired_count;
+
+    if (table == NULL ||
+        cutoff == NULL ||
+        expired_count == NULL ||
+        !table->initialized ||
+        table->records == NULL ||
+        table->capacity == 0U ||
+        table->count > table->capacity ||
+        cutoff->microseconds < INT32_C(0) ||
+        cutoff->microseconds > INT32_C(999999)) {
+        return EINVAL;
+    }
+
+    /*
+     * 修改数组前先验证所有有效记录。
+     *
+     * 这样即使发现内部状态异常，也不会留下只移动了一部分记录的流表。
+     */
+    for (read_index = 0U; read_index < table->count; read_index += 1U) {
+        if (!table->records[read_index].initialized ||
+            table->records[read_index].last_seen.microseconds < INT32_C(0) ||
+            table->records[read_index].last_seen.microseconds > INT32_C(999999)) {
+            return EINVAL;
+        }
+    }
+
+    old_count = table->count;
+    write_index = 0U;
+    result_expired_count = 0U;
+
+    /*
+     * read_index依次检查原有记录。
+     * write_index始终指向下一个保留记录应该写入的位置。
+     */
+    for (read_index = 0U;
+         read_index < old_count;
+         read_index += 1U) {
+        const flow_record_t *current_record = &table->records[read_index];
+
+        if (flow_timestamp_at_or_before(&current_record->last_seen, cutoff)) {
+            result_expired_count += 1U;
+            continue;
+        }
+
+        /*
+         * read_index和write_index不同时，说明前面删除过记录，
+         * 当前保留记录需要向数组前部移动。
+         */
+        if (write_index != read_index) {
+            table->records[write_index] = table->records[read_index];
+        }
+
+        write_index += 1U;
+    }
+
+    /*
+     * 清除逻辑数组末尾残留的旧内容。
+     *
+     * 正确性主要由count保证，但清零可以避免调试时把无效槽位
+     * 误认为仍然有效的流记录。
+     */
+    for (read_index = write_index;
+         read_index < old_count;
+         read_index += 1U) {
+        table->records[read_index] = (flow_record_t){0};
+    }
+
+    /*
+     * write_index正好等于最终保留下来的记录数量。
+     */
+    table->count = write_index;
+
+    /*
+     * 所有修改成功后再发布输出结果。
+     */
+    *expired_count = result_expired_count;
 
     return 0;
 }

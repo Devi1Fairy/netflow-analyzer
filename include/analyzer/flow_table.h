@@ -102,6 +102,38 @@ int flow_table_process_packet(
     bool *created);
 
 /**
+ * @brief 删除最后活动时间不晚于cutoff的流记录。
+ *
+ * 满足以下条件的记录会被删除：
+ *
+ * record->last_seen <= *cutoff
+ *
+ * 删除完成后，仍然有效的记录会被稳定地移动到数组前部，
+ * 并继续满足以下流表不变量：
+ *
+ * records[0]到records[count - 1]都是有效记录。
+ *
+ * “稳定移动”表示未过期记录之间的相对顺序不会变化。
+ *
+ * 由于函数可能移动数组元素，之前由flow_table_find、
+ * flow_table_get或flow_table_process_packet返回的记录指针，
+ * 在本函数成功后都必须视为失效，不能继续使用。
+ *
+ * 函数失败时不修改流表，也不修改expired_count。
+ *
+ * @param table 指向已经初始化的流表。
+ * @param cutoff 指向过期截止时间。
+ * @param expired_count 用于接收本次删除的流记录数量。
+ *
+ * @return 成功时返回0；
+ *         参数、时间戳或流表状态无效时返回EINVAL。
+ */
+int flow_table_expire_before(
+    flow_table_t *table,
+    const flow_timestamp_t *cutoff,
+    size_t *expired_count);
+
+/**
  * @brief 根据双向流键查找流记录。
  *
  * 成功时record指向流表内部的只读流记录。

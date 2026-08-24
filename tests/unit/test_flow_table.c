@@ -431,6 +431,271 @@ static int test_iteration_and_cleanup(void)
 }
 
 /**
+ * @brief 验证过期流被清理、活动流保持顺序，并能复用容量。
+ */
+static int test_expire_flows_and_reuse_capacity(void)
+{
+    flow_record_t storage[3];
+    flow_table_t table;
+
+    packet_info_t old_packet;
+    packet_info_t active_packet;
+    packet_info_t boundary_packet;
+    packet_info_t new_packet;
+
+    const flow_record_t *record;
+    flow_timestamp_t cutoff;
+
+    size_t expired_count;
+    bool created;
+
+    TEST_CHECK(
+        flow_table_init(
+            &table,
+            storage,
+            sizeof(storage) / sizeof(storage[0])
+        ) == 0
+    );
+
+    /*
+     * 第一条流最后活动于100秒，应该过期。
+     */
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &old_packet,
+            INT64_C(100),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(2000)
+        ) == 0
+    );
+
+    /*
+     * 第二条流最后活动于300秒，应该保留。
+     */
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &active_packet,
+            INT64_C(300),
+            UINT32_C(70),
+            UINT32_C(70),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(3000)
+        ) == 0
+    );
+
+    /*
+     * 第三条流正好位于200秒截止时间。
+     * 当前规则使用<=，因此它也应该过期。
+     */
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &boundary_packet,
+            INT64_C(200),
+            UINT32_C(80),
+            UINT32_C(80),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(4000)
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &old_packet,
+            &record,
+            &created
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &active_packet,
+            &record,
+            &created
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &boundary_packet,
+            &record,
+            &created
+        ) == 0
+    );
+
+    TEST_CHECK(flow_table_count(&table) == 3U);
+
+    cutoff = (flow_timestamp_t){
+        .seconds = INT64_C(200),
+        .microseconds = INT32_C(0)
+    };
+
+    TEST_CHECK(
+        flow_table_expire_before(
+            &table,
+            &cutoff,
+            &expired_count
+        ) == 0
+    );
+
+    TEST_CHECK(expired_count == 2U);
+    TEST_CHECK(flow_table_count(&table) == 1U);
+
+    /*
+     * 原来位于storage[1]的活动流被压缩到storage[0]。
+     */
+    TEST_CHECK(storage[0].initialized);
+    TEST_CHECK(
+        storage[0].key.endpoint_b.port ==
+            UINT16_C(3000)
+    );
+
+    /*
+     * count之后的旧槽位已经清零。
+     */
+    TEST_CHECK(!storage[1].initialized);
+    TEST_CHECK(!storage[2].initialized);
+
+    /*
+     * 清理过期流后，流表重新拥有空闲容量。
+     */
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &new_packet,
+            INT64_C(400),
+            UINT32_C(90),
+            UINT32_C(90),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(5000)
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &new_packet,
+            &record,
+            &created
+        ) == 0
+    );
+
+    TEST_CHECK(created);
+    TEST_CHECK(flow_table_count(&table) == 2U);
+    TEST_CHECK(record == &storage[1]);
+
+    flow_table_cleanup(&table);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证无效截止时间不会修改流表或输出参数。
+ */
+static int test_expire_argument_validation(void)
+{
+    flow_record_t storage[1];
+    flow_table_t table;
+
+    packet_info_t packet;
+    const flow_record_t *record;
+
+    flow_timestamp_t invalid_cutoff;
+    flow_timestamp_t valid_cutoff;
+
+    size_t expired_count;
+    bool created;
+
+    TEST_CHECK(
+        flow_table_init(
+            &table,
+            storage,
+            sizeof(storage) / sizeof(storage[0])
+        ) == 0
+    );
+
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &packet,
+            INT64_C(100),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(2000)
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &packet,
+            &record,
+            &created
+        ) == 0
+    );
+
+    /*
+     * 微秒最大只能是999999。
+     */
+    invalid_cutoff = (flow_timestamp_t){
+        .seconds = INT64_C(200),
+        .microseconds = INT32_C(1000000)
+    };
+
+    /*
+     * 哨兵值用于确认失败时没有修改输出参数。
+     */
+    expired_count = 99U;
+
+    TEST_CHECK(
+        flow_table_expire_before(
+            &table,
+            &invalid_cutoff,
+            &expired_count
+        ) == EINVAL
+    );
+
+    TEST_CHECK(expired_count == 99U);
+    TEST_CHECK(flow_table_count(&table) == 1U);
+    TEST_CHECK(storage[0].initialized);
+
+    valid_cutoff = (flow_timestamp_t){
+        .seconds = INT64_C(200),
+        .microseconds = INT32_C(0)
+    };
+
+    /*
+     * expired_count不能为空。
+     */
+    TEST_CHECK(
+        flow_table_expire_before(
+            &table,
+            &valid_cutoff,
+            NULL
+        ) == EINVAL
+    );
+
+    TEST_CHECK(flow_table_count(&table) == 1U);
+
+    flow_table_cleanup(&table);
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 固定容量流表单元测试入口。
  */
 int main(void)
@@ -462,6 +727,20 @@ int main(void)
     }
 
     printf("[PASS] flow table iteration and cleanup\n");
+
+    if (test_expire_flows_and_reuse_capacity() !=
+    EXIT_SUCCESS) {
+    return EXIT_FAILURE;
+    }
+
+    printf("[PASS] expire flows and reuse capacity\n");
+
+    if (test_expire_argument_validation() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] expire argument validation\n");
 
     return EXIT_SUCCESS;
 }
