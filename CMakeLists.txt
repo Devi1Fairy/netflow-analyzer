@@ -504,4 +504,36 @@ if(BUILD_TESTING)
             TIMEOUT 5
     )
 
+    # 查找Python解释器。
+    #
+    # Python只用于集成测试，不属于正式程序运行依赖。
+    # BUILD_TESTING=OFF时不会要求目标系统安装Python。
+    find_package(
+        Python3
+        REQUIRED
+        COMPONENTS Interpreter
+    )
+
+    # 注册离线PCAP流聚合端到端验收测试。
+    #
+    # $<TARGET_FILE:netflow_analyzer_cli>由CMake在生成阶段替换为
+    # 最终可执行程序的完整路径，不需要硬编码build/bin目录。
+    add_test(
+        NAME offline_flow_acceptance
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_offline_flow.py
+            --program
+            $<TARGET_FILE:netflow_analyzer_cli>
+            --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}
+    )
+
+    # 防止被测程序或测试脚本意外永久阻塞。
+    set_tests_properties(
+        offline_flow_acceptance
+        PROPERTIES
+            TIMEOUT 10
+    )
+
 endif()
