@@ -5,16 +5,26 @@
 #include "analyzer/ipv4.h"
 #include "analyzer/icmp.h"
 #include "analyzer/ipv4_dispatch.h"
+#include "analyzer/flow_table.h"
 
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 
 /*
  * 当前命令只显示前5个数据包，避免大型PCAP在终端输出数万行。
  */
 #define APP_CAPTURE_PREVIEW_LIMIT 5U
+
+/*
+ * 第一版离线流表最多保存256条不同的双向流。
+ *
+ * 当前使用调用者提供的固定数组。容量不足时返回ENOSPC，
+ * 后续将通过流超时清理或动态哈希表解决容量限制。
+ */
+#define APP_FLOW_TABLE_CAPACITY 256U
 
 /*
  * 正常情况下，ANALYZER_VERSION由CMake根据project版本传入。
@@ -45,13 +55,37 @@ static int app_print_help(const char *program_name)
             "Options:\n"
             "  -h, --help       Show this help message.\n"
             "  -V, --version    Show program version.\n"
-            "  -r, --read FILE  Preview packets from an offline PCAP.\n",
+            "  -r, --read FILE  Analyze an offline PCAP file.\n",
             display_name,
             display_name) < 0) {
         return EIO;
     }
 
     return 0;
+}
+
+/**
+ * @brief 把IPv4协议号转换成适合流汇总显示的名称。
+ *
+ * @param protocol IPv4头部中的上层协议号。
+ *
+ * @return 指向静态字符串的只读指针。
+ */
+static const char *app_ipv4_protocol_name(uint8_t protocol)
+{
+    switch (protocol) {
+    case IPV4_PROTOCOL_TCP:
+        return "TCP";
+
+    case IPV4_PROTOCOL_UDP:
+        return "UDP";
+
+    case IPV4_PROTOCOL_ICMP:
+        return "ICMP";
+
+    default:
+        return "UNKNOWN";
+    }
 }
 
 /**
@@ -88,30 +122,149 @@ static const char *app_icmp_type_name(uint8_t type)
 }
 
 /**
- * @brief 解析并输出一条捕获数据包的Ethernet和IPv4概要。
+ * @brief 输出流表中的全部双向流记录。
+ *
+ * endpoint_a和endpoint_b是规范化排序后的端点，
+ * 不一定分别对应客户端和服务器。
+ *
+ * @param table 指向已经完成离线聚合的流表。
+ *
+ * @return 成功时返回0；
+ *         参数或流表状态无效时返回EINVAL；
+ *         地址格式化失败时返回对应错误码；
+ *         终端输出失败时返回EIO。
+ */
+static int app_print_flow_summary(const flow_table_t *table)
+{
+    const flow_record_t *record;
+
+    char endpoint_a_address[IPV4_ADDRESS_STRING_SIZE];
+    char endpoint_b_address[IPV4_ADDRESS_STRING_SIZE];
+
+    size_t flow_count;
+    size_t index;
+    int error_code;
+
+    if (table == NULL || !table->initialized) {
+        return EINVAL;
+    }
+
+    flow_count = flow_table_count(table);
+
+    if (printf(
+            "\nFlow summary: %zu flow(s)\n",
+            flow_count) < 0) {
+        return EIO;
+    }
+
+    for (index = 0U; index < flow_count; index += 1U) {
+        error_code = flow_table_get(
+            table,
+            index,
+            &record
+        );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+
+        error_code = ipv4_format_address(
+            record->key.endpoint_a.ipv4_address,
+            endpoint_a_address,
+            sizeof(endpoint_a_address)
+        );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+
+        error_code = ipv4_format_address(
+            record->key.endpoint_b.ipv4_address,
+            endpoint_b_address,
+            sizeof(endpoint_b_address)
+        );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+
+        /*
+         * ICMP没有端口，因此ICMP流的两个端口都会显示为0。
+         *
+         * 对所有协议使用统一格式，便于后续脚本解析。
+         */
+        if (printf(
+                "Flow %zu: "
+                "protocol=%s "
+                "endpoint_a=%s:%" PRIu16 " "
+                "endpoint_b=%s:%" PRIu16 " "
+                "a_to_b_packets=%" PRIu64 " "
+                "a_to_b_captured_bytes=%" PRIu64 " "
+                "a_to_b_wire_bytes=%" PRIu64 " "
+                "b_to_a_packets=%" PRIu64 " "
+                "b_to_a_captured_bytes=%" PRIu64 " "
+                "b_to_a_wire_bytes=%" PRIu64 " "
+                "first_seen=%" PRId64 ".%06" PRId32 " "
+                "last_seen=%" PRId64 ".%06" PRId32 "\n",
+                index + 1U,
+                app_ipv4_protocol_name(
+                    record->key.protocol
+                ),
+                endpoint_a_address,
+                record->key.endpoint_a.port,
+                endpoint_b_address,
+                record->key.endpoint_b.port,
+                record->a_to_b.packet_count,
+                record->a_to_b.captured_byte_count,
+                record->a_to_b.wire_byte_count,
+                record->b_to_a.packet_count,
+                record->b_to_a.captured_byte_count,
+                record->b_to_a.wire_byte_count,
+                record->first_seen.seconds,
+                record->first_seen.microseconds,
+                record->last_seen.seconds,
+                record->last_seen.microseconds) < 0) {
+            return EIO;
+        }
+    }
+
+    return 0;
+}
+
+
+/**
+ * @brief 解析一条捕获数据包，更新流表，并按需输出数据包概要。
+ *
+ * 无论print_preview是否为true，函数都会完成协议解析，并把成功
+ * 解析的TCP、UDP或ICMP数据包加入flow_table。
+ *
+ * print_preview只控制是否输出逐包信息，不影响流量聚合。
  *
  * packet->data由libpcap管理，只保证在下一次capture_next_packet
- * 调用前有效。因此本函数必须在返回前完成所有解析，不能保存data。
+ * 调用前有效。因此必须在本函数返回前完成解析。
  *
- * 单个数据包发生Ethernet或IPv4截断、畸形时，只输出该包的错误状态，
- * 不终止整个PCAP文件的读取。
+ * 单个数据包截断、畸形或协议不支持时不加入流表，也不终止整个
+ * PCAP读取流程。
  *
- * 参数错误、结果对象状态错误和终端输出错误会返回给上层，因为这些
- * 错误通常不是单个网络数据包造成的。
- *
- * @param packet_number 当前数据包在预览结果中的序号。
+ * @param packet_number 当前数据包在整个PCAP中的序号。
  * @param packet 指向libpcap返回的只读数据包视图。
+ * @param print_preview true表示输出逐包信息。
+ * @param flow_table 指向当前离线分析使用的流表。
  *
- * @return 成功输出时返回0；
- *         参数或解析调用状态无效时返回EINVAL；
- *         终端输出失败时返回EIO；
- *         其他内部错误返回对应的errno风格错误码。
+ * @return 成功处理时返回0；
+ *         参数或程序内部状态错误时返回对应错误码；
+ *         流表容量耗尽时返回ENOSPC；
+ *         终端输出失败时返回EIO。
  */
-static int app_print_packet_preview(
+static int app_process_packet(
     size_t packet_number,
-    const capture_packet_view_t *packet)
+    const capture_packet_view_t *packet,
+    bool print_preview,
+    flow_table_t *flow_table)
 {
     packet_info_t packet_info;
+    const flow_record_t *updated_flow;
+    bool flow_created;
 
     char source_mac[ETHERNET_MAC_STRING_SIZE];
     char destination_mac[ETHERNET_MAC_STRING_SIZE];
@@ -121,10 +274,11 @@ static int app_print_packet_preview(
 
     int error_code;
 
-    if (packet == NULL) {
+    if (packet == NULL ||
+        flow_table == NULL ||
+        !flow_table->initialized) {
         return EINVAL;
     }
-
     /*
      * packet_info_init只复制时间戳、caplen和wirelen。
      *
@@ -156,6 +310,11 @@ static int app_print_packet_preview(
     );
 
     if (error_code == ENODATA) {
+
+        if (!print_preview) {
+            return 0;
+        }
+
         /*
          * Ethernet头部不足14字节属于单个数据包截断。
          *
@@ -188,27 +347,29 @@ static int app_print_packet_preview(
         return error_code;
     }
 
-    /*
-     * Ethernet解析成功后，MAC地址字段才有效。
-     */
-    error_code = ethernet_format_mac(
-        packet_info.source_mac,
-        source_mac,
-        sizeof(source_mac)
-    );
+    if (print_preview) {
+        /*
+        * Ethernet解析成功后，MAC地址字段才有效。
+        */
+        error_code = ethernet_format_mac(
+            packet_info.source_mac,
+            source_mac,
+            sizeof(source_mac)
+        );
 
-    if (error_code != 0) {
-        return error_code;
-    }
+        if (error_code != 0) {
+            return error_code;
+        }
 
-    error_code = ethernet_format_mac(
-        packet_info.destination_mac,
-        destination_mac,
-        sizeof(destination_mac)
-    );
+        error_code = ethernet_format_mac(
+            packet_info.destination_mac,
+            destination_mac,
+            sizeof(destination_mac)
+        );
 
-    if (error_code != 0) {
-        return error_code;
+        if (error_code != 0) {
+            return error_code;
+        }
     }
 
     /*
@@ -218,6 +379,11 @@ static int app_print_packet_preview(
      * 只是当前项目还没有对应的网络层解析器。
      */
     if (packet_info.ether_type != ETHERNET_TYPE_IPV4) {
+        
+        if (!print_preview) {
+            return 0;
+        }
+
         if (printf(
                 "Packet %zu: "
                 "timestamp=%" PRId64 ".%06" PRId32 " "
@@ -251,6 +417,11 @@ static int app_print_packet_preview(
     );
 
     if (error_code == ENODATA || error_code == EBADMSG) {
+
+        if (!print_preview) {
+            return 0;
+        }
+
         const char *ipv4_state;
 
         /*
@@ -292,6 +463,7 @@ static int app_print_packet_preview(
         return error_code;
     }
 
+    if (print_preview) {
     /*
      * has_ipv4为true后，源地址和目标地址才是有效结果。
      */
@@ -314,6 +486,7 @@ static int app_print_packet_preview(
     if (error_code != 0) {
         return error_code;
     }
+}
 
     /*
      * IPv4解析完成后，根据protocol字段分发TCP、UDP或ICMP。
@@ -340,6 +513,37 @@ static int app_print_packet_preview(
         error_code != EBADMSG &&
         error_code != ENOTSUP) {
         return error_code;
+    }
+
+    /*
+     * 只有协议分发成功、parse_status为COMPLETE的数据包，
+     * 才能生成可靠的双向五元组并进入流表。
+     */
+    if (error_code == 0) {
+        error_code = flow_table_process_packet(
+            flow_table,
+            &packet_info,
+            &updated_flow,
+            &flow_created
+        );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+
+        /*
+         * 当前应用层只需要流表完成更新，不立即使用返回记录和
+         * created标志。读取结束后会统一遍历流表。
+         */
+        (void)updated_flow;
+        (void)flow_created;
+    }
+
+    /*
+     * 第6包及后续数据包仍然参与流量聚合，但不输出逐包信息。
+     */
+    if (!print_preview) {
+        return 0;
     }
 
     /*
@@ -505,14 +709,24 @@ static int app_print_packet_preview(
 }
 
 /**
- * @brief 打开离线PCAP并输出前几个数据包的元数据。
+ * @brief 分析整个离线PCAP，预览前几个包并输出双向流汇总。
  *
- * capture_t只在本函数执行期间使用，因此作为局部资源管理，
- * 不需要长期保存在app_context_t中。
+ * capture和flow_table只在本函数执行期间使用。
+ *
+ * flow_table借用局部flow_storage数组。由于二者处于同一函数作用域，
+ * flow_storage在flow_table使用期间始终有效。
  */
-static int app_run_capture_preview(app_context_t *context)
+static int app_run_capture_analysis(app_context_t *context)
 {
     char capture_error[CAPTURE_ERROR_BUFFER_SIZE] = {0};
+
+    /*
+     * 第一版使用固定容量数组保存流记录。
+     *
+     * flow_table只借用该数组，不拥有它，也不会free它。
+     */
+    flow_record_t flow_storage[APP_FLOW_TABLE_CAPACITY];
+    flow_table_t flow_table;
 
     capture_t *capture = NULL;
     capture_link_type_t link_type = CAPTURE_LINK_TYPE_UNKNOWN;
@@ -520,7 +734,10 @@ static int app_run_capture_preview(app_context_t *context)
     capture_packet_view_t packet;
     capture_read_status_t read_status;
 
-    size_t displayed_packet_count = 0U;
+    size_t total_packet_count = 0U;
+    size_t previewed_packet_count = 0U;
+
+    bool print_preview;
     int error_code;
 
     error_code = capture_open_offline(
@@ -531,21 +748,23 @@ static int app_run_capture_preview(app_context_t *context)
     );
 
     if (error_code != 0) {
-        /*
-         * 把底层错误加上文件路径，形成适合最终用户阅读的应用错误。
-         */
         (void)snprintf(
             context->error_message,
             sizeof(context->error_message),
             "failed to open capture '%s': %s",
             context->capture_path,
-            capture_error[0] != '\0' ? capture_error : "unknown libpcap error"
+            capture_error[0] != '\0'
+                ? capture_error
+                : "unknown libpcap error"
         );
 
         return error_code;
     }
 
-    error_code = capture_get_link_type(capture, &link_type);
+    error_code = capture_get_link_type(
+        capture,
+        &link_type
+    );
 
     if (error_code != 0) {
         (void)snprintf(
@@ -569,6 +788,23 @@ static int app_run_capture_preview(app_context_t *context)
         return ENOTSUP;
     }
 
+    error_code = flow_table_init(
+        &flow_table,
+        flow_storage,
+        sizeof(flow_storage) / sizeof(flow_storage[0])
+    );
+
+    if (error_code != 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "failed to initialize flow table"
+        );
+
+        capture_close(&capture);
+        return error_code;
+    }
+
     if (printf(
             "Capture file: %s\n"
             "Link type: Ethernet\n",
@@ -579,11 +815,18 @@ static int app_run_capture_preview(app_context_t *context)
             "failed to write capture information"
         );
 
+        flow_table_cleanup(&flow_table);
         capture_close(&capture);
         return EIO;
     }
 
-    while (displayed_packet_count < APP_CAPTURE_PREVIEW_LIMIT) {
+    /*
+     * 不再以预览数量作为循环结束条件。
+     *
+     * 循环一直执行到PCAP文件结束，只有输出逐包信息时才受
+     * APP_CAPTURE_PREVIEW_LIMIT限制。
+     */
+    for (;;) {
         read_status = CAPTURE_READ_STATUS_UNKNOWN;
 
         error_code = capture_next_packet(
@@ -593,7 +836,8 @@ static int app_run_capture_preview(app_context_t *context)
         );
 
         if (error_code != 0) {
-            const char *read_error = capture_get_error(capture);
+            const char *read_error =
+                capture_get_error(capture);
 
             /*
              * capture_get_error返回的字符串依赖capture句柄，
@@ -604,9 +848,13 @@ static int app_run_capture_preview(app_context_t *context)
                 sizeof(context->error_message),
                 "failed to read capture '%s': %s",
                 context->capture_path,
-                read_error != NULL && read_error[0] != '\0' ? read_error : "unknown libpcap error"
+                read_error != NULL &&
+                    read_error[0] != '\0'
+                    ? read_error
+                    : "unknown libpcap error"
             );
 
+            flow_table_cleanup(&flow_table);
             capture_close(&capture);
             return error_code;
         }
@@ -622,48 +870,85 @@ static int app_run_capture_preview(app_context_t *context)
                 "capture returned an unexpected read status"
             );
 
+            flow_table_cleanup(&flow_table);
             capture_close(&capture);
             return EIO;
         }
 
-        displayed_packet_count += 1U;
+        total_packet_count += 1U;
+
+        print_preview = previewed_packet_count < APP_CAPTURE_PREVIEW_LIMIT;
+
         /*
-         * 必须在下一次capture_next_packet之前完成当前包解析。
+         * 必须在下一次capture_next_packet之前完成当前包的解析。
          *
-         * app_print_packet_preview不会保存packet.data，只把解析出的
-         * 数值字段和MAC字节复制到当前栈上的packet_info中。
+         * 流表只保存解析出的数值结果，不保存packet.data。
          */
-        error_code = app_print_packet_preview(
-            displayed_packet_count,
-            &packet
+        error_code = app_process_packet(
+            total_packet_count,
+            &packet,
+            print_preview,
+            &flow_table
         );
 
         if (error_code != 0) {
             (void)snprintf(
                 context->error_message,
                 sizeof(context->error_message),
-                "failed to preview packet %zu: %s",
-                displayed_packet_count,
+                "failed to process packet %zu: %s",
+                total_packet_count,
                 strerror(error_code)
             );
 
+            flow_table_cleanup(&flow_table);
             capture_close(&capture);
             return error_code;
         }
+
+        if (print_preview) {
+            previewed_packet_count += 1U;
+        }
     }
 
-    if (printf("Displayed packets: %zu\n", displayed_packet_count) < 0) {
+    /*
+     * PCAP已经读取完成，后续流汇总不再依赖libpcap句柄。
+     */
+    capture_close(&capture);
+
+    if (printf(
+            "Total packets: %zu\n"
+            "Previewed packets: %zu\n",
+            total_packet_count,
+            previewed_packet_count) < 0) {
         (void)snprintf(
             context->error_message,
             sizeof(context->error_message),
-            "failed to write packet count"
+            "failed to write packet summary"
         );
 
-        capture_close(&capture);
+        flow_table_cleanup(&flow_table);
         return EIO;
     }
 
-    capture_close(&capture);
+    error_code = app_print_flow_summary(&flow_table);
+
+    if (error_code != 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "failed to write flow summary"
+        );
+
+        flow_table_cleanup(&flow_table);
+        return error_code;
+    }
+
+    /*
+     * flow_table_cleanup只解除对flow_storage的借用，不会free数组。
+     *
+     * 函数返回后，flow_storage作为局部数组自然结束生命周期。
+     */
+    flow_table_cleanup(&flow_table);
 
     return 0;
 }
@@ -822,7 +1107,7 @@ int app_run(app_context_t *context)
             return EINVAL;
         }
 
-        return app_run_capture_preview(context);
+        return app_run_capture_analysis(context);
 
     default:
         (void)snprintf(
