@@ -2,7 +2,7 @@
 #include "analyzer/capture.h"
 #include "analyzer/ethernet.h"
 #include "analyzer/packet_info.h"
-
+#include "analyzer/ipv4.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -53,27 +53,36 @@ static int app_print_help(const char *program_name)
 }
 
 /**
- * @brief 解析并输出一条捕获数据包的Ethernet概要。
+ * @brief 解析并输出一条捕获数据包的Ethernet和IPv4概要。
  *
  * packet->data由libpcap管理，只保证在下一次capture_next_packet
  * 调用前有效。因此本函数必须在返回前完成所有解析，不能保存data。
  *
- * Ethernet头部截断属于单条数据包问题，不终止整个PCAP读取流程。
- * 其他参数、状态或输出错误会返回给上层。
+ * 单个数据包发生Ethernet或IPv4截断、畸形时，只输出该包的错误状态，
+ * 不终止整个PCAP文件的读取。
+ *
+ * 参数错误、结果对象状态错误和终端输出错误会返回给上层，因为这些
+ * 错误通常不是单个网络数据包造成的。
  *
  * @param packet_number 当前数据包在预览结果中的序号。
  * @param packet 指向libpcap返回的只读数据包视图。
  *
  * @return 成功输出时返回0；
- *         参数或解析状态无效时返回EINVAL；
- *         终端输出失败时返回EIO。
+ *         参数或解析调用状态无效时返回EINVAL；
+ *         终端输出失败时返回EIO；
+ *         其他内部错误返回对应的errno风格错误码。
  */
-static int app_print_packet_preview(size_t packet_number, const capture_packet_view_t *packet)
+static int app_print_packet_preview(
+    size_t packet_number,
+    const capture_packet_view_t *packet)
 {
     packet_info_t packet_info;
 
     char source_mac[ETHERNET_MAC_STRING_SIZE];
     char destination_mac[ETHERNET_MAC_STRING_SIZE];
+
+    char source_ipv4[IPV4_ADDRESS_STRING_SIZE];
+    char destination_ipv4[IPV4_ADDRESS_STRING_SIZE];
 
     int error_code;
 
@@ -82,9 +91,10 @@ static int app_print_packet_preview(size_t packet_number, const capture_packet_v
     }
 
     /*
-     * packet_info只复制时间戳和长度，不保存packet.data地址。
+     * packet_info_init只复制时间戳、caplen和wirelen。
      *
-     * 所以packet_info中的数值结果不会因为libpcap读取下一包而失效。
+     * 它不会保存packet->data，因此不会受到libpcap下一次读取
+     * 导致原始数据指针失效的影响。
      */
     error_code = packet_info_init(
         &packet_info,
@@ -99,9 +109,10 @@ static int app_print_packet_preview(size_t packet_number, const capture_packet_v
     }
 
     /*
-     * 解析边界必须使用captured_length。
+     * 第一层先解析Ethernet。
      *
-     * wire_length可能大于实际保存的数据长度，不能用它访问packet.data。
+     * 解析边界必须使用captured_length，因为只有这些字节真实存在于
+     * packet->data指向的缓冲区中。wire_length只能用于统计。
      */
     error_code = ethernet_parse(
         packet->data,
@@ -111,9 +122,9 @@ static int app_print_packet_preview(size_t packet_number, const capture_packet_v
 
     if (error_code == ENODATA) {
         /*
-         * 单个截断包不应导致整个PCAP分析停止。
+         * Ethernet头部不足14字节属于单个数据包截断。
          *
-         * 输出已有的捕获元数据和错误位置，然后继续读取下一条数据包。
+         * 记录并显示错误后继续处理PCAP中的下一包。
          */
         if (printf(
                 "Packet %zu: "
@@ -135,9 +146,16 @@ static int app_print_packet_preview(size_t packet_number, const capture_packet_v
     }
 
     if (error_code != 0) {
+        /*
+         * EINVAL等错误通常表示调用顺序或程序内部状态存在问题，
+         * 不能把它简单归因于输入数据包，因此返回给上层。
+         */
         return error_code;
     }
 
+    /*
+     * Ethernet解析成功后，MAC地址字段才有效。
+     */
     error_code = ethernet_format_mac(
         packet_info.source_mac,
         source_mac,
@@ -158,14 +176,129 @@ static int app_print_packet_preview(size_t packet_number, const capture_packet_v
         return error_code;
     }
 
+    /*
+     * 只有EtherType为0x0800时，Ethernet负载才是IPv4。
+     *
+     * ARP、IPv6或未知EtherType仍然可以是合法Ethernet帧，
+     * 只是当前项目还没有对应的网络层解析器。
+     */
+    if (packet_info.ether_type != ETHERNET_TYPE_IPV4) {
+        if (printf(
+                "Packet %zu: "
+                "timestamp=%" PRId64 ".%06" PRId32 " "
+                "caplen=%" PRIu32 " "
+                "wirelen=%" PRIu32 " "
+                "src_mac=%s "
+                "dst_mac=%s "
+                "ethertype=0x%04" PRIx16 " "
+                "network=unsupported\n",
+                packet_number,
+                packet_info.timestamp_seconds,
+                packet_info.timestamp_microseconds,
+                packet_info.captured_length,
+                packet_info.wire_length,
+                source_mac,
+                destination_mac,
+                packet_info.ether_type) < 0) {
+            return EIO;
+        }
+
+        return 0;
+    }
+
+    /*
+     * Ethernet已经确认其负载是IPv4，因此继续解析IPv4头部。
+     */
+    error_code = ipv4_parse(
+        packet->data,
+        (size_t)packet->captured_length,
+        &packet_info
+    );
+
+    if (error_code == ENODATA || error_code == EBADMSG) {
+        const char *ipv4_state;
+
+        /*
+         * ENODATA表示必要的IPv4头部没有完整捕获；
+         * EBADMSG表示字节足够，但版本、IHL或长度关系不合法。
+         */
+        ipv4_state = error_code == ENODATA ? "truncated" : "malformed";
+
+        if (printf(
+                "Packet %zu: "
+                "timestamp=%" PRId64 ".%06" PRId32 " "
+                "caplen=%" PRIu32 " "
+                "wirelen=%" PRIu32 " "
+                "src_mac=%s "
+                "dst_mac=%s "
+                "ethertype=0x%04" PRIx16 " "
+                "ipv4=%s "
+                "error_offset=%zu\n",
+                packet_number,
+                packet_info.timestamp_seconds,
+                packet_info.timestamp_microseconds,
+                packet_info.captured_length,
+                packet_info.wire_length,
+                source_mac,
+                destination_mac,
+                packet_info.ether_type,
+                ipv4_state,
+                packet_info.error_offset) < 0) {
+            return EIO;
+        }
+
+        /*
+         * 单个数据包异常不终止整个PCAP文件预览。
+         */
+        return 0;
+    }
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    /*
+     * has_ipv4为true后，源地址和目标地址才是有效结果。
+     */
+    error_code = ipv4_format_address(
+        packet_info.source_ipv4,
+        source_ipv4,
+        sizeof(source_ipv4)
+    );
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    error_code = ipv4_format_address(
+        packet_info.destination_ipv4,
+        destination_ipv4,
+        sizeof(destination_ipv4)
+    );
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    /*
+     * protocol只打印数值，暂时不转换成TCP、UDP或ICMP文本。
+     *
+     * 下一阶段实现传输层分发后，再根据协议号调用对应解析器。
+     */
     if (printf(
             "Packet %zu: "
             "timestamp=%" PRId64 ".%06" PRId32 " "
             "caplen=%" PRIu32 " "
             "wirelen=%" PRIu32 " "
-            "src=%s "
-            "dst=%s "
-            "ethertype=0x%04" PRIx16 "\n",
+            "src_mac=%s "
+            "dst_mac=%s "
+            "ethertype=0x%04" PRIx16 " "
+            "src_ip=%s "
+            "dst_ip=%s "
+            "ttl=%u "
+            "protocol=%u "
+            "ip_length=%" PRIu16 " "
+            "ip_payload_truncated=%s\n",
             packet_number,
             packet_info.timestamp_seconds,
             packet_info.timestamp_microseconds,
@@ -173,13 +306,20 @@ static int app_print_packet_preview(size_t packet_number, const capture_packet_v
             packet_info.wire_length,
             source_mac,
             destination_mac,
-            packet_info.ether_type) < 0) {
+            packet_info.ether_type,
+            source_ipv4,
+            destination_ipv4,
+            (unsigned int)packet_info.ipv4_ttl,
+            (unsigned int)packet_info.ipv4_protocol,
+            packet_info.ipv4_total_length,
+            packet_info.ipv4_payload_truncated
+                ? "true"
+                : "false") < 0) {
         return EIO;
     }
 
     /*
-     * 当前只完成Ethernet解析，IPv4等网络层还没有解析，
-     * 所以这里暂时不调用packet_info_mark_complete。
+     * 目前尚未解析TCP、UDP或ICMP，因此不把整个数据包标记为完成。
      */
     return 0;
 }
