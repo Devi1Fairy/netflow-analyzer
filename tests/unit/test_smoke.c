@@ -95,7 +95,7 @@ static int test_version_command(void)
 
     TEST_CHECK(context.command == APP_COMMAND_VERSION);
 
-    TEST_CHECK(strcmp(app_version(), "0.0.1") == 0);
+    TEST_CHECK(strcmp(app_version(), "0.1.0") == 0);
 
     /*
      * app_run会把版本信息写到stdout。
