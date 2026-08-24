@@ -411,6 +411,76 @@ typedef struct {
     bool udp_payload_truncated;
 
     /**
+     * true表示ICMP公共头部已经成功解析。
+     *
+     * false时不能使用后面的ICMP字段。
+     */
+    bool has_icmp;
+
+    /**
+     * ICMP消息类型。
+     *
+     * 例如0表示Echo Reply，8表示Echo Request。
+     */
+    uint8_t icmp_type;
+
+    /**
+     * ICMP消息代码。
+     *
+     * code的具体含义取决于icmp_type。
+     */
+    uint8_t icmp_code;
+
+    /**
+     * ICMP校验和。
+     *
+     * 当前阶段只读取并保存，不执行校验和验证。
+     */
+    uint16_t icmp_checksum;
+
+    /**
+     * ICMP公共头部最后4字节的原始数值。
+     *
+     * 不同ICMP类型对这4字节有不同定义，因此先保留完整原始值。
+     */
+    uint32_t icmp_rest_of_header;
+
+    /**
+     * true表示当前ICMP消息是Echo Request或Echo Reply，
+     * identifier和sequence字段有效。
+     */
+    bool icmp_has_echo_fields;
+
+    /**
+     * ICMP Echo标识符。
+     *
+     * ping程序通常使用该字段区分不同的探测会话。
+     */
+    uint16_t icmp_identifier;
+
+    /**
+     * ICMP Echo序列号。
+     *
+     * ping程序通常从1开始递增该字段。
+     */
+    uint16_t icmp_sequence;
+
+    /**
+     * ICMP公共头部之后的数据相对于完整帧的偏移。
+     */
+    size_t icmp_payload_offset;
+
+    /**
+     * 当前捕获缓冲区中实际可以访问的ICMP负载长度。
+     */
+    size_t icmp_payload_length;
+
+    /**
+     * true表示ICMP公共头部完整，但ICMP负载没有完整捕获。
+     */
+    bool icmp_payload_truncated;
+
+    /**
      * 数据包在线路上的原始长度，也就是wirelen。
      *
      * 该长度可以用于流量统计，但不能作为内存访问边界。
