@@ -79,6 +79,7 @@ add_library(
     src/protocol/ipv4_dispatch.c
     src/flow/flow_key.c
     src/flow/flow_record.c
+    src/flow/flow_table.c
 )
 
 # PUBLIC表示使用analyzer_core的目标自动继承公开头文件目录。
@@ -471,6 +472,34 @@ if(BUILD_TESTING)
 
     set_tests_properties(
         flow_record_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+    # 创建固定容量流表单元测试程序。
+    add_executable(
+        flow_table_tests
+        tests/unit/test_flow_table.c
+    )
+
+    # 流表、流记录和流键由核心静态库提供。
+    target_link_libraries(
+        flow_table_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    # 启用与正式代码相同的严格编译警告。
+    enable_project_warnings(flow_table_tests)
+
+    # 注册到CTest自动化测试集合。
+    add_test(
+        NAME flow_table_tests
+        COMMAND flow_table_tests
+    )
+
+    set_tests_properties(
+        flow_table_tests
         PROPERTIES
             TIMEOUT 5
     )
