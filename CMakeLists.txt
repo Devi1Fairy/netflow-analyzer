@@ -77,6 +77,7 @@ add_library(
     src/protocol/udp.c
     src/protocol/icmp.c
     src/protocol/ipv4_dispatch.c
+    src/flow/flow_key.c
 )
 
 # PUBLIC表示使用analyzer_core的目标自动继承公开头文件目录。
@@ -413,6 +414,34 @@ if(BUILD_TESTING)
 
     set_tests_properties(
         ipv4_dispatch_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+        # 创建双向五元组流键单元测试程序。
+    add_executable(
+        flow_key_tests
+        tests/unit/test_flow_key.c
+    )
+
+    # 流键实现及packet_info依赖由核心静态库提供。
+    target_link_libraries(
+        flow_key_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    # 启用与正式代码相同的严格编译警告。
+    enable_project_warnings(flow_key_tests)
+
+    # 注册到CTest自动化测试集合。
+    add_test(
+        NAME flow_key_tests
+        COMMAND flow_key_tests
+    )
+
+    set_tests_properties(
+        flow_key_tests
         PROPERTIES
             TIMEOUT 5
     )
