@@ -74,6 +74,7 @@ add_library(
     src/protocol/ethernet.c
     src/protocol/ipv4.c
     src/protocol/tcp.c
+    src/protocol/udp.c
 )
 
 # PUBLIC表示使用analyzer_core的目标自动继承公开头文件目录。
@@ -326,6 +327,34 @@ if(BUILD_TESTING)
     # 防止测试意外死循环。
     set_tests_properties(
         tcp_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+        # 创建UDP解析器单元测试程序。
+    add_executable(
+        udp_tests
+        tests/unit/test_udp.c
+    )
+
+    # UDP解析器及其依赖由核心静态库提供。
+    target_link_libraries(
+        udp_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    # 启用与正式代码相同的严格编译警告。
+    enable_project_warnings(udp_tests)
+
+    # 注册到CTest自动化测试集合。
+    add_test(
+        NAME udp_tests
+        COMMAND udp_tests
+    )
+
+    set_tests_properties(
+        udp_tests
         PROPERTIES
             TIMEOUT 5
     )

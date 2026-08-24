@@ -362,6 +362,55 @@ typedef struct {
     bool tcp_payload_truncated;
 
     /**
+     * true表示UDP头部已经成功解析。
+     *
+     * false时不能使用后面的UDP字段。
+     */
+    bool has_udp;
+
+    /**
+     * UDP源端口。
+     *
+     * 后续可以和源IP、目标IP、目标端口及协议号组成五元组。
+     */
+    uint16_t udp_source_port;
+
+    /**
+     * UDP目标端口。
+     */
+    uint16_t udp_destination_port;
+
+    /**
+     * UDP头部声明的数据报长度。
+     *
+     * 该长度包含8字节UDP头部和后面的UDP负载。
+     */
+    uint16_t udp_length;
+
+    /**
+     * UDP校验和。
+     *
+     * 在IPv4中，该字段为0表示发送方没有计算UDP校验和。
+     * 当前阶段只读取并保存，不执行校验。
+     */
+    uint16_t udp_checksum;
+
+    /**
+     * UDP负载相对于完整Ethernet帧起始位置的偏移。
+     */
+    size_t udp_payload_offset;
+
+    /**
+     * 当前捕获缓冲区内实际可以访问的UDP负载长度。
+     */
+    size_t udp_payload_length;
+
+    /**
+     * true表示UDP头部完整，但UDP负载没有被完整捕获。
+     */
+    bool udp_payload_truncated;
+
+    /**
      * 数据包在线路上的原始长度，也就是wirelen。
      *
      * 该长度可以用于流量统计，但不能作为内存访问边界。
