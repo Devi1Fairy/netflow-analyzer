@@ -713,19 +713,20 @@ static int app_process_packet(
  *
  * capture和flow_table只在本函数执行期间使用。
  *
- * flow_table借用局部flow_storage数组。由于二者处于同一函数作用域，
- * flow_storage在flow_table使用期间始终有效。
+ * flow_table借用局部flow_slots数组。由于二者处于同一函数作用域，
+ * flow_slots在flow_table使用期间始终有效。
  */
 static int app_run_capture_analysis(app_context_t *context)
 {
     char capture_error[CAPTURE_ERROR_BUFFER_SIZE] = {0};
 
     /*
-     * 第一版使用固定容量数组保存流记录。
-     *
-     * flow_table只借用该数组，不拥有它，也不会free它。
-     */
-    flow_record_t flow_storage[APP_FLOW_TABLE_CAPACITY];
+    * 哈希流表的每个物理位置都是一个槽位。
+    *
+    * 槽位中同时保存状态和流记录，因此这里不能再直接声明
+    * flow_record_t数组。
+    */
+    flow_table_slot_t flow_slots[APP_FLOW_TABLE_CAPACITY];
     flow_table_t flow_table;
 
     capture_t *capture = NULL;
@@ -790,8 +791,8 @@ static int app_run_capture_analysis(app_context_t *context)
 
     error_code = flow_table_init(
         &flow_table,
-        flow_storage,
-        sizeof(flow_storage) / sizeof(flow_storage[0])
+        flow_slots,
+        sizeof(flow_slots) / sizeof(flow_slots[0])
     );
 
     if (error_code != 0) {

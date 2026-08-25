@@ -9,32 +9,65 @@
 #include <stddef.h>
 
 /**
- * @brief 表示第一版固定容量流表。
+ * @brief 表示哈希表槽位当前所处的状态。
  *
- * 流表借用调用者提供的flow_record_t数组，不取得数组所有权，
- * 不会对records调用free。
+ * EMPTY：
+ *     槽位从未保存过流记录，查找到这里时可以停止。
  *
- * 有效流记录始终位于：
+ * OCCUPIED：
+ *     槽位当前保存着有效流记录。
  *
- * records[0] 到 records[count - 1]
+ * DELETED：
+ *     槽位以前保存过记录，但记录已经过期删除。
+ *     查找时不能在这里停止，否则可能漏掉后续发生哈希冲突的记录。
+ */
+typedef enum {
+    FLOW_TABLE_SLOT_EMPTY = 0,
+    FLOW_TABLE_SLOT_OCCUPIED,
+    FLOW_TABLE_SLOT_DELETED
+} flow_table_slot_state_t;
+
+/**
+ * @brief 表示哈希流表中的一个槽位。
  *
- * records[count]之后的元素属于未使用空间，其内容不能被读取。
+ * state用于说明record当前是否有效。
+ * 只有state为FLOW_TABLE_SLOT_OCCUPIED时才能读取record。
+ */
+typedef struct {
+    flow_table_slot_state_t state;
+    flow_record_t record;
+} flow_table_slot_t;
+
+/**
+ * @brief 表示使用开放寻址法实现的固定容量哈希流表。
  *
- * 当前版本使用线性查找，也没有内部互斥锁，不能由多个线程同时修改。
+ * 流表借用调用者提供的flow_table_slot_t数组，不取得其所有权，
+ * 因此cleanup时不会对slots调用free。
+ *
+ * 当前版本使用线性探测解决哈希冲突：
+ *
+ * 1. 使用flow_key_hash计算哈希值；
+ * 2. 使用“哈希值 % capacity”得到起始槽位；
+ * 3. 槽位被占用且键不同时，继续检查下一个槽位；
+ * 4. 到达数组末尾时回到数组开头。
+ *
+ * 当前实现没有内部互斥锁，不能由多个线程同时修改。
  */
 typedef struct {
     /**
-     * 指向调用者提供的流记录数组。
+     * 指向调用者提供的哈希槽位数组。
      */
-    flow_record_t *records;
+    flow_table_slot_t *slots;
 
     /**
-     * records数组最多能够保存多少条流。
+     * slots数组能够保存的槽位总数。
      */
     size_t capacity;
 
     /**
-     * 当前已经保存的有效流记录数量。
+     * 当前处于OCCUPIED状态的有效流记录数量。
+     *
+     * DELETED槽位不计入count。
      */
     size_t count;
 
@@ -45,33 +78,30 @@ typedef struct {
 } flow_table_t;
 
 /**
- * @brief 使用调用者提供的固定容量数组初始化流表。
+ * @brief 使用调用者提供的固定容量槽位数组初始化流表。
  *
- * 函数不会清空整个storage数组，因为count初始化为0后，
- * 所有数组元素在逻辑上都属于未使用空间。
+ * 初始化时会把所有槽位清零，使其进入EMPTY状态。
  *
  * storage必须在flow_table_t的整个使用期间保持有效。
  *
- * 参数无效时不修改table。
- *
  * @param table 指向待初始化的流表。
- * @param storage 指向调用者提供的flow_record_t数组。
- * @param capacity storage能够保存的元素数量。
+ * @param storage 指向调用者提供的flow_table_slot_t数组。
+ * @param capacity storage能够容纳的槽位数量。
  *
  * @return 成功时返回0，参数无效时返回EINVAL。
  */
 int flow_table_init(flow_table_t *table,
-                    flow_record_t *storage,
+                    flow_table_slot_t *storage,
                     size_t capacity);
 
 /**
  * @brief 把一条完整解析的数据包加入流表。
  *
- * 函数首先从packet生成双向流键，然后在线性数组中查找：
+ * 函数首先生成双向流键，然后通过哈希值查找槽位：
  *
- * - 找到相同流键时，更新已有flow_record_t；
- * - 没找到时，在数组末尾创建新的flow_record_t；
- * - 流表已满时返回ENOSPC。
+ * - 找到相同流键时，更新已有流记录；
+ * - 没找到时，在EMPTY或DELETED槽位创建新流；
+ * - 所有槽位都被占用时返回ENOSPC。
  *
  * 成功时：
  *
@@ -79,21 +109,10 @@ int flow_table_init(flow_table_t *table,
  * - created为true表示创建了新流；
  * - created为false表示更新了已有流。
  *
- * record返回的是流表内部数组元素的只读地址。调用者不能free，
- * 也不应绕过流表直接修改该记录。
+ * record指向流表内部存储，调用者不能free，也不能直接修改。
+ * 调用流表的修改接口后，不应继续长期保存以前取得的record指针。
  *
  * 函数失败时不修改record和created。
- *
- * @param table 指向已经初始化的流表。
- * @param packet 指向已经完整解析的数据包结果。
- * @param record 指向用于接收流记录只读指针的变量。
- * @param created 指向用于接收是否创建新流的布尔变量。
- *
- * @return 成功时返回0；
- *         参数或状态无效时返回EINVAL；
- *         协议暂不支持时返回ENOTSUP；
- *         流表容量已满时返回ENOSPC；
- *         更新已有流失败时返回对应错误码。
  */
 int flow_table_process_packet(
     flow_table_t *table,
@@ -108,25 +127,12 @@ int flow_table_process_packet(
  *
  * record->last_seen <= *cutoff
  *
- * 删除完成后，仍然有效的记录会被稳定地移动到数组前部，
- * 并继续满足以下流表不变量：
+ * 删除后的槽位被标记成DELETED，而不是EMPTY，保证哈希探测链不会中断。
  *
- * records[0]到records[count - 1]都是有效记录。
- *
- * “稳定移动”表示未过期记录之间的相对顺序不会变化。
- *
- * 由于函数可能移动数组元素，之前由flow_table_find、
- * flow_table_get或flow_table_process_packet返回的记录指针，
- * 在本函数成功后都必须视为失效，不能继续使用。
+ * 如果删除后流表已经完全为空，则会把所有槽位恢复成EMPTY，
+ * 清除已经没有意义的DELETED标记。
  *
  * 函数失败时不修改流表，也不修改expired_count。
- *
- * @param table 指向已经初始化的流表。
- * @param cutoff 指向过期截止时间。
- * @param expired_count 用于接收本次删除的流记录数量。
- *
- * @return 成功时返回0；
- *         参数、时间戳或流表状态无效时返回EINVAL。
  */
 int flow_table_expire_before(
     flow_table_t *table,
@@ -136,18 +142,12 @@ int flow_table_expire_before(
 /**
  * @brief 根据双向流键查找流记录。
  *
- * 成功时record指向流表内部的只读流记录。
+ * 查找使用与插入相同的哈希值和线性探测规则。
+ *
+ * 成功时record指向流表内部的只读记录。
  * 未找到时返回ENOENT。
  *
  * 函数失败时不修改record。
- *
- * @param table 指向已经初始化的流表。
- * @param key 指向准备查找的双向流键。
- * @param record 指向用于接收流记录只读指针的变量。
- *
- * @return 找到时返回0；
- *         参数无效时返回EINVAL；
- *         没找到时返回ENOENT。
  */
 int flow_table_find(
     const flow_table_t *table,
@@ -155,19 +155,19 @@ int flow_table_find(
     const flow_record_t **record);
 
 /**
- * @brief 根据数组下标取得一条只读流记录。
+ * @brief 根据逻辑下标取得一条只读流记录。
  *
- * 该接口用于遍历流表：
+ * 哈希表中的有效记录不再连续排列，因此这里的index是逻辑下标，
+ * 并不等于slots数组的物理下标。
  *
- * for (index = 0; index < flow_table_count(&table); ++index)
+ * 例如流表中有两条记录时：
  *
- * @param table 指向已经初始化的流表。
- * @param index 有效流记录下标。
- * @param record 指向用于接收流记录只读指针的变量。
+ * flow_table_get(table, 0, ...)
+ * flow_table_get(table, 1, ...)
  *
- * @return 成功时返回0；
- *         参数无效时返回EINVAL；
- *         index超出有效范围时返回ERANGE。
+ * 都能获得有效记录，但它们可能实际位于slots[3]和slots[10]。
+ *
+ * 该接口主要供应用层遍历和输出流摘要使用。
  */
 int flow_table_get(
     const flow_table_t *table,
@@ -175,18 +175,16 @@ int flow_table_get(
     const flow_record_t **record);
 
 /**
- * @brief 返回流表当前保存的流记录数量。
+ * @brief 返回当前有效流记录数量。
  *
- * @return 流表有效时返回count，否则返回0。
+ * @return 流表状态有效时返回count，否则返回0。
  */
 size_t flow_table_count(const flow_table_t *table);
 
 /**
- * @brief 使流表失效并解除对外部storage的借用。
+ * @brief 使流表失效，并解除对外部槽位数组的借用。
  *
- * 函数不会free或清空storage，因为storage由调用者拥有。
- *
- * 清理后再次使用流表前必须重新调用flow_table_init。
+ * 函数不会free外部storage，因为该内存由调用者拥有。
  */
 void flow_table_cleanup(flow_table_t *table);
 

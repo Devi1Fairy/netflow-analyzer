@@ -69,7 +69,7 @@ static int prepare_tcp_packet(
  */
 static int test_create_and_update_flow(void)
 {
-    flow_record_t storage[4];
+    flow_table_slot_t storage[4];
     flow_table_t table;
 
     packet_info_t forward_packet;
@@ -128,7 +128,12 @@ static int test_create_and_update_flow(void)
 
     TEST_CHECK(created);
     TEST_CHECK(flow_table_count(&table) == 1U);
-    TEST_CHECK(record == &storage[0]);
+    /*
+    * 哈希表中的物理位置由哈希值决定，
+    * 因此不能假定第一条流必定位于storage[0]。
+    */
+    TEST_CHECK(record != NULL);
+    TEST_CHECK(record->initialized);
     TEST_CHECK(
         record->a_to_b.packet_count ==
             UINT64_C(1)
@@ -179,7 +184,7 @@ static int test_create_and_update_flow(void)
  */
 static int test_multiple_flows_and_find(void)
 {
-    flow_record_t storage[4];
+    flow_table_slot_t storage[4];
     flow_table_t table;
 
     packet_info_t first_packet;
@@ -190,6 +195,7 @@ static int test_multiple_flows_and_find(void)
 
     const flow_record_t *record;
     const flow_record_t *found_record;
+    const flow_record_t *second_record_address;
 
     bool created;
 
@@ -249,6 +255,7 @@ static int test_multiple_flows_and_find(void)
         ) == 0
     );
     TEST_CHECK(created);
+    second_record_address = record;
 
     TEST_CHECK(flow_table_count(&table) == 2U);
 
@@ -268,7 +275,7 @@ static int test_multiple_flows_and_find(void)
         ) == 0
     );
 
-    TEST_CHECK(found_record == &storage[1]);
+    TEST_CHECK(found_record == second_record_address);
     TEST_CHECK(
         found_record->key.endpoint_b.port ==
             UINT16_C(3000)
@@ -284,7 +291,7 @@ static int test_multiple_flows_and_find(void)
  */
 static int test_capacity_protection(void)
 {
-    flow_record_t storage[1];
+    flow_table_slot_t  storage[1];
     flow_table_t table;
 
     packet_info_t first_packet;
@@ -363,15 +370,18 @@ static int test_capacity_protection(void)
 }
 
 /**
- * @brief 验证按下标遍历和清理后的状态。
+ * @brief 验证按逻辑下标遍历流表，并验证清理后的状态。
  */
 static int test_iteration_and_cleanup(void)
 {
-    flow_record_t storage[2];
+    flow_table_slot_t storage[2];
     flow_table_t table;
 
     packet_info_t packet;
+
     const flow_record_t *record;
+    const flow_record_t *inserted_record;
+
     bool created;
 
     TEST_CHECK(
@@ -404,6 +414,16 @@ static int test_iteration_and_cleanup(void)
         ) == 0
     );
 
+    TEST_CHECK(created);
+    TEST_CHECK(record != NULL);
+
+    /*
+     * 在调用flow_table_get之前保存插入接口返回的地址。
+     *
+     * 这样才能验证get取得的确实是原来的内部流记录。
+     */
+    inserted_record = record;
+
     TEST_CHECK(
         flow_table_get(
             &table,
@@ -411,8 +431,12 @@ static int test_iteration_and_cleanup(void)
             &record
         ) == 0
     );
-    TEST_CHECK(record == &storage[0]);
 
+    TEST_CHECK(record == inserted_record);
+
+    /*
+     * 流表只有一条记录，逻辑下标1应该越界。
+     */
     TEST_CHECK(
         flow_table_get(
             &table,
@@ -421,10 +445,15 @@ static int test_iteration_and_cleanup(void)
         ) == ERANGE
     );
 
+    /*
+     * 接口失败时不应修改record输出参数。
+     */
+    TEST_CHECK(record == inserted_record);
+
     flow_table_cleanup(&table);
 
     TEST_CHECK(!table.initialized);
-    TEST_CHECK(table.records == NULL);
+    TEST_CHECK(table.slots == NULL);
     TEST_CHECK(flow_table_count(&table) == 0U);
 
     return EXIT_SUCCESS;
@@ -435,8 +464,15 @@ static int test_iteration_and_cleanup(void)
  */
 static int test_expire_flows_and_reuse_capacity(void)
 {
-    flow_record_t storage[3];
+    flow_table_slot_t  storage[3];
     flow_table_t table;
+
+    flow_key_t old_key;
+    flow_key_t active_key;
+    flow_key_t boundary_key;
+
+    flow_direction_t direction;
+    const flow_record_t *found_record;
 
     packet_info_t old_packet;
     packet_info_t active_packet;
@@ -506,6 +542,33 @@ static int test_expire_flows_and_reuse_capacity(void)
         ) == 0
     );
 
+    /*
+    * 保存三条流的键，过期清理后通过公开查找接口验证结果。
+    */
+    TEST_CHECK(
+        flow_key_from_packet(
+            &old_packet,
+            &old_key,
+            &direction
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_key_from_packet(
+            &active_packet,
+            &active_key,
+            &direction
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_key_from_packet(
+            &boundary_packet,
+            &boundary_key,
+            &direction
+        ) == 0
+    );
+
     TEST_CHECK(
         flow_table_process_packet(
             &table,
@@ -548,23 +611,47 @@ static int test_expire_flows_and_reuse_capacity(void)
         ) == 0
     );
 
-    TEST_CHECK(expired_count == 2U);
-    TEST_CHECK(flow_table_count(&table) == 1U);
-
     /*
-     * 原来位于storage[1]的活动流被压缩到storage[0]。
-     */
-    TEST_CHECK(storage[0].initialized);
+    * 100秒的旧流应当已经被删除。
+    */
     TEST_CHECK(
-        storage[0].key.endpoint_b.port ==
-            UINT16_C(3000)
+        flow_table_find(
+            &table,
+            &old_key,
+            &found_record
+        ) == ENOENT
     );
 
     /*
-     * count之后的旧槽位已经清零。
-     */
-    TEST_CHECK(!storage[1].initialized);
-    TEST_CHECK(!storage[2].initialized);
+    * 正好位于200秒边界的流也应删除，因为规则使用<=。
+    */
+    TEST_CHECK(
+        flow_table_find(
+            &table,
+            &boundary_key,
+            &found_record
+        ) == ENOENT
+    );
+
+    /*
+    * 300秒的活动流必须继续存在。
+    */
+    TEST_CHECK(
+        flow_table_find(
+            &table,
+            &active_key,
+            &found_record
+        ) == 0
+    );
+
+    TEST_CHECK(found_record != NULL);
+    TEST_CHECK(
+        found_record->key.endpoint_b.port ==
+            UINT16_C(3000)
+    );
+
+        TEST_CHECK(expired_count == 2U);
+        TEST_CHECK(flow_table_count(&table) == 1U);
 
     /*
      * 清理过期流后，流表重新拥有空闲容量。
@@ -593,7 +680,8 @@ static int test_expire_flows_and_reuse_capacity(void)
 
     TEST_CHECK(created);
     TEST_CHECK(flow_table_count(&table) == 2U);
-    TEST_CHECK(record == &storage[1]);
+    TEST_CHECK(record != NULL);
+    TEST_CHECK(record->key.endpoint_b.port == UINT16_C(5000));
 
     flow_table_cleanup(&table);
 
@@ -605,11 +693,12 @@ static int test_expire_flows_and_reuse_capacity(void)
  */
 static int test_expire_argument_validation(void)
 {
-    flow_record_t storage[1];
+    flow_table_slot_t  storage[1];
     flow_table_t table;
 
     packet_info_t packet;
     const flow_record_t *record;
+    const flow_record_t *stored_record;
 
     flow_timestamp_t invalid_cutoff;
     flow_timestamp_t valid_cutoff;
@@ -646,6 +735,7 @@ static int test_expire_argument_validation(void)
             &created
         ) == 0
     );
+    stored_record = record;
 
     /*
      * 微秒最大只能是999999。
@@ -670,7 +760,7 @@ static int test_expire_argument_validation(void)
 
     TEST_CHECK(expired_count == 99U);
     TEST_CHECK(flow_table_count(&table) == 1U);
-    TEST_CHECK(storage[0].initialized);
+    TEST_CHECK(stored_record->initialized);
 
     valid_cutoff = (flow_timestamp_t){
         .seconds = INT64_C(200),
@@ -689,6 +779,250 @@ static int test_expire_argument_validation(void)
     );
 
     TEST_CHECK(flow_table_count(&table) == 1U);
+
+    flow_table_cleanup(&table);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证哈希冲突、数组回绕、DELETED探测和槽位复用。
+ *
+ * 三条测试流的目标端口经过选择，会在容量为4的流表中
+ * 产生相同的哈希起点。
+ */
+static int test_collision_wraparound_and_deleted_slot(void)
+{
+    flow_table_slot_t storage[4];
+    flow_table_t table;
+
+    packet_info_t first_packet;
+    packet_info_t second_packet;
+    packet_info_t third_packet;
+
+    flow_key_t first_key;
+    flow_key_t second_key;
+    flow_key_t third_key;
+
+    flow_direction_t direction;
+
+    const flow_record_t *record;
+    const flow_record_t *second_record;
+    const flow_record_t *found_record;
+
+    flow_timestamp_t cutoff;
+
+    uint64_t first_hash;
+    uint64_t second_hash;
+    uint64_t third_hash;
+
+    size_t first_index;
+    size_t second_index;
+    size_t expired_count;
+
+    bool created;
+
+    TEST_CHECK(
+        flow_table_init(
+            &table,
+            storage,
+            sizeof(storage) / sizeof(storage[0])
+        ) == 0
+    );
+
+    /*
+     * 2002、2006和2010在容量为4时会产生相同哈希起点。
+     */
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &first_packet,
+            INT64_C(100),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(2002)
+        ) == 0
+    );
+
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &second_packet,
+            INT64_C(300),
+            UINT32_C(70),
+            UINT32_C(70),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(2006)
+        ) == 0
+    );
+
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &third_packet,
+            INT64_C(400),
+            UINT32_C(80),
+            UINT32_C(80),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(2010)
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_key_from_packet(
+            &first_packet,
+            &first_key,
+            &direction
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_key_from_packet(
+            &second_packet,
+            &second_key,
+            &direction
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_key_from_packet(
+            &third_packet,
+            &third_key,
+            &direction
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_key_hash(&first_key, &first_hash) == 0
+    );
+    TEST_CHECK(
+        flow_key_hash(&second_key, &second_hash) == 0
+    );
+    TEST_CHECK(
+        flow_key_hash(&third_key, &third_hash) == 0
+    );
+
+    first_index = (size_t)(
+        first_hash %
+        (uint64_t)(sizeof(storage) / sizeof(storage[0]))
+    );
+
+    TEST_CHECK(
+        first_index ==
+        (size_t)(
+            second_hash %
+            (uint64_t)(sizeof(storage) / sizeof(storage[0]))
+        )
+    );
+
+    TEST_CHECK(
+        first_index ==
+        (size_t)(
+            third_hash %
+            (uint64_t)(sizeof(storage) / sizeof(storage[0]))
+        )
+    );
+
+    /*
+     * 这些测试数据的起始槽位应为数组最后一个槽位。
+     * 第二条流发生冲突后必须绕回storage[0]。
+     */
+    TEST_CHECK(
+        first_index ==
+        (sizeof(storage) / sizeof(storage[0])) - 1U
+    );
+
+    second_index = 0U;
+
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &first_packet,
+            &record,
+            &created
+        ) == 0
+    );
+    TEST_CHECK(created);
+    TEST_CHECK(
+        record == &storage[first_index].record
+    );
+
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &second_packet,
+            &record,
+            &created
+        ) == 0
+    );
+    TEST_CHECK(created);
+    TEST_CHECK(
+        record == &storage[second_index].record
+    );
+
+    second_record = record;
+
+    /*
+     * 删除第一条流，使哈希起点变成DELETED。
+     */
+    cutoff = (flow_timestamp_t){
+        .seconds = INT64_C(100),
+        .microseconds = INT32_C(0)
+    };
+
+    TEST_CHECK(
+        flow_table_expire_before(
+            &table,
+            &cutoff,
+            &expired_count
+        ) == 0
+    );
+
+    TEST_CHECK(expired_count == 1U);
+    TEST_CHECK(flow_table_count(&table) == 1U);
+    TEST_CHECK(
+        storage[first_index].state ==
+        FLOW_TABLE_SLOT_DELETED
+    );
+
+    /*
+     * 查找不能在DELETED槽位停止，必须继续绕回storage[0]。
+     */
+    TEST_CHECK(
+        flow_table_find(
+            &table,
+            &second_key,
+            &found_record
+        ) == 0
+    );
+
+    TEST_CHECK(found_record == second_record);
+
+    /*
+     * 第三条冲突流应优先复用前面的DELETED槽位。
+     */
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &third_packet,
+            &record,
+            &created
+        ) == 0
+    );
+
+    TEST_CHECK(created);
+    TEST_CHECK(flow_table_count(&table) == 2U);
+    TEST_CHECK(
+        record == &storage[first_index].record
+    );
+    TEST_CHECK(
+        storage[first_index].state ==
+        FLOW_TABLE_SLOT_OCCUPIED
+    );
 
     flow_table_cleanup(&table);
 
@@ -741,6 +1075,14 @@ int main(void)
     }
 
     printf("[PASS] expire argument validation\n");
+
+    if (test_collision_wraparound_and_deleted_slot() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf(
+        "[PASS] hash collision, wraparound and deleted slot\n"
+    );
 
     return EXIT_SUCCESS;
 }
