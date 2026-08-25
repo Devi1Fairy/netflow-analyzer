@@ -125,4 +125,33 @@ int flow_key_from_packet(
 bool flow_key_equal(const flow_key_t *left,
                     const flow_key_t *right);
 
+/**
+ * @brief 根据规范化双向流键计算64位哈希值。
+ *
+ * 函数按照固定顺序逐字段处理：
+ *
+ * 1. endpoint_a的IPv4地址；
+ * 2. endpoint_a的端口；
+ * 3. endpoint_b的IPv4地址；
+ * 4. endpoint_b的端口；
+ * 5. IPv4上层协议号。
+ *
+ * 函数不会直接对flow_key_t的内存执行哈希，因为结构体中可能
+ * 存在编译器添加的填充字节，填充内容不能作为业务数据使用。
+ *
+ * 相等的流键一定产生相同哈希值，但不同流键仍有可能产生
+ * 相同哈希值。以后哈希表遇到哈希冲突时，仍必须调用
+ * flow_key_equal确认流键是否真正相等。
+ *
+ * 函数失败时不修改hash_value。
+ *
+ * @param key 指向准备计算哈希值的规范化流键。
+ * @param hash_value 指向用于接收64位哈希值的变量。
+ *
+ * @return 成功时返回0，参数无效时返回EINVAL。
+ */
+int flow_key_hash(
+    const flow_key_t *key,
+    uint64_t *hash_value);
+
 #endif

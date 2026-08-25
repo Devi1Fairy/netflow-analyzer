@@ -104,6 +104,9 @@ static int test_tcp_bidirectional_key(void)
     flow_direction_t forward_direction;
     flow_direction_t reverse_direction;
 
+    uint64_t forward_hash;
+    uint64_t reverse_hash;
+
     TEST_CHECK(
         prepare_flow_packet(
             &forward_packet,
@@ -150,6 +153,37 @@ static int test_tcp_bidirectional_key(void)
             &forward_key,
             &reverse_key
         )
+    );
+
+    /*
+     * 同一条双向流的正向包和反向包生成相同规范化键，
+     * 因此也必须生成相同哈希值。
+     */
+    TEST_CHECK(
+        flow_key_hash(
+            &forward_key,
+            &forward_hash
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_key_hash(
+            &reverse_key,
+            &reverse_hash
+        ) == 0
+    );
+
+    TEST_CHECK(forward_hash == reverse_hash);
+
+    /*
+     * 固定结果用于验证字段顺序和字节顺序没有意外改变。
+     *
+     * 当前键为：
+     * 8.8.8.8:443 <-> 192.168.1.10:52134，TCP。
+     */
+    TEST_CHECK(
+        forward_hash ==
+            UINT64_C(0x244C7CE026B9D2C3)
     );
 
     /*
@@ -402,6 +436,93 @@ static int test_protocol_separates_flows(void)
 }
 
 /**
+ * @brief 验证不同业务字段参与哈希，并验证参数错误处理。
+ */
+static int test_flow_key_hashing(void)
+{
+    flow_key_t original_key = {
+        .endpoint_a = {
+            .ipv4_address = UINT32_C(0x08080808),
+            .port = UINT16_C(53)
+        },
+        .endpoint_b = {
+            .ipv4_address = UINT32_C(0xC0A80101),
+            .port = UINT16_C(50000)
+        },
+        .protocol = IPV4_PROTOCOL_UDP
+    };
+
+    flow_key_t changed_key;
+
+    uint64_t original_hash;
+    uint64_t changed_hash;
+    uint64_t unchanged_hash;
+
+    TEST_CHECK(
+        flow_key_hash(
+            &original_key,
+            &original_hash
+        ) == 0
+    );
+
+    /*
+     * 改变端口后重新计算。
+     *
+     * 哈希算法理论上允许冲突，但这个固定测试输入用于发现
+     * “忘记把端口加入哈希”等具体实现错误。
+     */
+    changed_key = original_key;
+    changed_key.endpoint_b.port = UINT16_C(50001);
+
+    TEST_CHECK(
+        flow_key_hash(
+            &changed_key,
+            &changed_hash
+        ) == 0
+    );
+
+    TEST_CHECK(original_hash != changed_hash);
+
+    /*
+     * 改变协议号也应该影响当前测试输入的哈希结果。
+     */
+    changed_key = original_key;
+    changed_key.protocol = IPV4_PROTOCOL_TCP;
+
+    TEST_CHECK(
+        flow_key_hash(
+            &changed_key,
+            &changed_hash
+        ) == 0
+    );
+
+    TEST_CHECK(original_hash != changed_hash);
+
+    /*
+     * 失败时输出变量必须保持原值。
+     */
+    unchanged_hash = UINT64_C(12345);
+
+    TEST_CHECK(
+        flow_key_hash(
+            NULL,
+            &unchanged_hash
+        ) == EINVAL
+    );
+
+    TEST_CHECK(unchanged_hash == UINT64_C(12345));
+
+    TEST_CHECK(
+        flow_key_hash(
+            &original_key,
+            NULL
+        ) == EINVAL
+    );
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 验证不完整结果和未知协议被拒绝。
  */
 static int test_flow_key_error_handling(void)
@@ -516,6 +637,12 @@ int main(void)
     }
 
     printf("[PASS] flow key error handling\n");
+
+    if (test_flow_key_hashing() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] flow key hashing\n");
 
     return EXIT_SUCCESS;
 }

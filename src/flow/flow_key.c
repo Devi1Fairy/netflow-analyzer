@@ -172,6 +172,100 @@ int flow_key_from_packet(
     return 0;
 }
 
+/**
+ * FNV-1a 64位哈希算法的初始值。
+ */
+#define FLOW_HASH_FNV_OFFSET_BASIS UINT64_C(14695981039346656037)
+
+/**
+ * FNV-1a 64位哈希算法使用的质数。
+ */
+#define FLOW_HASH_FNV_PRIME UINT64_C(1099511628211)
+
+/**
+ * @brief 将一个字节加入当前FNV-1a哈希状态。
+ */
+static uint64_t flow_hash_append_byte(uint64_t current_hash, uint8_t value)
+{
+    current_hash ^= (uint64_t)value;
+
+    /*
+     * 这里的无符号整数回绕是FNV-1a算法的一部分，
+     * 不属于需要报告的计数器溢出错误。
+     */
+    current_hash *= FLOW_HASH_FNV_PRIME;
+
+    return current_hash;
+}
+
+/**
+ * @brief 按固定的大端字节顺序加入一个16位整数。
+ *
+ * 不能直接读取value的内存字节，否则哈希结果会受到主机大小端字节序影响。
+ */
+static uint64_t flow_hash_append_u16(uint64_t current_hash, uint16_t value)
+{
+    current_hash = flow_hash_append_byte(
+        current_hash,
+        (uint8_t)(
+            (value >> 8U) &
+            UINT16_C(0x00FF)
+        )
+    );
+
+    current_hash = flow_hash_append_byte(
+        current_hash,
+        (uint8_t)(
+            value &
+            UINT16_C(0x00FF)
+        )
+    );
+
+    return current_hash;
+}
+
+/**
+ * @brief 按固定的大端字节顺序加入一个32位整数。
+ */
+static uint64_t flow_hash_append_u32(
+    uint64_t current_hash,
+    uint32_t value)
+{
+    current_hash = flow_hash_append_byte(
+        current_hash,
+        (uint8_t)(
+            (value >> 24U) &
+            UINT32_C(0x000000FF)
+        )
+    );
+
+    current_hash = flow_hash_append_byte(
+        current_hash,
+        (uint8_t)(
+            (value >> 16U) &
+            UINT32_C(0x000000FF)
+        )
+    );
+
+    current_hash = flow_hash_append_byte(
+        current_hash,
+        (uint8_t)(
+            (value >> 8U) &
+            UINT32_C(0x000000FF)
+        )
+    );
+
+    current_hash = flow_hash_append_byte(
+        current_hash,
+        (uint8_t)(
+            value &
+            UINT32_C(0x000000FF)
+        )
+    );
+
+    return current_hash;
+}
+
 bool flow_key_equal(const flow_key_t *left,
                     const flow_key_t *right)
 {
@@ -188,4 +282,50 @@ bool flow_key_equal(const flow_key_t *left,
                &left->endpoint_b,
                &right->endpoint_b
            );
+}
+
+int flow_key_hash(const flow_key_t *key, uint64_t *hash_value)
+{
+    uint64_t result_hash;
+
+    if (key == NULL || hash_value == NULL) {
+        return EINVAL;
+    }
+
+    result_hash = FLOW_HASH_FNV_OFFSET_BASIS;
+
+    /*
+     * 只处理有业务意义的字段，不读取结构体填充字节。
+     */
+    result_hash = flow_hash_append_u32(
+        result_hash,
+        key->endpoint_a.ipv4_address
+    );
+
+    result_hash = flow_hash_append_u16(
+        result_hash,
+        key->endpoint_a.port
+    );
+
+    result_hash = flow_hash_append_u32(
+        result_hash,
+        key->endpoint_b.ipv4_address
+    );
+
+    result_hash = flow_hash_append_u16(
+        result_hash,
+        key->endpoint_b.port
+    );
+
+    result_hash = flow_hash_append_byte(
+        result_hash,
+        key->protocol
+    );
+
+    /*
+     * 全部计算完成后再写入输出参数。
+     */
+    *hash_value = result_hash;
+
+    return 0;
 }
