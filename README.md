@@ -200,9 +200,9 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-当前共14项测试：
+当前共15项测试：
 
-- 13项C语言单元测试，分别验证字节读取、抓包封装、数据模型、各层协议解析、分发、流键、流记录和流表；
+- 14项C语言单元测试，分别验证字节读取、抓包封装、数据模型、各层协议解析、分发、流键、流记录、流表和CSV格式化；
 - 1项Python端到端测试，生成确定性的6包PCAP，启动真实命令行程序并验证完整分析、5包预览和双向流统计。
 
 只运行端到端验收：
@@ -228,6 +228,7 @@ ctest --test-dir build -R offline_flow_acceptance --output-on-failure
 | `flow_key` | 生成与方向无关的规范化双向五元组 |
 | `flow_record` | 保存一条流及两个方向的统计信息 |
 | `flow_table` | 查找或创建流记录，并把数据包聚合到对应方向 |
+| `flow_export` | 把流记录转换成具有固定字段顺序的CSV表头和数据行 |
 
 ## ARM Linux部署准备
 

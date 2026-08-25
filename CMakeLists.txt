@@ -80,6 +80,7 @@ add_library(
     src/flow/flow_key.c
     src/flow/flow_record.c
     src/flow/flow_table.c
+    src/output/flow_export.c
 )
 
 # PUBLIC表示使用analyzer_core的目标自动继承公开头文件目录。
@@ -534,6 +535,34 @@ if(BUILD_TESTING)
         offline_flow_acceptance
         PROPERTIES
             TIMEOUT 10
+    )
+
+    # 创建CSV流记录导出单元测试程序。
+    add_executable(
+        flow_export_tests
+        tests/unit/test_flow_export.c
+    )
+
+    # CSV导出器和IPv4地址格式化函数由核心静态库提供。
+    target_link_libraries(
+        flow_export_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    # 使用与正式代码相同的严格编译警告。
+    enable_project_warnings(flow_export_tests)
+
+    # 注册到CTest自动化测试集合。
+    add_test(
+        NAME flow_export_tests
+        COMMAND flow_export_tests
+    )
+
+    set_tests_properties(
+        flow_export_tests
+        PROPERTIES
+            TIMEOUT 5
     )
 
 endif()
