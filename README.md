@@ -96,7 +96,9 @@ netflow-analyzer/
 │   ├── unit/
 │   └── integration/test_offline_flow.py
 ├── scripts/check_target_env.sh
-├── docs/problem_log.md
+├── docs/
+│   ├── problem_log.md
+│   └── technical_decisions.md
 └── labs/
 ```
 
@@ -253,4 +255,4 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 8. 开发板到达后完成ARM Linux原生构建与运行验收；
 9. 在稳定的数据接口之上实现Qt上位机，并按需要扩展云端展示。
 
-版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)。
+版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)，技术、环境和硬件选型见[docs/technical_decisions.md](docs/technical_decisions.md)。
