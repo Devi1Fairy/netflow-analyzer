@@ -6,6 +6,7 @@
 #include "analyzer/icmp.h"
 #include "analyzer/ipv4_dispatch.h"
 #include "analyzer/flow_table.h"
+#include "analyzer/flow_export.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -48,14 +49,15 @@ static int app_print_help(const char *program_name)
 
     if (printf(
             "Usage: %s [OPTION]\n"
-            "       %s --read <PCAP_FILE>\n"
+            "       %s --read <PCAP_FILE> [--csv <CSV_FILE>]\n"
             "\n"
             "Linux network traffic analyzer.\n"
             "\n"
             "Options:\n"
             "  -h, --help       Show this help message.\n"
             "  -V, --version    Show program version.\n"
-            "  -r, --read FILE  Analyze an offline PCAP file.\n",
+            "  -r, --read FILE  Analyze an offline PCAP file.\n"
+            "      --csv FILE   Export flow records to a new CSV file.\n",
             display_name,
             display_name) < 0) {
         return EIO;
@@ -229,6 +231,109 @@ static int app_print_flow_summary(const flow_table_t *table)
     }
 
     return 0;
+}
+
+/**
+ * @brief 把流表中的全部记录导出到一个新CSV文件。
+ *
+ * 本函数拥有局部FILE对象的完整生命周期：
+ *
+ * 1. 使用独占创建模式打开文件；
+ * 2. 写入CSV表头；
+ * 3. 遍历流表并写入记录；
+ * 4. 无论中途是否失败，都执行fclose。
+ *
+ * "wx"模式拒绝覆盖已有文件。
+ *
+ * @param table 指向已经完成聚合的流表。
+ * @param output_path 准备创建的CSV文件路径。
+ *
+ * @return 成功时返回0；
+ *         参数无效时返回EINVAL；
+ *         文件已存在时返回EEXIST；
+ *         其他打开、写入或关闭错误返回对应错误码。
+ */
+static int app_export_flow_table_csv(
+    const flow_table_t *table,
+    const char *output_path)
+{
+    const flow_record_t *record;
+    FILE *output;
+
+    size_t flow_count;
+    size_t index;
+
+    int operation_error;
+    int close_error;
+
+    if (table == NULL ||
+        !table->initialized ||
+        output_path == NULL ||
+        output_path[0] == '\0') {
+        return EINVAL;
+    }
+
+    /*
+     * errno在成功调用后没有确定意义。
+     * 打开前清零，失败后才能安全地判断是否获得了具体错误码。
+     */
+    errno = 0;
+
+    /*
+     * x表示独占创建。
+     *
+     * 如果文件已经存在，fopen失败，不会截断原文件。
+     */
+    output = fopen(output_path, "wx");
+
+    if (output == NULL) {
+        return errno != 0 ? errno : EIO;
+    }
+
+    operation_error =
+        flow_export_write_csv_header(output);
+
+    if (operation_error == 0) {
+        flow_count = flow_table_count(table);
+
+        for (index = 0U; index < flow_count; index += 1U) {
+            operation_error = flow_table_get(table, index, &record);
+
+            if (operation_error != 0) {
+                break;
+            }
+
+            operation_error =
+                flow_export_write_csv_record(
+                    output,
+                    record
+                );
+
+            if (operation_error != 0) {
+                break;
+            }
+        }
+    }
+
+    /*
+     * fclose可能在刷新标准库缓冲区时发现真正的磁盘写入错误，
+     * 因此不能忽略它的返回值。
+     */
+    errno = 0;
+    close_error = 0;
+
+    if (fclose(output) != 0) {
+        close_error = errno != 0 ? errno : EIO;
+    }
+
+    /*
+     * 如果写入和关闭都失败，优先返回更早发生的写入错误。
+     */
+    if (operation_error != 0) {
+        return operation_error;
+    }
+
+    return close_error;
 }
 
 
@@ -944,10 +1049,43 @@ static int app_run_capture_analysis(app_context_t *context)
         return error_code;
     }
 
+    if (context->csv_output_path != NULL) {
+        error_code = app_export_flow_table_csv(
+            &flow_table,
+            context->csv_output_path
+        );
+
+        if (error_code != 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to export CSV '%s': %s",
+                context->csv_output_path,
+                strerror(error_code)
+            );
+
+            flow_table_cleanup(&flow_table);
+            return error_code;
+        }
+
+        if (printf(
+                "CSV output: %s\n",
+                context->csv_output_path) < 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "CSV was created, but confirmation output failed"
+            );
+
+            flow_table_cleanup(&flow_table);
+            return EIO;
+        }
+    }
+
     /*
-     * flow_table_cleanup只解除对flow_storage的借用，不会free数组。
+     * flow_table_cleanup只解除对flow_slots的借用，不会free数组。
      *
-     * 函数返回后，flow_storage作为局部数组自然结束生命周期。
+     * 函数返回后，flow_slots作为局部数组自然结束生命周期。
      */
     flow_table_cleanup(&flow_table);
 
@@ -967,6 +1105,7 @@ int app_context_init(app_context_t *context)
         .command = APP_COMMAND_HELP,
         .program_name = "netflow-analyzer",
         .capture_path = NULL,
+        .csv_output_path = NULL,
         .error_message = {0},
         .stop_requested = false,
         .initialized = true
@@ -979,6 +1118,11 @@ int app_parse_arguments(app_context_t *context,
                         int argc,
                         char *argv[])
 {
+    const char *parsed_capture_path;
+    const char *parsed_csv_output_path;
+
+    int argument_index;
+
     if (context == NULL ||
         !context->initialized ||
         argc < 1 ||
@@ -988,23 +1132,23 @@ int app_parse_arguments(app_context_t *context,
     }
 
     /*
-     * 只借用argv[0]的地址，不复制字符串，也不取得所有权。
-     *
-     * argv中的字符串在main运行期间始终有效。
+     * 每次解析前恢复参数相关字段的默认值。
      */
     context->program_name = argv[0];
+    context->command = APP_COMMAND_HELP;
     context->capture_path = NULL;
+    context->csv_output_path = NULL;
     context->error_message[0] = '\0';
+
     /*
-     * 无参数时显示帮助，而不是报错或崩溃。
+     * 无参数时显示帮助。
      */
     if (argc == 1) {
-        context->command = APP_COMMAND_HELP;
         return 0;
     }
 
     /*
-     * help和version命令只接受一个选项。
+     * 帮助和版本不能与其他选项组合。
      */
     if (argc == 2 && argv[1] != NULL) {
         if (strcmp(argv[1], "--help") == 0 ||
@@ -1022,29 +1166,80 @@ int app_parse_arguments(app_context_t *context,
         return EINVAL;
     }
 
+    parsed_capture_path = NULL;
+    parsed_csv_output_path = NULL;
+    argument_index = 1;
+
     /*
-     * 离线读取命令需要一个额外的PCAP文件路径：
+     * 从argv[1]开始逐组选取“选项 + 参数”。
      *
-     * netflow-analyzer --read input.pcap
+     * 当前允许：
+     *
+     * --read input.pcap --csv flows.csv
+     * --csv flows.csv --read input.pcap
      */
-    if (argc == 3 &&
-        argv[1] != NULL &&
-        argv[2] != NULL &&
-        argv[2][0] != '\0' &&
-        (strcmp(argv[1], "--read") == 0 ||
-         strcmp(argv[1], "-r") == 0)) {
-        context->command = APP_COMMAND_READ_CAPTURE;
+    while (argument_index < argc) {
+        const char *option = argv[argument_index];
+        const char *option_value;
+
+        if (option == NULL) {
+            return EINVAL;
+        }
 
         /*
-         * argv中的字符串由进程启动环境管理。
-         * context只借用地址，不复制、不free。
+         * 所有当前业务选项后面都必须存在一个非空参数。
          */
-        context->capture_path = argv[2];
+        if (argument_index + 1 >= argc ||
+            argv[argument_index + 1] == NULL ||
+            argv[argument_index + 1][0] == '\0') {
+            return EINVAL;
+        }
 
-        return 0;
+        option_value = argv[argument_index + 1];
+
+        if (strcmp(option, "--read") == 0 ||
+            strcmp(option, "-r") == 0) {
+            /*
+             * 重复指定输入文件通常意味着命令写错，
+             * 因此直接拒绝，不采用“后一个覆盖前一个”。
+             */
+            if (parsed_capture_path != NULL) {
+                return EINVAL;
+            }
+
+            parsed_capture_path = option_value;
+        } else if (strcmp(option, "--csv") == 0) {
+            if (parsed_csv_output_path != NULL) {
+                return EINVAL;
+            }
+
+            parsed_csv_output_path = option_value;
+        } else {
+            return EINVAL;
+        }
+
+        /*
+         * 本轮已经消费一个选项和它后面的值。
+         */
+        argument_index += 2;
     }
 
-    return EINVAL;
+    /*
+     * --csv只能作为离线分析的附加输出，
+     * 不能在没有--read时独立运行。
+     */
+    if (parsed_capture_path == NULL) {
+        return EINVAL;
+    }
+
+    /*
+     * 全部参数检查通过后再发布解析结果。
+     */
+    context->command = APP_COMMAND_READ_CAPTURE;
+    context->capture_path = parsed_capture_path;
+    context->csv_output_path = parsed_csv_output_path;
+
+    return 0;
 }
 
 int app_run(app_context_t *context)
@@ -1103,6 +1298,16 @@ int app_run(app_context_t *context)
                 context->error_message,
                 sizeof(context->error_message),
                 "capture path is missing"
+            );
+
+            return EINVAL;
+        }
+
+        if (context->csv_output_path != NULL && context->csv_output_path[0] == '\0') {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "CSV output path is empty"
             );
 
             return EINVAL;

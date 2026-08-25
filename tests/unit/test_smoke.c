@@ -37,6 +37,7 @@ static int test_context_lifecycle(void)
     TEST_CHECK(!context.stop_requested);
     TEST_CHECK(context.command == APP_COMMAND_HELP);
     TEST_CHECK(context.capture_path == NULL);
+    TEST_CHECK(context.csv_output_path == NULL);
     TEST_CHECK(context.error_message[0] == '\0');
 
     TEST_CHECK(app_request_stop(&context) == 0);
@@ -53,6 +54,7 @@ static int test_context_lifecycle(void)
     TEST_CHECK(!context.initialized);
     TEST_CHECK(context.capture_path == NULL);
     TEST_CHECK(context.error_message[0] == '\0');
+    TEST_CHECK(context.csv_output_path == NULL);
 
     return EXIT_SUCCESS;
 }
@@ -158,6 +160,7 @@ static int test_read_capture_command(void)
      * context借用argv[2]的地址，没有复制字符串。
      */
     TEST_CHECK(context.capture_path == arguments[2]);
+    TEST_CHECK(context.csv_output_path == NULL);
 
     TEST_CHECK(
         strcmp(context.capture_path,
@@ -227,6 +230,100 @@ static int test_missing_capture_argument(void)
 }
 
 /**
+ * @brief 验证离线输入和CSV输出参数能够同时保存。
+ */
+static int test_read_capture_with_csv_command(void)
+{
+    app_context_t context;
+
+    char *arguments[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        "--csv",
+        "flows.csv",
+        NULL
+    };
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            5,
+            arguments
+        ) == 0
+    );
+
+    TEST_CHECK(
+        context.command ==
+            APP_COMMAND_READ_CAPTURE
+    );
+
+    /*
+     * 两个路径都直接借用argv中的字符串。
+     */
+    TEST_CHECK(context.capture_path == arguments[2]);
+    TEST_CHECK(context.csv_output_path == arguments[4]);
+
+    TEST_CHECK(
+        strcmp(
+            context.csv_output_path,
+            "flows.csv"
+        ) == 0
+    );
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证缺失或脱离--read使用的CSV参数会被拒绝。
+ */
+static int test_invalid_csv_arguments(void)
+{
+    app_context_t context;
+
+    char *missing_csv_path[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        "--csv",
+        NULL
+    };
+
+    char *csv_without_capture[] = {
+        "netflow-analyzer",
+        "--csv",
+        "flows.csv",
+        NULL
+    };
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            4,
+            missing_csv_path
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            3,
+            csv_without_capture
+        ) == EINVAL
+    );
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 阶段0冒烟测试入口。
  */
 int main(void)
@@ -256,7 +353,7 @@ int main(void)
     printf("[PASS] invalid argument\n");
 
     if (test_read_capture_command() != EXIT_SUCCESS) {
-    return EXIT_FAILURE;
+        return EXIT_FAILURE;
     }
 
     printf("[PASS] read capture command\n");
@@ -272,6 +369,19 @@ int main(void)
     }
 
     printf("[PASS] missing capture argument\n");
+
+    if (test_read_capture_with_csv_command() !=EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] read capture with CSV command\n");
+
+    if (test_invalid_csv_arguments() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] invalid CSV arguments\n");
 
     return EXIT_SUCCESS;
 }

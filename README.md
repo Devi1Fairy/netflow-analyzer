@@ -177,6 +177,11 @@ Release主程序位于`build-release/bin/netflow-analyzer`。
 
 # 读取并分析一个离线PCAP文件。
 ./build/bin/netflow-analyzer --read /path/to/input.pcap
+
+# 分析离线PCAP，并把最终双向流记录写入一个新CSV文件。
+./build/bin/netflow-analyzer \
+    --read /path/to/input.pcap \
+    --csv /path/to/flows.csv
 ```
 
 当前参数：
@@ -186,8 +191,9 @@ Release主程序位于`build-release/bin/netflow-analyzer`。
 | `-h`、`--help` | 显示帮助 |
 | `-V`、`--version` | 显示版本 |
 | `-r FILE`、`--read FILE` | 分析离线PCAP文件 |
+| `--csv FILE` | 把流记录导出到一个新CSV文件，不覆盖已有文件 |
 
-离线分析会先显示文件与链路类型，再预览前5个数据包。程序仍会处理文件中的所有数据包，最后输出总包数、预览包数和双向流汇总。
+离线分析会先显示文件与链路类型，再预览前5个数据包。程序仍会处理文件中的所有数据包，最后输出总包数、预览包数和双向流汇总。指定`--csv`后，应用层在聚合成功后创建CSV文件，写入固定表头和全部流记录；C11的独占创建模式会在目标已存在时失败，避免静默覆盖原文件。
 
 ## 自动化测试
 
@@ -203,7 +209,7 @@ ctest --test-dir build --output-on-failure
 当前共15项测试：
 
 - 14项C语言单元测试，分别验证字节读取、抓包封装、数据模型、各层协议解析、分发、流键、流记录、流表和CSV格式化；
-- 1项Python端到端测试，生成确定性的6包PCAP，启动真实命令行程序并验证完整分析、5包预览和双向流统计。
+- 1项Python端到端测试，生成确定性的6包PCAP，启动真实命令行程序并验证完整分析、5包预览、双向流统计和CSV文件内容。
 
 只运行端到端验收：
 
@@ -248,14 +254,13 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 
 建议按以下顺序推进：
 
-1. 增加CSV结构化流记录输出，形成供测试、Qt、Python和云端复用的数据接口；
-2. 接入实时抓包、BPF过滤、信号退出和运行统计；
-3. 在实时主流程中配置流空闲超时、过期输出和定期清理策略；
-4. 使用性能和容量数据决定是否增加负载因子控制、重建或动态扩容；
-5. 把实验中的阻塞队列和线程流水线接入正式分析链；
-6. 增加TCP状态跟踪、流重组与DNS、HTTP等应用层解析；
-7. 实现规则异常检测，再准备机器学习特征与模型；
-8. 开发板到达后完成ARM Linux原生构建与运行验收；
-9. 在稳定的数据接口之上实现Qt上位机，并按需要扩展云端展示。
+1. 接入实时抓包、BPF过滤、信号退出和运行统计；
+2. 在实时主流程中配置流空闲超时、过期输出和定期清理策略；
+3. 使用性能和容量数据决定是否增加负载因子控制、重建或动态扩容；
+4. 把实验中的阻塞队列和线程流水线接入正式分析链；
+5. 增加TCP状态跟踪、流重组与DNS、HTTP等应用层解析；
+6. 实现规则异常检测，再准备机器学习特征与模型；
+7. 开发板到达后完成ARM Linux原生构建与运行验收；
+8. 在稳定的数据接口之上实现Qt上位机，并按需要扩展云端展示。
 
 版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)，技术、环境和硬件选型见[docs/technical_decisions.md](docs/technical_decisions.md)。

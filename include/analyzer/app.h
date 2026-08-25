@@ -54,6 +54,15 @@ typedef struct {
     const char *capture_path;
 
     /**
+     * CSV流记录输出文件路径。
+     *
+     * 该指针借用argv中的字符串地址，不拥有字符串，也不能free。
+     *
+     * NULL表示只显示终端文本，不生成CSV文件。
+     */
+    const char *csv_output_path;
+
+    /**
      * 保存应用层最近一次可读错误说明。
      *
      * 该数组属于app_context_t本身，不需要单独free。
@@ -95,6 +104,7 @@ int app_context_init(app_context_t *context);
  * - --help或-h；
  * - --version或-V。
  * - --read FILE或-r FILE
+ * - --read FILE --csv CSV_FILE
  *
  * @param context 指向已经初始化的应用上下文。
  * @param argc main函数收到的参数数量。

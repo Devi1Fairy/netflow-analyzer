@@ -303,3 +303,39 @@ TEST_CHECK(record == inserted_record);
 - 期望值应在被测操作之前准备，不能由被测操作的实际结果反向生成；
 - 代码评审不仅要检查业务实现，也要检查测试是否可能形成恒真断言；
 - 这类问题适合在面试中说明：自动化测试仍需要开发人员审查测试目标、输入和断言之间的对应关系。
+
+### 3.4 CSV验收路径放错函数，触发Python局部变量未定义
+
+现象：
+
+扩展离线验收脚本后，CTest在C程序启动前失败：
+
+```text
+NameError: name 'temporary_directory' is not defined
+```
+
+回溯显示错误发生在`write_test_pcap`内部创建CSV路径的位置。
+
+根因：
+
+`temporary_directory`是`run_acceptance_test`中`with tempfile.TemporaryDirectory(...) as temporary_directory`创建的局部变量，只在该函数作用域内可见。CSV路径代码被误放进`write_test_pcap`，而该函数只接收`pcap_path`，不能访问调用者的局部变量。
+
+解决办法：
+
+- `write_test_pcap`继续只负责根据传入路径生成PCAP；
+- 在`run_acceptance_test`的临时目录代码块中同时创建`pcap_path`和`csv_path`；
+- 两个路径分别传给PCAP生成逻辑和被测命令行程序；
+- 保持路径变量与临时目录生命周期一致。
+
+验证结果：
+
+- Python脚本能够生成临时PCAP并向程序传入CSV路径；
+- CSV文件包含预期表头和一条ICMP双向流记录；
+- CSV相关3项测试和全部15项CTest测试通过。
+
+经验：
+
+- Python函数不能直接访问调用者的局部变量；
+- 回溯最底部附近通常能找到最先触发异常的源码位置；
+- 临时文件路径应在拥有临时目录生命周期的函数中统一创建；
+- 函数职责越单一，变量应该属于哪个作用域越容易判断。

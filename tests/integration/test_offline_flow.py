@@ -223,6 +223,11 @@ def run_acceptance_test(
             / "offline-flow-test.pcap"
         )
 
+        csv_path = (
+            Path(temporary_directory)
+            / "offline-flow-result.csv"
+        )
+
         write_test_pcap(pcap_path)
 
         completed_process = subprocess.run(
@@ -230,6 +235,8 @@ def run_acceptance_test(
                 str(program),
                 "--read",
                 str(pcap_path),
+                "--csv",
+                str(csv_path),
             ],
             capture_output=True,
             text=True,
@@ -287,6 +294,84 @@ def run_acceptance_test(
             output,
             "last_seen=1700000003.000200",
         )
+
+        require_text(
+            output,
+            f"CSV output: {csv_path}",
+        )
+
+        if not csv_path.is_file():
+            raise RuntimeError(
+                f"CSV output was not created: {csv_path}"
+            )
+
+        csv_lines = csv_path.read_text(
+            encoding="utf-8"
+        ).splitlines()
+
+        expected_csv_lines = [
+            (
+                "protocol,"
+                "endpoint_a_ip,"
+                "endpoint_a_port,"
+                "endpoint_b_ip,"
+                "endpoint_b_port,"
+                "a_to_b_packets,"
+                "a_to_b_captured_bytes,"
+                "a_to_b_wire_bytes,"
+                "b_to_a_packets,"
+                "b_to_a_captured_bytes,"
+                "b_to_a_wire_bytes,"
+                "first_seen_seconds,"
+                "first_seen_microseconds,"
+                "last_seen_seconds,"
+                "last_seen_microseconds"
+            ),
+            (
+                "1,10.0.0.1,0,10.0.0.2,0,"
+                "3,138,138,"
+                "3,138,138,"
+                "1700000001,100,"
+                "1700000003,200"
+            ),
+        ]
+
+        if csv_lines != expected_csv_lines:
+            raise RuntimeError(
+                "CSV output does not match expected records\n"
+                f"expected: {expected_csv_lines!r}\n"
+                f"actual: {csv_lines!r}"
+            )
+
+        # 保存第一次成功生成的CSV内容。
+        original_csv_content = csv_path.read_bytes()
+
+        # 再次使用相同CSV路径运行程序。
+        # 因为输出文件已经存在，本次运行必须失败。
+        repeated_process = subprocess.run(
+            [
+                str(program),
+                "--read",
+                str(pcap_path),
+                "--csv",
+                str(csv_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+
+        if repeated_process.returncode == 0:
+            raise RuntimeError(
+                "analyzer unexpectedly overwrote an existing CSV file"
+            )
+
+        # 拒绝覆盖后，原CSV内容必须保持不变。
+        if csv_path.read_bytes() != original_csv_content:
+            raise RuntimeError(
+                "existing CSV content changed after overwrite rejection"
+            )
 
 
 def main() -> int:
