@@ -111,7 +111,7 @@ static int app_print_help(const char *program_name)
     if (printf(
             "Usage: %s [OPTION]\n"
             "       %s --read <PCAP_FILE> [--csv <CSV_FILE>]\n"
-            "       %s --interface <INTERFACE> --count <PACKETS>\n"
+            "       %s --interface <INTERFACE> --count <PACKETS> [--filter <BPF_EXPRESSION>]\n"
             "\n"
             "Linux network traffic analyzer.\n"
             "\n"
@@ -121,6 +121,7 @@ static int app_print_help(const char *program_name)
             "  -r, --read FILE  Analyze an offline PCAP file.\n"
             "  -i, --interface NAME  Analyze a live capture interface.\n"
             "  -c, --count PACKETS   Stop after capturing PACKETS packets.\n"
+            "      --filter EXPRESSION  Apply a BPF filter to live capture.\n"
             "      --csv FILE   Export flow records to a new CSV file.\n",
             display_name,
             display_name,
@@ -1008,6 +1009,51 @@ static int app_run_capture_analysis(app_context_t *context)
         return ENOTSUP;
     }
 
+    /*
+     * 第一版只为实时采集安装CLI提供的BPF表达式。
+     *
+     * 安装位置必须满足：
+     *
+     * 1. capture句柄已经成功打开；
+     * 2. 链路类型已经取得并验证；
+     * 3. 尚未进入capture_next_packet读取循环。
+     *
+     * 因此安装失败时不会有任何未过滤数据包进入解析和流表。
+     */
+    if (live_capture && context->filter_expression != NULL) {
+        error_code = capture_set_filter(
+            capture,
+            context->filter_expression,
+            capture_error,
+            sizeof(capture_error)
+        );
+
+        if (error_code != 0) {
+            /*
+             * capture_error属于当前函数，不依赖capture句柄生命周期。
+             * 仍然必须在关闭句柄前完成应用层错误信息组装。
+             */
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to install BPF filter '%s' "
+                "on interface '%s': %s",
+                context->filter_expression,
+                capture_source,
+                capture_error[0] != '\0'
+                    ? capture_error
+                    : "unknown libpcap error"
+            );
+
+            /*
+             * 流表尚未初始化，因此这里只需要关闭capture。
+             */
+            capture_close(&capture);
+
+            return error_code;
+        }
+    }
+
     error_code = flow_table_init(
         &flow_table,
         flow_slots,
@@ -1029,9 +1075,11 @@ static int app_run_capture_analysis(app_context_t *context)
         error_code = printf(
             "Capture interface: %s\n"
             "Packet limit: %zu\n"
+            "BPF filter: %s\n"
             "Link type: Ethernet\n",
             capture_source,
-            context->packet_limit
+            context->packet_limit,
+            context->filter_expression != NULL ? context->filter_expression : "(none)"
         );
     } else {
         error_code = printf(
@@ -1253,6 +1301,7 @@ int app_context_init(app_context_t *context)
         .program_name = "netflow-analyzer",
         .capture_path = NULL,
         .interface_name = NULL,
+        .filter_expression = NULL,
         .packet_limit = 0U,
         .csv_output_path = NULL,
         .error_message = {0},
@@ -1269,6 +1318,7 @@ int app_parse_arguments(app_context_t *context,
 {
     const char *parsed_capture_path;
     const char *parsed_interface_name;
+    const char *parsed_filter_expression;
     const char *parsed_csv_output_path;
     size_t parsed_packet_limit;
 
@@ -1290,6 +1340,7 @@ int app_parse_arguments(app_context_t *context,
     context->command = APP_COMMAND_HELP;
     context->capture_path = NULL;
     context->interface_name = NULL;
+    context->filter_expression = NULL;
     context->packet_limit = 0U;
     context->csv_output_path = NULL;
     context->error_message[0] = '\0';
@@ -1322,8 +1373,10 @@ int app_parse_arguments(app_context_t *context,
 
     parsed_capture_path = NULL;
     parsed_interface_name = NULL;
-    parsed_packet_limit = 0U;
+    parsed_filter_expression = NULL;
     parsed_csv_output_path = NULL;
+    parsed_packet_limit = 0U;
+
     argument_index = 1;
 
     /*
@@ -1384,7 +1437,22 @@ int app_parse_arguments(app_context_t *context,
             if (error_code != 0) {
                 return EINVAL;
             }
-        }else if (strcmp(option, "--csv") == 0) {
+        } else if (strcmp(option, "--filter") == 0) {
+            /*
+             * 重复提供过滤器会导致最终使用哪一个表达式不明确。
+             */
+            if (parsed_filter_expression != NULL) {
+                return EINVAL;
+            }
+
+            /*
+             * option_value直接借用argv中的字符串。
+             *
+             * 循环开头已经拒绝NULL和空字符串，因此这里不需要再次
+             * 检查内容是否为空。
+             */
+            parsed_filter_expression = option_value;
+        } else if (strcmp(option, "--csv") == 0){
             if (parsed_csv_output_path != NULL) {
                 return EINVAL;
             }
@@ -1427,6 +1495,17 @@ int app_parse_arguments(app_context_t *context,
     }
 
     /*
+     * 第一版只允许实时抓包使用BPF过滤器。
+     *
+     * capture层本身支持离线句柄，以便进行确定性单元测试；但CLI先
+     * 保持较小的功能范围，后续可以再放宽离线过滤。
+     */
+    if (parsed_capture_path != NULL &&
+        parsed_filter_expression != NULL) {
+        return EINVAL;
+    }
+
+    /*
      * 实时抓包必须提供一个大于0的数据包数量。
      */
     if (parsed_interface_name != NULL &&
@@ -1449,8 +1528,9 @@ int app_parse_arguments(app_context_t *context,
      */
     context->capture_path = parsed_capture_path;
     context->interface_name = parsed_interface_name;
-    context->packet_limit = parsed_packet_limit;
+    context->filter_expression = parsed_filter_expression;
     context->csv_output_path = parsed_csv_output_path;
+    context->packet_limit = parsed_packet_limit;
 
     if (parsed_capture_path != NULL) {
         context->command = APP_COMMAND_READ_CAPTURE;
@@ -1522,6 +1602,22 @@ int app_run(app_context_t *context)
             return EINVAL;
         }
 
+        /*
+         * 第一版CLI不允许离线分析使用BPF过滤器。
+         *
+         * app_parse_arguments已经检查该规则；这里继续验证是为了防止
+         * 调用者绕过参数解析，手动构造出不一致的上下文。
+         */
+        if (context->filter_expression != NULL) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "BPF filter is only supported for live capture"
+            );
+
+            return EINVAL;
+        }
+
         if (context->csv_output_path != NULL && context->csv_output_path[0] == '\0') {
             (void)snprintf(
                 context->error_message,
@@ -1551,6 +1647,20 @@ int app_run(app_context_t *context)
                 context->error_message,
                 sizeof(context->error_message),
                 "live packet limit is missing"
+            );
+
+            return EINVAL;
+        }
+
+        /*
+         * NULL表示不使用过滤器；非NULL表达式必须至少包含一个字符。
+         */
+        if (context->filter_expression != NULL &&
+            context->filter_expression[0] == '\0') {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "BPF filter expression is empty"
             );
 
             return EINVAL;

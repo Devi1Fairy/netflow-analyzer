@@ -2,7 +2,7 @@
 
 本文档记录Netflow Analyzer项目的重要技术、开发环境、测试方案和硬件选型。它回答的不只是“用了什么”，还包括“为什么使用、放弃了什么、承担了什么代价、何时需要重新评估”。
 
-最后更新：2026-08-25。
+最后更新：2026-08-26。
 
 ## 1. 记录规则
 
@@ -41,6 +41,7 @@
 | TD-017 | 目标开发板选择LubanCat-2N | 待验证 |
 | TD-018 | 首次上板先原生编译，再评估交叉编译 | 计划采用 |
 | TD-019 | 使用Git功能分支、Pull Request和版本标签 | 已采用 |
+| TD-020 | 通过libpcap classic BPF在读取循环前过滤实时流量 | 已采用 |
 
 ## 3. 核心语言与运行平台
 
@@ -161,9 +162,9 @@ Makefile仍需要理解，但当前项目的重点不是重复维护平台相关
 - `capture_open_offline()`负责打开离线PCAP；
 - `capture_open_live()`负责打开实时网卡，并显式接收快照长度、混杂模式和读取超时；
 - 两种输入统一复用链路类型查询、逐包读取、错误查询和关闭接口；
-- CLI使用`--interface NAME --count PACKETS`运行有限包数的实时处理循环；
+- CLI使用`--interface NAME --count PACKETS [--filter EXPRESSION]`运行有限包数的实时处理循环；
 - 实时与离线数据复用同一套协议解析、双向流聚合和输出函数，采集来源差异被限制在应用编排层；
-- `--count`限制已捕获包数而不是等待秒数，第一版便于确定性演示；BPF、信号优雅退出和抓包统计仍待接入。
+- `--count`限制返回应用的包数而不是等待秒数；安装BPF后只统计匹配包，信号优雅退出和抓包统计仍待接入。
 
 选择libpcap的原因：
 
@@ -195,6 +196,61 @@ Wireshark是成熟分析工具，但项目目标是开发可嵌入业务程序�
 - 如果常规libpcap无法满足真实吞吐量，再通过性能数据评估AF_PACKET、TPACKET_V3、AF_XDP或DPDK，而不是提前增加复杂度。
 
 参考：[libpcap项目](https://github.com/the-tcpdump-group/libpcap)、[pcap_open_offline手册](https://www.tcpdump.org/manpages/pcap_open_offline.3pcap.html)。
+
+### TD-020：通过libpcap classic BPF在读取循环前过滤实时流量
+
+状态：已采用。
+
+决定：
+
+采集模块公开`capture_set_filter()`，接收项目自己的不透明`capture_t`、BPF表达式和可选错误缓冲区，不向公开头文件暴露`pcap_t`或`struct bpf_program`。第一版CLI只允许实时模式使用`--filter EXPRESSION`；底层采集接口同时支持离线句柄，以便构造确定性测试。
+
+应用层使用以下顺序：
+
+```text
+打开capture句柄
+→ 查询并验证链路类型
+→ 编译并安装BPF
+→ 初始化流表
+→ 进入数据包读取循环
+```
+
+实现和所有权：
+
+- `pcap_compile()`启用优化，并暂时使用`PCAP_NETMASK_UNKNOWN`；
+- 编译成功后调用`pcap_setfilter()`，无论安装成功还是失败都调用`pcap_freecode()`释放临时编译结果；
+- 表达式字符串借用自`argv`，应用上下文不复制、不修改，也不负责`free`；
+- 已安装过滤器的生命周期由libpcap采集句柄管理，释放临时`bpf_program`不会取消过滤；
+- 参数错误返回`EINVAL`，编译或安装失败返回`EIO`并复制libpcap错误；
+- 采集层配置失败时不擅自关闭句柄，应用编排层负责组装错误信息并统一调用`capture_close()`。
+
+原因：
+
+- 实时接口包含系统上所有符合链路条件的流量，缺少过滤时，无关TCP流可能先占满有限的`--count`；
+- 在协议解析和流聚合前过滤可以减少无关数据进入应用处理链，并让人工演示更可重复；
+- 复用libpcap标准过滤语法和编译器，比项目自行解析过滤表达式更可靠，也能与tcpdump使用相近表达式；
+- 实时过滤可能由内核或具体捕获后端执行，实际位置依赖平台和libpcap后端，因此不假定所有环境都具有相同卸载行为。
+
+行为影响：
+
+- 不提供`--filter`时，`--count`统计libpcap返回的全部数据包；
+- 提供过滤器后，只有匹配包会返回应用、增加计数并进入协议解析和流表；
+- classic BPF是包级筛选机制，不等于eBPF应用框架，也不等于需要TCP重组和应用层语义的DPI。
+
+验证：
+
+- 使用离线Ethernet PCAP验证合法表达式安装、非法语法错误、ICMP匹配和TCP排除，不依赖root或真实网卡；
+- 冒烟测试覆盖初始化、重新解析、清理、缺失值、空表达式、重复参数和离线组合；
+- 在`lo`上使用`--filter "icmp"`和`ping -c 2 127.0.0.1`完成4包人工验收；
+- BPF完成后全部15项CTest通过。
+
+代价与复审条件：
+
+- `PCAP_NETMASK_UNKNOWN`不适合依赖真实IPv4网络掩码的广播过滤表达式；
+- CLI尚未开放离线PCAP过滤，出现明确需求后可以复用现有采集接口放宽限制；
+- 信号优雅退出、libpcap运行统计和实际丢包测量仍需后续实现。
+
+参考：[pcap_compile手册](https://www.tcpdump.org/manpages/pcap_compile.3pcap.html)、[pcap_setfilter手册](https://www.tcpdump.org/manpages/pcap_setfilter.3pcap.html)、[pcap_freecode手册](https://www.tcpdump.org/manpages/pcap_freecode.3pcap.html)。
 
 ## 6. 二进制数据与协议解析
 
@@ -536,7 +592,7 @@ eMMC容量：待填写
 以下问题满足条件后再更新本文档：
 
 - 获得真实流量和性能数据后：记录负载因子、平均探测长度以及是否需要重建或动态扩容；
-- 实时抓包完成后：记录权限模型、BPF过滤和丢包统计；
+- 实时抓包继续完善后：记录信号退出、capability权限模型和丢包统计；
 - 多线程接入后：记录线程数量、队列容量、所有权和关闭顺序；
 - 结构化输出完成后：确定CSV、JSON或二者并存；
 - Qt或云端开始后：确定进程间／网络接口和协议；

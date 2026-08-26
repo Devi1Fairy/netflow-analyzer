@@ -69,6 +69,16 @@ typedef struct {
     const char *interface_name;
 
     /**
+     * 实时抓包使用的可选BPF过滤表达式。
+     *
+     * 该指针借用argv中的字符串地址，不拥有字符串，也不能free。
+     *
+     * NULL表示不安装过滤器。第一版只允许与
+     * APP_COMMAND_CAPTURE_INTERFACE组合。
+     */
+    const char *filter_expression;
+
+    /**
      * 实时抓包最多处理的数据包数量。
      *
      * 只有command为APP_COMMAND_CAPTURE_INTERFACE时才使用。
@@ -128,7 +138,7 @@ int app_context_init(app_context_t *context);
  * - --version或-V。
  * - --read FILE或-r FILE
  * - --read FILE --csv CSV_FILE
- * - --interface NAME --count PACKETS
+ * - --interface NAME --count PACKETS [--filter EXPRESSION]
  *
  * @param context 指向已经初始化的应用上下文。
  * @param argc main函数收到的参数数量。

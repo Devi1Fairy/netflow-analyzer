@@ -39,6 +39,7 @@ static int test_context_lifecycle(void)
     TEST_CHECK(context.capture_path == NULL);
     TEST_CHECK(context.csv_output_path == NULL);
     TEST_CHECK(context.interface_name == NULL);
+    TEST_CHECK(context.filter_expression == NULL);
     TEST_CHECK(context.packet_limit == 0U);
     TEST_CHECK(context.error_message[0] == '\0');
 
@@ -58,6 +59,7 @@ static int test_context_lifecycle(void)
     TEST_CHECK(context.error_message[0] == '\0');
     TEST_CHECK(context.csv_output_path == NULL);
     TEST_CHECK(context.interface_name == NULL);
+    TEST_CHECK(context.filter_expression == NULL);
     TEST_CHECK(context.packet_limit == 0U);
 
     return EXIT_SUCCESS;
@@ -370,6 +372,203 @@ static int test_live_interface_command(void)
     TEST_CHECK(context.packet_limit == 4U);
     TEST_CHECK(context.capture_path == NULL);
     TEST_CHECK(context.csv_output_path == NULL);
+    TEST_CHECK(context.filter_expression == NULL);
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证实时抓包能够保存BPF表达式并在重新解析时清除它。
+ */
+static int test_live_interface_with_filter_command(void)
+{
+    app_context_t context;
+
+    char *live_arguments[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        "--count",
+        "4",
+        "--filter",
+        "host 127.0.0.1 and icmp",
+        NULL
+    };
+
+    char *offline_arguments[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        NULL
+    };
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            7,
+            live_arguments
+        ) == 0
+    );
+
+    TEST_CHECK(
+        context.command ==
+            APP_COMMAND_CAPTURE_INTERFACE
+    );
+
+    /*
+     * context直接借用argv[6]，没有复制或取得字符串所有权。
+     */
+    TEST_CHECK(
+        context.filter_expression ==
+            live_arguments[6]
+    );
+
+    TEST_CHECK(
+        strcmp(
+            context.filter_expression,
+            "host 127.0.0.1 and icmp"
+        ) == 0
+    );
+
+    TEST_CHECK(context.packet_limit == 4U);
+    TEST_CHECK(context.capture_path == NULL);
+    TEST_CHECK(context.csv_output_path == NULL);
+
+    /*
+     * 同一个上下文可以重新解析参数。
+     *
+     * 第二次解析没有--filter，因此必须清除第一次保存的借用指针，
+     * 不能把旧过滤器错误地带入离线命令。
+     */
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            3,
+            offline_arguments
+        ) == 0
+    );
+
+    TEST_CHECK(
+        context.command ==
+            APP_COMMAND_READ_CAPTURE
+    );
+
+    TEST_CHECK(context.filter_expression == NULL);
+    TEST_CHECK(context.interface_name == NULL);
+    TEST_CHECK(context.packet_limit == 0U);
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证BPF过滤参数的缺失、重复和错误组合。
+ */
+static int test_invalid_filter_arguments(void)
+{
+    app_context_t context;
+
+    char *missing_expression[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        "--count",
+        "4",
+        "--filter",
+        NULL
+    };
+
+    char *empty_expression[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        "--count",
+        "4",
+        "--filter",
+        "",
+        NULL
+    };
+
+    char *duplicate_filter[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        "--count",
+        "4",
+        "--filter",
+        "icmp",
+        "--filter",
+        "tcp",
+        NULL
+    };
+
+    char *offline_filter[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        "--filter",
+        "icmp",
+        NULL
+    };
+
+    char *filter_without_source[] = {
+        "netflow-analyzer",
+        "--filter",
+        "icmp",
+        NULL
+    };
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            6,
+            missing_expression
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            7,
+            empty_expression
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            9,
+            duplicate_filter
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            5,
+            offline_filter
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            3,
+            filter_without_source
+        ) == EINVAL
+    );
+
+    /*
+     * 失败的解析不能向context发布部分过滤状态。
+     */
+    TEST_CHECK(context.filter_expression == NULL);
 
     app_cleanup(&context);
 
@@ -493,6 +692,61 @@ static int test_invalid_live_arguments(void)
 }
 
 /**
+ * @brief 验证app_run拒绝绕过参数解析构造的非法过滤状态。
+ *
+ * 两个场景都在打开网卡或PCAP前返回，因此不依赖root或测试文件。
+ */
+static int test_filter_run_validation(void)
+{
+    app_context_t context;
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    /*
+     * 模拟调用者绕过app_parse_arguments，手工把过滤器放入离线命令。
+     */
+    context.command = APP_COMMAND_READ_CAPTURE;
+    context.capture_path = "sample.pcap";
+    context.filter_expression = "icmp";
+
+    TEST_CHECK(app_run(&context) == EINVAL);
+    TEST_CHECK(context.error_message[0] != '\0');
+
+    TEST_CHECK(
+        strstr(
+            context.error_message,
+            "only supported for live capture"
+        ) != NULL
+    );
+
+    app_cleanup(&context);
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    /*
+     * 非NULL空字符串不是“没有过滤器”，而是非法表达式状态。
+     */
+    context.command = APP_COMMAND_CAPTURE_INTERFACE;
+    context.interface_name = "lo";
+    context.packet_limit = 1U;
+    context.filter_expression = "";
+
+    TEST_CHECK(app_run(&context) == EINVAL);
+    TEST_CHECK(context.error_message[0] != '\0');
+
+    TEST_CHECK(
+        strstr(
+            context.error_message,
+            "filter expression is empty"
+        ) != NULL
+    );
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 阶段0冒烟测试入口。
  */
 int main(void)
@@ -551,6 +805,24 @@ int main(void)
     }
 
     printf("[PASS] invalid CSV arguments\n");
+
+    if (test_live_interface_with_filter_command() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] live interface with filter command\n");
+
+    if (test_invalid_filter_arguments() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] invalid filter arguments\n");
+
+    if (test_filter_run_validation() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] filter run validation\n");
 
     if (test_live_interface_command() != EXIT_SUCCESS) {
         return EXIT_FAILURE;
