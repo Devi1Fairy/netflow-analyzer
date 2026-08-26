@@ -261,7 +261,6 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 
 ## 后续迭代
 
-建议按以下顺序推进：
 
 1. 为实时抓包增加BPF过滤、信号优雅退出和运行统计；
 2. 在实时主流程中配置流空闲超时、过期输出和定期清理策略；
