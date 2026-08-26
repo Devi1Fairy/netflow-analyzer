@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 /*
  * 用于接收采集模块错误说明的建议缓冲区大小。
@@ -11,6 +12,22 @@
  * 文件打开和读取错误。
  */
 #define CAPTURE_ERROR_BUFFER_SIZE 256U
+
+/*
+ * 实时抓包默认最多保留每个数据包的65535字节。
+ *
+ * 这个大小足以完整捕获当前项目常见的标准Ethernet、IPv4、
+ * TCP、UDP和ICMP数据包。
+ */
+#define CAPTURE_DEFAULT_SNAPSHOT_LENGTH 65535
+
+/*
+ * 实时读取默认最多等待1000毫秒。
+ *
+ * 超时不是抓包失败，而是让调用者定期获得控制权，
+ * 以后可以在这里检查停止信号和运行状态。
+ */
+#define CAPTURE_DEFAULT_READ_TIMEOUT_MS 1000
 
 /**
  * @brief 表示采集文件使用的链路层类型。
@@ -59,12 +76,13 @@ typedef enum {
 } capture_read_status_t;
 
 /**
- * @brief 离线采集句柄的不透明类型。
+ * @brief 离线或实时采集句柄的不透明类型。
  *
  * 头文件只声明类型，不公开结构体成员。调用者不能直接访问内部的
  * pcap_t，也不能自己分配capture_t。
  *
- * 对象由capture_open_offline创建，由capture_close释放。
+ * 对象由capture_open_offline或capture_open_live创建，
+ * 统一由capture_close释放。
  */
 typedef struct capture capture_t;
 
@@ -145,6 +163,48 @@ int capture_open_offline(const char *file_path,
                          size_t error_buffer_size);
 
 /**
+ * @brief 打开指定网络接口进行实时抓包。
+ *
+ * snapshot_length表示每个数据包最多保留多少字节。
+ * 数据包在线路上的真实长度仍通过wire_length提供。
+ *
+ * promiscuous为true时请求混杂模式，使网卡接收更多经过该接口、
+ * 但目标MAC地址不一定属于本机的数据包。是否真正生效还取决于
+ * 网卡类型、驱动、操作系统权限和网络环境。
+ *
+ * read_timeout_ms表示实时读取等待时间。等待期间没有收到数据包时，
+ * capture_next_packet返回EAGAIN，让上层有机会检查停止请求。
+ *
+ * 打开实时网卡通常需要root权限，或者为程序配置CAP_NET_RAW等
+ * Linux capability。权限不足时返回EIO，并通过error_buffer提供
+ * libpcap的详细说明。
+ *
+ * error_buffer和error_buffer_size必须同时提供或同时省略。
+ *
+ * 函数失败时不修改capture原有内容。
+ *
+ * @param interface_name 准备监听的网络接口名称，例如lo或eth0。
+ * @param snapshot_length 每个数据包最多捕获的字节数，必须大于0。
+ * @param promiscuous true表示请求混杂模式。
+ * @param read_timeout_ms 实时读取超时毫秒数，必须大于0。
+ * @param capture 指向用于接收采集对象地址的指针变量。
+ * @param error_buffer 可选的错误信息缓冲区。
+ * @param error_buffer_size error_buffer能够容纳的字节数。
+ *
+ * @return 成功时返回0；
+ *         参数无效时返回EINVAL；
+ *         内存分配失败时返回ENOMEM；
+ *         网卡不存在、权限不足或libpcap打开失败时返回EIO。
+ */
+int capture_open_live(const char *interface_name,
+                        int snapshot_length,
+                        bool promiscuous,
+                        int read_timeout_ms,
+                        capture_t **capture,
+                        char *error_buffer,
+                        size_t error_buffer_size);
+
+/**
  * @brief 查询采集文件的链路层类型。
  *
  * @param capture 指向已经成功打开的采集对象。
@@ -182,7 +242,7 @@ const char *capture_get_error(const capture_t *capture);
 void capture_close(capture_t **capture);
 
 /**
- * @brief 从离线PCAP中读取下一条数据包。
+ * @brief  从离线文件或实时接口读取下一条数据包。
  *
  * 成功取得数据包时：
  *
@@ -199,8 +259,14 @@ void capture_close(capture_t **capture);
  * 函数失败时不修改packet和status。
  *
  * packet->data由libpcap拥有，只保证在下一次调用本函数之前有效。
+ * 
+ * 实时抓包等待超时时：
  *
- * @param capture 指向已经打开的离线采集对象。
+ * - 返回EAGAIN；
+ * - packet和status保持原值不变；
+ * - 这不表示网卡或采集句柄发生故障。
+ *
+ * @param capture 指向已经打开的离线或实时采集对象。
  * @param packet 指向用于接收数据包视图的结构体。
  * @param status 指向用于接收读取状态的变量。
  *

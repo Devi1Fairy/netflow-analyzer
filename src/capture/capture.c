@@ -25,7 +25,7 @@ struct capture {
     /**
      * libpcap原生采集句柄。
      *
-     * 由pcap_open_offline创建，由pcap_close释放。
+     * 由pcap_open_offline或pcap_open_live创建，由pcap_close释放。
      */
     pcap_t *native_handle;
 
@@ -160,6 +160,128 @@ int capture_open_offline(const char *file_path,
      * 所有初始化步骤成功后，才把对象地址交给调用者。
      *
      * 这能保证函数失败时不会发布半初始化对象。
+     */
+    *capture = new_capture;
+
+    return 0;
+}
+
+int capture_open_live(const char *interface_name,
+                        int snapshot_length,
+                        bool promiscuous,
+                        int read_timeout_ms,
+                        capture_t **capture,
+                        char *error_buffer,
+                        size_t error_buffer_size)
+{
+    char native_error[PCAP_ERRBUF_SIZE] = {0};
+
+    capture_t *new_capture;
+    int native_link_type;
+
+    /*
+     * 错误缓冲区及其容量必须成对出现。
+     */
+    if ((error_buffer == NULL &&
+         error_buffer_size != 0U) ||
+        (error_buffer != NULL &&
+         error_buffer_size == 0U)) {
+        return EINVAL;
+    }
+
+    /*
+     * 对于合法的可选缓冲区组合，先清空以前的错误内容。
+     */
+    capture_copy_error(
+        error_buffer,
+        error_buffer_size,
+        ""
+    );
+
+    if (interface_name == NULL ||
+        interface_name[0] == '\0' ||
+        snapshot_length <= 0 ||
+        read_timeout_ms <= 0 ||
+        capture == NULL) {
+        capture_copy_error(
+            error_buffer,
+            error_buffer_size,
+            "invalid live capture arguments"
+        );
+
+        return EINVAL;
+    }
+
+    /*
+     * capture_t是不透明动态对象，由capture模块拥有。
+     */
+    new_capture = calloc(1U, sizeof(*new_capture));
+
+    if (new_capture == NULL) {
+        capture_copy_error(
+            error_buffer,
+            error_buffer_size,
+            "failed to allocate capture object"
+        );
+
+        return ENOMEM;
+    }
+
+    /*
+     * pcap_open_live参数依次表示：
+     *
+     * interface_name：网卡名称；
+     * snapshot_length：每个数据包最多保存的字节数；
+     * promiscuous：是否请求混杂模式，libpcap使用0或1；
+     * read_timeout_ms：读取等待时间；
+     * native_error：接收libpcap错误说明。
+     */
+    new_capture->native_handle = pcap_open_live(
+        interface_name,
+        snapshot_length,
+        promiscuous ? 1 : 0,
+        read_timeout_ms,
+        native_error
+    );
+
+    if (new_capture->native_handle == NULL) {
+        capture_copy_error(
+            error_buffer,
+            error_buffer_size,
+            native_error
+        );
+
+        free(new_capture);
+        return EIO;
+    }
+
+    /*
+     * 实时接口同样可能不是普通Ethernet链路。
+     *
+     * 例如Linux的"any"接口通常使用Linux cooked capture类型，
+     * 当前项目尚未解析这种链路头。
+     */
+    native_link_type = pcap_datalink(new_capture->native_handle);
+
+    if (native_link_type < 0) {
+        capture_copy_error(
+            error_buffer,
+            error_buffer_size,
+            pcap_geterr(new_capture->native_handle)
+        );
+
+        pcap_close(new_capture->native_handle);
+        free(new_capture);
+
+        return EIO;
+    }
+
+    new_capture->link_type = capture_map_link_type(native_link_type);
+
+    /*
+     * 所有操作成功后才发布新对象。
+     *
+     * 因此失败时调用者原来的capture值不会被覆盖。
      */
     *capture = new_capture;
 

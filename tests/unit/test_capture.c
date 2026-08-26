@@ -199,6 +199,135 @@ static int test_capture_open_error_handling(void)
 }
 
 /**
+ * @brief 验证实时抓包接口拒绝无效参数和不存在的网卡。
+ *
+ * 本测试不要求root权限，因为不会成功打开真实网卡。
+ */
+static int test_capture_open_live_error_handling(void)
+{
+    static const char missing_interface[] =
+        "netflow-analyzer-interface-that-does-not-exist";
+
+    char error_buffer[CAPTURE_ERROR_BUFFER_SIZE] = {0};
+
+    capture_t *capture = NULL;
+
+    TEST_CHECK(
+        capture_open_live(
+            NULL,
+            CAPTURE_DEFAULT_SNAPSHOT_LENGTH,
+            false,
+            CAPTURE_DEFAULT_READ_TIMEOUT_MS,
+            &capture,
+            error_buffer,
+            sizeof(error_buffer)
+        ) == EINVAL
+    );
+
+    TEST_CHECK(capture == NULL);
+    TEST_CHECK(error_buffer[0] != '\0');
+
+    TEST_CHECK(
+        capture_open_live(
+            "",
+            CAPTURE_DEFAULT_SNAPSHOT_LENGTH,
+            false,
+            CAPTURE_DEFAULT_READ_TIMEOUT_MS,
+            &capture,
+            error_buffer,
+            sizeof(error_buffer)
+        ) == EINVAL
+    );
+
+    TEST_CHECK(capture == NULL);
+
+    /*
+     * 快照长度必须大于0。
+     */
+    TEST_CHECK(
+        capture_open_live(
+            "lo",
+            0,
+            false,
+            CAPTURE_DEFAULT_READ_TIMEOUT_MS,
+            &capture,
+            error_buffer,
+            sizeof(error_buffer)
+        ) == EINVAL
+    );
+
+    /*
+     * 正数超时保证上层以后能够定期检查停止请求。
+     */
+    TEST_CHECK(
+        capture_open_live(
+            "lo",
+            CAPTURE_DEFAULT_SNAPSHOT_LENGTH,
+            false,
+            0,
+            &capture,
+            error_buffer,
+            sizeof(error_buffer)
+        ) == EINVAL
+    );
+
+    /*
+     * capture输出参数不能为空。
+     */
+    TEST_CHECK(
+        capture_open_live(
+            "lo",
+            CAPTURE_DEFAULT_SNAPSHOT_LENGTH,
+            false,
+            CAPTURE_DEFAULT_READ_TIMEOUT_MS,
+            NULL,
+            error_buffer,
+            sizeof(error_buffer)
+        ) == EINVAL
+    );
+
+    /*
+     * 错误缓冲区和容量必须同时提供或同时省略。
+     */
+    TEST_CHECK(
+        capture_open_live(
+            "lo",
+            CAPTURE_DEFAULT_SNAPSHOT_LENGTH,
+            false,
+            CAPTURE_DEFAULT_READ_TIMEOUT_MS,
+            &capture,
+            NULL,
+            CAPTURE_ERROR_BUFFER_SIZE
+        ) == EINVAL
+    );
+
+    /*
+     * 一个足够特殊且确定不存在的接口名称，应由libpcap拒绝。
+     */
+    TEST_CHECK(
+        capture_open_live(
+            missing_interface,
+            CAPTURE_DEFAULT_SNAPSHOT_LENGTH,
+            false,
+            CAPTURE_DEFAULT_READ_TIMEOUT_MS,
+            &capture,
+            error_buffer,
+            sizeof(error_buffer)
+        ) == EIO
+    );
+
+    TEST_CHECK(capture == NULL);
+    TEST_CHECK(error_buffer[0] != '\0');
+
+    /*
+     * 失败后capture仍然为NULL，关闭是安全空操作。
+     */
+    capture_close(&capture);
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 验证能够打开合法的空Ethernet PCAP并查询链路类型。
  */
 static int test_open_empty_ethernet_capture(void)
@@ -569,6 +698,12 @@ int main(void)
     }   
 
     printf("[PASS] capture packet reading\n");
+
+    if (test_capture_open_live_error_handling() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] live capture open error handling\n");
 
     return EXIT_SUCCESS;
 }
