@@ -680,6 +680,93 @@ static int test_capture_packet_reading(void)
 }
 
 /**
+ * @brief 验证采集读取可以在不关闭句柄的情况下被中断。
+ */
+static int test_capture_break_loop(void)
+{
+    const uint8_t packet_data[] = {
+        0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U,
+        0x66U, 0x77U, 0x88U, 0x99U, 0xAAU, 0xBBU,
+        0x08U, 0x00U
+    };
+
+    char pcap_path[] =
+        "/tmp/netflow-analyzer-break-loop-XXXXXX";
+
+    char error_buffer[CAPTURE_ERROR_BUFFER_SIZE] = {0};
+
+    capture_t *capture = NULL;
+
+    capture_packet_view_t packet = {
+        .timestamp_seconds = 0,
+        .timestamp_microseconds = 0,
+        .captured_length = 0U,
+        .wire_length = 0U,
+        .data = NULL
+    };
+
+    capture_read_status_t read_status =
+        CAPTURE_READ_STATUS_UNKNOWN;
+
+    int create_error;
+    int open_error;
+    int read_error = EINVAL;
+    int remove_error;
+
+    create_error = create_ethernet_pcap(
+        pcap_path,
+        packet_data,
+        (uint32_t)sizeof(packet_data),
+        (uint32_t)sizeof(packet_data)
+    );
+
+    TEST_CHECK(create_error == 0);
+
+    open_error = capture_open_offline(
+        pcap_path,
+        &capture,
+        error_buffer,
+        sizeof(error_buffer)
+    );
+
+    /*
+     * NULL应该是安全的无操作。
+     */
+    capture_break_loop(NULL);
+
+    if (open_error == 0) {
+        /*
+         * 文件中实际存在一个数据包。
+         *
+         * 先请求中断后，下一次读取不应返回该数据包，而应沿用
+         * capture_next_packet现有的正常结束状态。
+         */
+        capture_break_loop(capture);
+
+        read_error = capture_next_packet(
+            capture,
+            &packet,
+            &read_status
+        );
+    }
+
+    capture_close(&capture);
+    remove_error = remove(pcap_path);
+
+    TEST_CHECK(open_error == 0);
+    TEST_CHECK(error_buffer[0] == '\0');
+    TEST_CHECK(read_error == 0);
+    TEST_CHECK(
+        read_status ==
+            CAPTURE_READ_STATUS_END_OF_FILE
+    );
+    TEST_CHECK(capture == NULL);
+    TEST_CHECK(remove_error == 0);
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 验证BPF过滤参数、编译错误以及实际包过滤语义。
  *
  * 测试使用离线PCAP，因此不依赖真实网卡或root权限。
@@ -958,6 +1045,12 @@ int main(void)
     }
 
     printf("[PASS] live capture open error handling\n");
+
+        if (test_capture_break_loop() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] capture break loop\n");
 
     return EXIT_SUCCESS;
 }

@@ -274,6 +274,21 @@ const char *capture_get_error(const capture_t *capture);
 void capture_close(capture_t **capture);
 
 /**
+ * @brief 请求中断当前采集读取。
+ *
+ * 本函数不关闭或释放capture，只通知libpcap结束正在进行的读取。
+ * 后续capture_next_packet可能返回正常结束状态。
+ *
+ * libpcap保证pcap_breakloop可以在UNIX信号处理函数中使用。
+ * 调用期间capture对象必须保持有效。
+ *
+ * capture为NULL时不执行任何操作，因此清理路径可以安全调用。
+ *
+ * @param capture 指向已经打开的离线或实时采集对象，可以为NULL。
+ */
+void capture_break_loop(capture_t *capture);
+
+/**
  * @brief  从离线文件或实时接口读取下一条数据包。
  *
  * 成功取得数据包时：

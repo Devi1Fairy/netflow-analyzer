@@ -412,6 +412,22 @@ const char *capture_get_error(const capture_t *capture)
     return pcap_geterr(capture->native_handle);
 }
 
+void capture_break_loop(capture_t *capture)
+{
+    if (capture == NULL ||
+        capture->native_handle == NULL) {
+        return;
+    }
+
+    /*
+     * 不在这里关闭句柄。
+     *
+     * pcap_breakloop只设置中断状态，并在Linux实时网卡上尝试
+     * 唤醒阻塞读取。实际资源仍由正常控制流通过capture_close释放。
+     */
+    pcap_breakloop(capture->native_handle);
+}
+
 void capture_close(capture_t **capture)
 {
     capture_t *object;
