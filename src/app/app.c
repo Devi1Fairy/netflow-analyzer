@@ -50,6 +50,7 @@ static int app_print_help(const char *program_name)
     if (printf(
             "Usage: %s [OPTION]\n"
             "       %s --read <PCAP_FILE> [--csv <CSV_FILE>]\n"
+            "       %s --interface <INTERFACE>\n"
             "\n"
             "Linux network traffic analyzer.\n"
             "\n"
@@ -57,7 +58,9 @@ static int app_print_help(const char *program_name)
             "  -h, --help       Show this help message.\n"
             "  -V, --version    Show program version.\n"
             "  -r, --read FILE  Analyze an offline PCAP file.\n"
+            "  -i, --interface NAME  Probe a live capture interface.\n"
             "      --csv FILE   Export flow records to a new CSV file.\n",
+            display_name,
             display_name,
             display_name) < 0) {
         return EIO;
@@ -814,6 +817,122 @@ static int app_process_packet(
 }
 
 /**
+ * @brief 打开实时网卡，检查链路类型，然后立即关闭。
+ *
+ * 当前函数只完成实时抓包环境探测，不读取数据包。
+ *
+ * 这样可以先独立验证：
+ *
+ * 1. 网卡名称是否存在；
+ * 2. 当前进程是否具有抓包权限；
+ * 3. libpcap是否能够打开该网卡；
+ * 4. 当前解析器是否支持该网卡的链路类型。
+ *
+ * @param context 指向已经完成参数解析的应用上下文。
+ *
+ * @return 成功时返回0；
+ *         参数无效时返回EINVAL；
+ *         网卡打开或输出失败时返回EIO；
+ *         链路类型不支持时返回ENOTSUP。
+ */
+static int app_run_live_capture(app_context_t *context)
+{
+    char capture_error[CAPTURE_ERROR_BUFFER_SIZE] = {0};
+
+    capture_t *capture = NULL;
+    capture_link_type_t link_type = CAPTURE_LINK_TYPE_UNKNOWN;
+
+    int error_code;
+
+    if (context == NULL ||
+        context->interface_name == NULL ||
+        context->interface_name[0] == '\0') {
+        return EINVAL;
+    }
+
+    /*
+     * 当前先关闭混杂模式。
+     *
+     * 本步骤只验证接口能否打开，不需要接收目标MAC不属于本机的流量。
+     */
+    error_code = capture_open_live(
+        context->interface_name,
+        CAPTURE_DEFAULT_SNAPSHOT_LENGTH,
+        false,
+        CAPTURE_DEFAULT_READ_TIMEOUT_MS,
+        &capture,
+        capture_error,
+        sizeof(capture_error)
+    );
+
+    if (error_code != 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "failed to open interface '%s': %s",
+            context->interface_name,
+            capture_error[0] != '\0'
+                ? capture_error
+                : "unknown libpcap error"
+        );
+
+        return error_code;
+    }
+
+    error_code = capture_get_link_type(
+        capture,
+        &link_type
+    );
+
+    if (error_code != 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "failed to query interface link type"
+        );
+
+        capture_close(&capture);
+        return error_code;
+    }
+
+    if (link_type != CAPTURE_LINK_TYPE_ETHERNET) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "interface '%s' uses an unsupported link-layer type",
+            context->interface_name
+        );
+
+        capture_close(&capture);
+        return ENOTSUP;
+    }
+
+    if (printf(
+            "Capture interface: %s\n"
+            "Link type: Ethernet\n"
+            "Live capture probe: ready\n",
+            context->interface_name) < 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "failed to write live capture information"
+        );
+
+        capture_close(&capture);
+        return EIO;
+    }
+
+    /*
+     * 本阶段只做环境探测，因此验证成功后立即关闭句柄。
+     *
+     * 下一阶段会把它保持到实时读取循环结束。
+     */
+    capture_close(&capture);
+
+    return 0;
+}
+
+/**
  * @brief 分析整个离线PCAP，预览前几个包并输出双向流汇总。
  *
  * capture和flow_table只在本函数执行期间使用。
@@ -1105,6 +1224,7 @@ int app_context_init(app_context_t *context)
         .command = APP_COMMAND_HELP,
         .program_name = "netflow-analyzer",
         .capture_path = NULL,
+        .interface_name = NULL,
         .csv_output_path = NULL,
         .error_message = {0},
         .stop_requested = false,
@@ -1119,6 +1239,7 @@ int app_parse_arguments(app_context_t *context,
                         char *argv[])
 {
     const char *parsed_capture_path;
+    const char *parsed_interface_name;
     const char *parsed_csv_output_path;
 
     int argument_index;
@@ -1137,6 +1258,7 @@ int app_parse_arguments(app_context_t *context,
     context->program_name = argv[0];
     context->command = APP_COMMAND_HELP;
     context->capture_path = NULL;
+    context->interface_name = NULL;
     context->csv_output_path = NULL;
     context->error_message[0] = '\0';
 
@@ -1167,6 +1289,7 @@ int app_parse_arguments(app_context_t *context,
     }
 
     parsed_capture_path = NULL;
+    parsed_interface_name = NULL;
     parsed_csv_output_path = NULL;
     argument_index = 1;
 
@@ -1199,15 +1322,18 @@ int app_parse_arguments(app_context_t *context,
 
         if (strcmp(option, "--read") == 0 ||
             strcmp(option, "-r") == 0) {
-            /*
-             * 重复指定输入文件通常意味着命令写错，
-             * 因此直接拒绝，不采用“后一个覆盖前一个”。
-             */
             if (parsed_capture_path != NULL) {
                 return EINVAL;
             }
 
             parsed_capture_path = option_value;
+        } else if (strcmp(option, "--interface") == 0 ||
+                   strcmp(option, "-i") == 0) {
+            if (parsed_interface_name != NULL) {
+                return EINVAL;
+            }
+
+            parsed_interface_name = option_value;
         } else if (strcmp(option, "--csv") == 0) {
             if (parsed_csv_output_path != NULL) {
                 return EINVAL;
@@ -1225,19 +1351,45 @@ int app_parse_arguments(app_context_t *context,
     }
 
     /*
-     * --csv只能作为离线分析的附加输出，
-     * 不能在没有--read时独立运行。
+     * 一次只能选择一种数据来源。
+     *
+     * 同时指定离线文件和实时网卡会让命令语义不明确。
      */
-    if (parsed_capture_path == NULL) {
+    if (parsed_capture_path != NULL &&
+        parsed_interface_name != NULL) {
         return EINVAL;
     }
 
     /*
-     * 全部参数检查通过后再发布解析结果。
+     * 必须选择离线文件或实时网卡中的一种。
      */
-    context->command = APP_COMMAND_READ_CAPTURE;
+    if (parsed_capture_path == NULL &&
+        parsed_interface_name == NULL) {
+        return EINVAL;
+    }
+
+    /*
+     * 当前CSV导出只接在完整的离线聚合流程之后。
+     *
+     * 实时抓包还没有读取循环，因此暂不允许和--csv组合。
+     */
+    if (parsed_interface_name != NULL &&
+        parsed_csv_output_path != NULL) {
+        return EINVAL;
+    }
+
+    /*
+     * 全部参数验证完成后才发布解析结果，避免留下半解析状态。
+     */
     context->capture_path = parsed_capture_path;
+    context->interface_name = parsed_interface_name;
     context->csv_output_path = parsed_csv_output_path;
+
+    if (parsed_capture_path != NULL) {
+        context->command = APP_COMMAND_READ_CAPTURE;
+    } else {
+        context->command = APP_COMMAND_CAPTURE_INTERFACE;
+    }
 
     return 0;
 }
@@ -1314,6 +1466,20 @@ int app_run(app_context_t *context)
         }
 
         return app_run_capture_analysis(context);
+
+    case APP_COMMAND_CAPTURE_INTERFACE:
+        if (context->interface_name == NULL ||
+            context->interface_name[0] == '\0') {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "capture interface is missing"
+            );
+
+            return EINVAL;
+        }
+
+        return app_run_live_capture(context);
 
     default:
         (void)snprintf(

@@ -23,7 +23,15 @@ typedef enum {
     /**
      * 从离线PCAP文件读取并显示数据包概要。
      */
-    APP_COMMAND_READ_CAPTURE
+    APP_COMMAND_READ_CAPTURE,
+
+    /**
+     * 打开并检查实时抓包网卡。
+     *
+     * 当前阶段只验证网卡、权限和链路类型，
+     * 下一阶段再从该网卡持续读取数据包。
+     */
+    APP_COMMAND_CAPTURE_INTERFACE
 } app_command_t;
 
 /**
@@ -52,6 +60,15 @@ typedef struct {
      * 只有command为APP_COMMAND_READ_CAPTURE时才应该使用。
      */
     const char *capture_path;
+
+    /**
+     * 实时抓包使用的网络接口名称，例如lo或eth0。
+     *
+     * 该指针借用argv中的字符串地址，不拥有字符串，也不能free。
+     *
+     * 只有command为APP_COMMAND_CAPTURE_INTERFACE时才应该使用。
+     */
+    const char *interface_name;
 
     /**
      * CSV流记录输出文件路径。
@@ -105,6 +122,7 @@ int app_context_init(app_context_t *context);
  * - --version或-V。
  * - --read FILE或-r FILE
  * - --read FILE --csv CSV_FILE
+ * - --interface NAME或-i NAME。
  *
  * @param context 指向已经初始化的应用上下文。
  * @param argc main函数收到的参数数量。

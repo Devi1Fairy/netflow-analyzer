@@ -38,6 +38,7 @@ static int test_context_lifecycle(void)
     TEST_CHECK(context.command == APP_COMMAND_HELP);
     TEST_CHECK(context.capture_path == NULL);
     TEST_CHECK(context.csv_output_path == NULL);
+    TEST_CHECK(context.interface_name == NULL);
     TEST_CHECK(context.error_message[0] == '\0');
 
     TEST_CHECK(app_request_stop(&context) == 0);
@@ -55,6 +56,7 @@ static int test_context_lifecycle(void)
     TEST_CHECK(context.capture_path == NULL);
     TEST_CHECK(context.error_message[0] == '\0');
     TEST_CHECK(context.csv_output_path == NULL);
+    TEST_CHECK(context.interface_name == NULL);
 
     return EXIT_SUCCESS;
 }
@@ -324,6 +326,103 @@ static int test_invalid_csv_arguments(void)
 }
 
 /**
+ * @brief 验证实时网卡参数能够保存到应用上下文。
+ */
+static int test_live_interface_command(void)
+{
+    app_context_t context;
+
+    char *arguments[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        NULL
+    };
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            3,
+            arguments
+        ) == 0
+    );
+
+    TEST_CHECK(
+        context.command ==
+            APP_COMMAND_CAPTURE_INTERFACE
+    );
+
+    /*
+     * interface_name直接借用argv[2]中的字符串地址。
+     */
+    TEST_CHECK(
+        context.interface_name ==
+            arguments[2]
+    );
+
+    TEST_CHECK(
+        strcmp(context.interface_name, "lo") == 0
+    );
+
+    TEST_CHECK(context.capture_path == NULL);
+    TEST_CHECK(context.csv_output_path == NULL);
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证离线输入和实时输入不能混用。
+ */
+static int test_invalid_live_arguments(void)
+{
+    app_context_t context;
+
+    char *mixed_sources[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        "--interface",
+        "lo",
+        NULL
+    };
+
+    char *live_with_csv[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        "--csv",
+        "flows.csv",
+        NULL
+    };
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            5,
+            mixed_sources
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            5,
+            live_with_csv
+        ) == EINVAL
+    );
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 阶段0冒烟测试入口。
  */
 int main(void)
@@ -382,6 +481,18 @@ int main(void)
     }
 
     printf("[PASS] invalid CSV arguments\n");
+
+    if (test_live_interface_command() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] live interface command\n");
+
+    if (test_invalid_live_arguments() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] invalid live arguments\n");
 
     return EXIT_SUCCESS;
 }

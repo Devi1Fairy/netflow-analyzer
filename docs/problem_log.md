@@ -339,3 +339,52 @@ NameError: name 'temporary_directory' is not defined
 - 回溯最底部附近通常能找到最先触发异常的源码位置；
 - 临时文件路径应在拥有临时目录生命周期的函数中统一创建；
 - 函数职责越单一，变量应该属于哪个作用域越容易判断。
+
+## 4. 实时抓包接入
+
+### 4.1 新增网卡参数时漏初始化临时指针
+
+现象：
+
+为CLI增加`--interface`参数后，原有离线命令解析测试失败：
+
+```text
+[FAIL] tests/unit/test_smoke.c:152:
+app_parse_arguments(&context, 3, arguments) == 0
+```
+
+失败用例传入的是合法参数`--read sample.pcap`，尚未进入实时抓包、网卡权限或libpcap读取阶段。
+
+根因：
+
+参数解析函数新增了局部指针`parsed_interface_name`，但只初始化了`parsed_capture_path`和`parsed_csv_output_path`。未初始化的自动存储期指针含有不确定值，不能把它当作可靠的`NULL`状态使用。
+
+离线参数被正确保存到`parsed_capture_path`后，未初始化的`parsed_interface_name`可能碰巧表现为非`NULL`，从而触发“离线文件和实时网卡不能同时指定”的冲突检查并错误返回`EINVAL`。
+
+解决办法：
+
+- 在进入参数遍历前，把三个临时解析指针全部初始化为`NULL`；
+- 继续使用临时变量完成全部验证，成功后再把结果发布到`app_context_t`；
+- 保留原有`--read`冒烟测试，确保增加实时模式不会破坏离线路径。
+
+修复后的初始化代码为：
+
+```c
+parsed_capture_path = NULL;
+parsed_interface_name = NULL;
+parsed_csv_output_path = NULL;
+```
+
+验证结果：
+
+- 原有`--read sample.pcap`参数测试恢复通过；
+- 新增`--interface lo`参数测试通过；
+- 离线输入与实时输入冲突测试通过；
+- CTest回归测试通过。
+
+经验：
+
+- 声明指针不会自动把它设置成`NULL`，局部变量必须在读取前明确初始化；
+- 新增一种状态时，要同步检查“声明、初始化、重置、发布、清理和测试”完整链路；
+- 未初始化值可能随编译选项和栈内容变化，因此故障可能表现得不稳定；
+- 回归测试不仅验证新功能，也负责发现新功能对已有功能造成的破坏。
