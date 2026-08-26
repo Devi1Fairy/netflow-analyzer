@@ -9,5 +9,3 @@ build-*/
 __pycache__/
 *.pcap
 !tests/fixtures/*.pcap
-docs/session_handoff.md
-.gitignore

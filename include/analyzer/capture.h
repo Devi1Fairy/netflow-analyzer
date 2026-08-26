@@ -216,6 +216,38 @@ int capture_get_link_type(const capture_t *capture,
                           capture_link_type_t *link_type);
 
 /**
+ * @brief 编译并安装一个libpcap BPF过滤表达式。
+ *
+ * capture必须是已经成功打开的离线或实时采集对象。
+ *
+ * filter_expression只在本函数调用期间被借用，调用者仍然拥有该
+ * 字符串。libpcap会把表达式编译为临时BPF程序并安装到采集句柄。
+ *
+ * error_buffer和error_buffer_size必须同时提供或同时省略：
+ *
+ * - error_buffer非NULL且error_buffer_size大于0：接收错误说明；
+ * - error_buffer为NULL且error_buffer_size为0：不接收错误说明。
+ *
+ * 成功时，如果提供了error_buffer，其内容会被设置为空字符串。
+ *
+ * BPF编译或安装失败时不会关闭capture。调用者仍然拥有该采集对象，
+ * 并负责最终调用capture_close。
+ *
+ * @param capture 指向已经成功打开的采集对象。
+ * @param filter_expression 非空BPF过滤表达式，例如"icmp"或"tcp port 80"。
+ * @param error_buffer 可选的错误信息缓冲区。
+ * @param error_buffer_size error_buffer能够容纳的字节数。
+ *
+ * @return 成功时返回0；
+ *         参数无效时返回EINVAL；
+ *         BPF编译或安装失败时返回EIO。
+ */
+int capture_set_filter(capture_t *capture,
+                       const char *filter_expression,
+                       char *error_buffer,
+                       size_t error_buffer_size);
+
+/**
  * @brief 返回libpcap为当前采集对象保存的最近错误信息。
  *
  * 返回的字符串由libpcap管理。调用者不能修改或释放该字符串，

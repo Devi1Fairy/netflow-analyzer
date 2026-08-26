@@ -679,6 +679,254 @@ static int test_capture_packet_reading(void)
     return EXIT_SUCCESS;
 }
 
+/**
+ * @brief 验证BPF过滤参数、编译错误以及实际包过滤语义。
+ *
+ * 测试使用离线PCAP，因此不依赖真实网卡或root权限。
+ */
+static int test_capture_filtering(void)
+{
+    /*
+     * 一条完整的Ethernet/IPv4/ICMP echo request：
+     *
+     * Ethernet头：14字节；
+     * IPv4头：20字节，protocol字段为1，即ICMP；
+     * ICMP头：8字节。
+     *
+     * BPF只需要识别链路类型、IPv4头和protocol字段，本测试不要求
+     * 协议解析器验证IP或ICMP校验和。
+     */
+    const uint8_t icmp_packet_data[] = {
+        0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U,
+        0x66U, 0x77U, 0x88U, 0x99U, 0xAAU, 0xBBU,
+        0x08U, 0x00U,
+
+        0x45U, 0x00U, 0x00U, 0x1CU,
+        0x00U, 0x01U, 0x00U, 0x00U,
+        0x40U, 0x01U, 0x00U, 0x00U,
+        0x7FU, 0x00U, 0x00U, 0x01U,
+        0x7FU, 0x00U, 0x00U, 0x01U,
+
+        0x08U, 0x00U, 0x00U, 0x00U,
+        0x00U, 0x01U, 0x00U, 0x01U
+    };
+
+    char pcap_path[] =
+        "/tmp/netflow-analyzer-filter-XXXXXX";
+
+    char error_buffer[CAPTURE_ERROR_BUFFER_SIZE] = {0};
+
+    capture_t *capture = NULL;
+    capture_packet_view_t packet = {0};
+
+    capture_read_status_t matching_status =
+        CAPTURE_READ_STATUS_UNKNOWN;
+
+    capture_read_status_t nonmatching_status =
+        CAPTURE_READ_STATUS_UNKNOWN;
+
+    int null_capture_error;
+    int create_error;
+    int first_open_error;
+    int missing_buffer_error = -1;
+    int missing_size_error = -1;
+    int null_expression_error = -1;
+    int empty_expression_error = -1;
+    int invalid_expression_error = -1;
+    int matching_filter_error = -1;
+    int matching_read_error = -1;
+    int second_open_error;
+    int nonmatching_filter_error = -1;
+    int nonmatching_read_error = -1;
+    int remove_error;
+
+    bool null_capture_message;
+    bool null_expression_message = false;
+    bool empty_expression_message = false;
+    bool invalid_expression_message = false;
+    bool matching_filter_cleared = false;
+    bool matching_packet_equal = false;
+
+    null_capture_error = capture_set_filter(
+        NULL,
+        "icmp",
+        error_buffer,
+        sizeof(error_buffer)
+    );
+
+    null_capture_message = error_buffer[0] != '\0';
+
+    create_error = create_ethernet_pcap(
+        pcap_path,
+        icmp_packet_data,
+        (uint32_t)sizeof(icmp_packet_data),
+        (uint32_t)sizeof(icmp_packet_data)
+    );
+
+    TEST_CHECK(create_error == 0);
+
+    first_open_error = capture_open_offline(
+        pcap_path,
+        &capture,
+        error_buffer,
+        sizeof(error_buffer)
+    );
+
+    if (first_open_error == 0) {
+        /*
+         * 错误缓冲区和容量必须同时提供或同时省略。
+         */
+        missing_buffer_error = capture_set_filter(
+            capture,
+            "icmp",
+            NULL,
+            CAPTURE_ERROR_BUFFER_SIZE
+        );
+
+        missing_size_error = capture_set_filter(
+            capture,
+            "icmp",
+            error_buffer,
+            0U
+        );
+
+        null_expression_error = capture_set_filter(
+            capture,
+            NULL,
+            error_buffer,
+            sizeof(error_buffer)
+        );
+
+        null_expression_message = error_buffer[0] != '\0';
+
+        empty_expression_error = capture_set_filter(
+            capture,
+            "",
+            error_buffer,
+            sizeof(error_buffer)
+        );
+
+        empty_expression_message = error_buffer[0] != '\0';
+
+        /*
+         * 该表达式具有确定的语法错误，应该在pcap_compile阶段失败。
+         */
+        invalid_expression_error = capture_set_filter(
+            capture,
+            "icmp and and tcp",
+            error_buffer,
+            sizeof(error_buffer)
+        );
+
+        invalid_expression_message = error_buffer[0] != '\0';
+
+        /*
+         * 编译失败不能破坏capture。紧接着安装合法过滤器应当成功。
+         */
+        matching_filter_error = capture_set_filter(
+            capture,
+            "icmp",
+            error_buffer,
+            sizeof(error_buffer)
+        );
+
+        matching_filter_cleared = error_buffer[0] == '\0';
+
+        if (matching_filter_error == 0) {
+            matching_read_error = capture_next_packet(
+                capture,
+                &packet,
+                &matching_status
+            );
+
+            if (matching_read_error == 0 &&
+                matching_status == CAPTURE_READ_STATUS_PACKET &&
+                packet.data != NULL &&
+                packet.captured_length ==
+                    (uint32_t)sizeof(icmp_packet_data)) {
+                matching_packet_equal =
+                    memcmp(
+                        packet.data,
+                        icmp_packet_data,
+                        sizeof(icmp_packet_data)
+                    ) == 0;
+            }
+        }
+    }
+
+    capture_close(&capture);
+
+    /*
+     * 重新打开同一个PCAP，并安装不匹配的TCP过滤器。
+     *
+     * 文件中只有ICMP包，因此读取结果应该直接到达EOF。
+     * 此处同时验证NULL和0是合法的“省略错误缓冲区”组合。
+     */
+    second_open_error = capture_open_offline(
+        pcap_path,
+        &capture,
+        error_buffer,
+        sizeof(error_buffer)
+    );
+
+    if (second_open_error == 0) {
+        nonmatching_filter_error = capture_set_filter(
+            capture,
+            "tcp",
+            NULL,
+            0U
+        );
+
+        if (nonmatching_filter_error == 0) {
+            nonmatching_read_error = capture_next_packet(
+                capture,
+                &packet,
+                &nonmatching_status
+            );
+        }
+    }
+
+    capture_close(&capture);
+    remove_error = remove(pcap_path);
+
+    TEST_CHECK(null_capture_error == EINVAL);
+    TEST_CHECK(null_capture_message);
+
+    TEST_CHECK(first_open_error == 0);
+    TEST_CHECK(missing_buffer_error == EINVAL);
+    TEST_CHECK(missing_size_error == EINVAL);
+
+    TEST_CHECK(null_expression_error == EINVAL);
+    TEST_CHECK(null_expression_message);
+
+    TEST_CHECK(empty_expression_error == EINVAL);
+    TEST_CHECK(empty_expression_message);
+
+    TEST_CHECK(invalid_expression_error == EIO);
+    TEST_CHECK(invalid_expression_message);
+
+    TEST_CHECK(matching_filter_error == 0);
+    TEST_CHECK(matching_filter_cleared);
+    TEST_CHECK(matching_read_error == 0);
+    TEST_CHECK(
+        matching_status == CAPTURE_READ_STATUS_PACKET
+    );
+    TEST_CHECK(matching_packet_equal);
+
+    TEST_CHECK(second_open_error == 0);
+    TEST_CHECK(nonmatching_filter_error == 0);
+    TEST_CHECK(nonmatching_read_error == 0);
+    TEST_CHECK(
+        nonmatching_status ==
+            CAPTURE_READ_STATUS_END_OF_FILE
+    );
+
+    TEST_CHECK(capture == NULL);
+    TEST_CHECK(remove_error == 0);
+
+    return EXIT_SUCCESS;
+}
+
 int main(void)
 {
     if (test_capture_open_error_handling() != EXIT_SUCCESS) {
@@ -698,6 +946,12 @@ int main(void)
     }   
 
     printf("[PASS] capture packet reading\n");
+
+    if (test_capture_filtering() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] capture filtering\n");
 
     if (test_capture_open_live_error_handling() != EXIT_SUCCESS) {
         return EXIT_FAILURE;

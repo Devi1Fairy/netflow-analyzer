@@ -300,6 +300,109 @@ int capture_get_link_type(const capture_t *capture,
     return 0;
 }
 
+int capture_set_filter(capture_t *capture,
+                       const char *filter_expression,
+                       char *error_buffer,
+                       size_t error_buffer_size)
+{
+    struct bpf_program filter_program = {0};
+    int native_result;
+
+    /*
+     * 错误缓冲区及其容量必须成对出现。
+     *
+     * 先验证这一组合，才能安全决定后续是否可以向缓冲区写入。
+     */
+    if ((error_buffer == NULL && error_buffer_size != 0U) ||
+        (error_buffer != NULL && error_buffer_size == 0U)) {
+        return EINVAL;
+    }
+
+    /*
+     * 对于合法的可选缓冲区组合，先清除调用者以前保存的错误。
+     *
+     * 这样成功返回时，error_buffer为空字符串。
+     */
+    capture_copy_error(error_buffer, error_buffer_size, "");
+
+    if (capture == NULL ||
+        capture->native_handle == NULL ||
+        filter_expression == NULL ||
+        filter_expression[0] == '\0') {
+        capture_copy_error(
+            error_buffer,
+            error_buffer_size,
+            "invalid capture filter arguments"
+        );
+
+        return EINVAL;
+    }
+
+    /*
+     * pcap_compile把文本表达式编译为临时BPF程序。
+     *
+     * 第四个参数1表示启用优化。
+     *
+     * 初版使用PCAP_NETMASK_UNKNOWN，不依赖具体网卡的IPv4掩码。
+     * 普通的icmp、tcp、udp和端口过滤不受影响，但依赖IPv4广播地址
+     * 判断的表达式可能无法使用。
+     */
+    native_result = pcap_compile(
+        capture->native_handle,
+        &filter_program,
+        filter_expression,
+        1,
+        PCAP_NETMASK_UNKNOWN
+    );
+
+    if (native_result != 0) {
+        /*
+         * pcap_compile失败时没有可供本模块释放的成功编译结果。
+         *
+         * pcap_geterr返回的字符串属于capture句柄，因此将它复制到
+         * 调用者缓冲区，而不把该地址作为长期结果保存。
+         */
+        capture_copy_error(
+            error_buffer,
+            error_buffer_size,
+            pcap_geterr(capture->native_handle)
+        );
+
+        return EIO;
+    }
+
+    /*
+     * 编译成功后，把BPF程序安装到当前离线或实时采集句柄。
+     */
+    native_result = pcap_setfilter(
+        capture->native_handle,
+        &filter_program
+    );
+
+    if (native_result != 0) {
+        capture_copy_error(
+            error_buffer,
+            error_buffer_size,
+            pcap_geterr(capture->native_handle)
+        );
+
+        /*
+         * 只要pcap_compile成功，无论安装是否成功，都必须释放临时
+         * 编译结果。
+         */
+        pcap_freecode(&filter_program);
+
+        return EIO;
+    }
+
+    /*
+     * 过滤器已经安装到capture句柄。临时编译结果不再由本函数保留。
+     */
+    pcap_freecode(&filter_program);
+
+    return 0;
+}
+
 const char *capture_get_error(const capture_t *capture)
 {
     if (capture == NULL || capture->native_handle == NULL) {
