@@ -39,6 +39,7 @@ static int test_context_lifecycle(void)
     TEST_CHECK(context.capture_path == NULL);
     TEST_CHECK(context.csv_output_path == NULL);
     TEST_CHECK(context.interface_name == NULL);
+    TEST_CHECK(context.packet_limit == 0U);
     TEST_CHECK(context.error_message[0] == '\0');
 
     TEST_CHECK(app_request_stop(&context) == 0);
@@ -57,6 +58,7 @@ static int test_context_lifecycle(void)
     TEST_CHECK(context.error_message[0] == '\0');
     TEST_CHECK(context.csv_output_path == NULL);
     TEST_CHECK(context.interface_name == NULL);
+    TEST_CHECK(context.packet_limit == 0U);
 
     return EXIT_SUCCESS;
 }
@@ -326,7 +328,7 @@ static int test_invalid_csv_arguments(void)
 }
 
 /**
- * @brief 验证实时网卡参数能够保存到应用上下文。
+ * @brief 验证实时网卡和数据包数量能够保存到应用上下文。
  */
 static int test_live_interface_command(void)
 {
@@ -336,6 +338,8 @@ static int test_live_interface_command(void)
         "netflow-analyzer",
         "--interface",
         "lo",
+        "--count",
+        "4",
         NULL
     };
 
@@ -344,7 +348,7 @@ static int test_live_interface_command(void)
     TEST_CHECK(
         app_parse_arguments(
             &context,
-            3,
+            5,
             arguments
         ) == 0
     );
@@ -354,9 +358,6 @@ static int test_live_interface_command(void)
             APP_COMMAND_CAPTURE_INTERFACE
     );
 
-    /*
-     * interface_name直接借用argv[2]中的字符串地址。
-     */
     TEST_CHECK(
         context.interface_name ==
             arguments[2]
@@ -366,6 +367,7 @@ static int test_live_interface_command(void)
         strcmp(context.interface_name, "lo") == 0
     );
 
+    TEST_CHECK(context.packet_limit == 4U);
     TEST_CHECK(context.capture_path == NULL);
     TEST_CHECK(context.csv_output_path == NULL);
 
@@ -375,11 +377,45 @@ static int test_live_interface_command(void)
 }
 
 /**
- * @brief 验证离线输入和实时输入不能混用。
+ * @brief 验证实时抓包参数的缺失、格式和组合错误。
  */
 static int test_invalid_live_arguments(void)
 {
     app_context_t context;
+
+    char *missing_count[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        NULL
+    };
+
+    char *zero_count[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        "--count",
+        "0",
+        NULL
+    };
+
+    char *invalid_count[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        "--count",
+        "four",
+        NULL
+    };
+
+    char *count_with_offline_file[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        "--count",
+        "4",
+        NULL
+    };
 
     char *mixed_sources[] = {
         "netflow-analyzer",
@@ -394,12 +430,46 @@ static int test_invalid_live_arguments(void)
         "netflow-analyzer",
         "--interface",
         "lo",
+        "--count",
+        "4",
         "--csv",
         "flows.csv",
         NULL
     };
 
     TEST_CHECK(app_context_init(&context) == 0);
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            3,
+            missing_count
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            5,
+            zero_count
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            5,
+            invalid_count
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            5,
+            count_with_offline_file
+        ) == EINVAL
+    );
 
     TEST_CHECK(
         app_parse_arguments(
@@ -412,7 +482,7 @@ static int test_invalid_live_arguments(void)
     TEST_CHECK(
         app_parse_arguments(
             &context,
-            5,
+            7,
             live_with_csv
         ) == EINVAL
     );

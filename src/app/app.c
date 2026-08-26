@@ -13,6 +13,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <stdlib.h>
 
 /*
  * 当前命令只显示前5个数据包，避免大型PCAP在终端输出数万行。
@@ -37,6 +39,65 @@
 #endif
 
 /**
+ * @brief 把十进制字符串解析为大于0的size_t数值。
+ *
+ * 函数先使用uintmax_t接收转换结果，再检查结果是否超出size_t范围。
+ * 只有全部检查通过后才修改value，失败时保留调用者原来的值。
+ *
+ * @param text 待解析的十进制字符串。
+ * @param value 用于接收解析结果。
+ *
+ * @return 成功时返回0，格式错误、数值为0或超出范围时返回EINVAL。
+ */
+static int app_parse_positive_size(
+    const char *text,
+    size_t *value)
+{
+    char *end_pointer = NULL;
+    uintmax_t parsed_value;
+
+    /*
+     * 要求第一个字符就是数字。
+     *
+     * 这样同时拒绝空字符串、负数、正号和前导空格。
+     */
+    if (text == NULL ||
+        value == NULL ||
+        text[0] < '0' ||
+        text[0] > '9') {
+        return EINVAL;
+    }
+
+    /*
+     * strtoumax失败时可能通过errno报告ERANGE。
+     *
+     * 调用前必须清空errno，不能使用更早函数留下的错误值。
+     */
+    errno = 0;
+
+    parsed_value = strtoumax(
+        text,
+        &end_pointer,
+        10
+    );
+
+    /*
+     * end_pointer必须到达字符串末尾，否则说明存在非数字字符。
+     */
+    if (errno != 0 ||
+        end_pointer == text ||
+        *end_pointer != '\0' ||
+        parsed_value == 0U ||
+        parsed_value > (uintmax_t)SIZE_MAX) {
+        return EINVAL;
+    }
+
+    *value = (size_t)parsed_value;
+
+    return 0;
+}
+
+/**
  * @brief 打印命令行使用帮助。
  *
  * @param program_name 显示在Usage中的程序名称。
@@ -50,7 +111,7 @@ static int app_print_help(const char *program_name)
     if (printf(
             "Usage: %s [OPTION]\n"
             "       %s --read <PCAP_FILE> [--csv <CSV_FILE>]\n"
-            "       %s --interface <INTERFACE>\n"
+            "       %s --interface <INTERFACE> --count <PACKETS>\n"
             "\n"
             "Linux network traffic analyzer.\n"
             "\n"
@@ -58,7 +119,8 @@ static int app_print_help(const char *program_name)
             "  -h, --help       Show this help message.\n"
             "  -V, --version    Show program version.\n"
             "  -r, --read FILE  Analyze an offline PCAP file.\n"
-            "  -i, --interface NAME  Probe a live capture interface.\n"
+            "  -i, --interface NAME  Analyze a live capture interface.\n"
+            "  -c, --count PACKETS   Stop after capturing PACKETS packets.\n"
             "      --csv FILE   Export flow records to a new CSV file.\n",
             display_name,
             display_name,
@@ -817,128 +879,13 @@ static int app_process_packet(
 }
 
 /**
- * @brief 打开实时网卡，检查链路类型，然后立即关闭。
+ * @brief 分析离线PCAP或有限数量的实时数据包。
  *
- * 当前函数只完成实时抓包环境探测，不读取数据包。
+ * 两种输入复用相同的协议解析、流表聚合和结果输出流程，
+ * 区别只在于采集句柄的打开方式和循环结束条件。
  *
- * 这样可以先独立验证：
- *
- * 1. 网卡名称是否存在；
- * 2. 当前进程是否具有抓包权限；
- * 3. libpcap是否能够打开该网卡；
- * 4. 当前解析器是否支持该网卡的链路类型。
- *
- * @param context 指向已经完成参数解析的应用上下文。
- *
- * @return 成功时返回0；
- *         参数无效时返回EINVAL；
- *         网卡打开或输出失败时返回EIO；
- *         链路类型不支持时返回ENOTSUP。
- */
-static int app_run_live_capture(app_context_t *context)
-{
-    char capture_error[CAPTURE_ERROR_BUFFER_SIZE] = {0};
-
-    capture_t *capture = NULL;
-    capture_link_type_t link_type = CAPTURE_LINK_TYPE_UNKNOWN;
-
-    int error_code;
-
-    if (context == NULL ||
-        context->interface_name == NULL ||
-        context->interface_name[0] == '\0') {
-        return EINVAL;
-    }
-
-    /*
-     * 当前先关闭混杂模式。
-     *
-     * 本步骤只验证接口能否打开，不需要接收目标MAC不属于本机的流量。
-     */
-    error_code = capture_open_live(
-        context->interface_name,
-        CAPTURE_DEFAULT_SNAPSHOT_LENGTH,
-        false,
-        CAPTURE_DEFAULT_READ_TIMEOUT_MS,
-        &capture,
-        capture_error,
-        sizeof(capture_error)
-    );
-
-    if (error_code != 0) {
-        (void)snprintf(
-            context->error_message,
-            sizeof(context->error_message),
-            "failed to open interface '%s': %s",
-            context->interface_name,
-            capture_error[0] != '\0'
-                ? capture_error
-                : "unknown libpcap error"
-        );
-
-        return error_code;
-    }
-
-    error_code = capture_get_link_type(
-        capture,
-        &link_type
-    );
-
-    if (error_code != 0) {
-        (void)snprintf(
-            context->error_message,
-            sizeof(context->error_message),
-            "failed to query interface link type"
-        );
-
-        capture_close(&capture);
-        return error_code;
-    }
-
-    if (link_type != CAPTURE_LINK_TYPE_ETHERNET) {
-        (void)snprintf(
-            context->error_message,
-            sizeof(context->error_message),
-            "interface '%s' uses an unsupported link-layer type",
-            context->interface_name
-        );
-
-        capture_close(&capture);
-        return ENOTSUP;
-    }
-
-    if (printf(
-            "Capture interface: %s\n"
-            "Link type: Ethernet\n"
-            "Live capture probe: ready\n",
-            context->interface_name) < 0) {
-        (void)snprintf(
-            context->error_message,
-            sizeof(context->error_message),
-            "failed to write live capture information"
-        );
-
-        capture_close(&capture);
-        return EIO;
-    }
-
-    /*
-     * 本阶段只做环境探测，因此验证成功后立即关闭句柄。
-     *
-     * 下一阶段会把它保持到实时读取循环结束。
-     */
-    capture_close(&capture);
-
-    return 0;
-}
-
-/**
- * @brief 分析整个离线PCAP，预览前几个包并输出双向流汇总。
- *
- * capture和flow_table只在本函数执行期间使用。
- *
- * flow_table借用局部flow_slots数组。由于二者处于同一函数作用域，
- * flow_slots在flow_table使用期间始终有效。
+ * 离线模式读取到文件末尾；
+ * 实时模式读取到context->packet_limit指定的包数。
  */
 static int app_run_capture_analysis(app_context_t *context)
 {
@@ -959,25 +906,73 @@ static int app_run_capture_analysis(app_context_t *context)
     capture_packet_view_t packet;
     capture_read_status_t read_status;
 
+    const char *capture_source;
+
     size_t total_packet_count = 0U;
     size_t previewed_packet_count = 0U;
 
+    bool live_capture;
     bool print_preview;
+
     int error_code;
 
-    error_code = capture_open_offline(
-        context->capture_path,
-        &capture,
-        capture_error,
-        sizeof(capture_error)
-    );
+    if (context == NULL) {
+        return EINVAL;
+    }
+
+    /*
+     * 根据命令确定输入来源。
+     *
+     * 后面的协议解析和流量聚合不需要再区分数据来自文件还是网卡。
+     */
+    live_capture = context->command == APP_COMMAND_CAPTURE_INTERFACE;
+
+    if (live_capture) {
+        if (context->interface_name == NULL ||
+            context->interface_name[0] == '\0' ||
+            context->packet_limit == 0U) {
+            return EINVAL;
+        }
+
+        capture_source = context->interface_name;
+
+        error_code = capture_open_live(
+            capture_source,
+            CAPTURE_DEFAULT_SNAPSHOT_LENGTH,
+            false,
+            CAPTURE_DEFAULT_READ_TIMEOUT_MS,
+            &capture,
+            capture_error,
+            sizeof(capture_error)
+        );
+    } else if (
+        context->command == APP_COMMAND_READ_CAPTURE) {
+        if (context->capture_path == NULL ||
+            context->capture_path[0] == '\0') {
+            return EINVAL;
+        }
+
+        capture_source = context->capture_path;
+
+        error_code = capture_open_offline(
+            capture_source,
+            &capture,
+            capture_error,
+            sizeof(capture_error)
+        );
+    } else {
+        return EINVAL;
+    }
 
     if (error_code != 0) {
         (void)snprintf(
             context->error_message,
             sizeof(context->error_message),
-            "failed to open capture '%s': %s",
-            context->capture_path,
+            "failed to open %s '%s': %s",
+            live_capture
+                ? "interface"
+                : "capture",
+            capture_source,
             capture_error[0] != '\0'
                 ? capture_error
                 : "unknown libpcap error"
@@ -1030,10 +1025,23 @@ static int app_run_capture_analysis(app_context_t *context)
         return error_code;
     }
 
-    if (printf(
+    if (live_capture) {
+        error_code = printf(
+            "Capture interface: %s\n"
+            "Packet limit: %zu\n"
+            "Link type: Ethernet\n",
+            capture_source,
+            context->packet_limit
+        );
+    } else {
+        error_code = printf(
             "Capture file: %s\n"
             "Link type: Ethernet\n",
-            context->capture_path) < 0) {
+            capture_source
+        );
+    }
+
+    if (error_code < 0) {
         (void)snprintf(
             context->error_message,
             sizeof(context->error_message),
@@ -1052,6 +1060,14 @@ static int app_run_capture_analysis(app_context_t *context)
      * APP_CAPTURE_PREVIEW_LIMIT限制。
      */
     for (;;) {
+        /*
+         * 离线模式由文件末尾结束；
+         * 实时模式由用户指定的数据包数量结束。
+         */
+        if (live_capture && total_packet_count >= context->packet_limit) {
+            break;
+        }
+
         read_status = CAPTURE_READ_STATUS_UNKNOWN;
 
         error_code = capture_next_packet(
@@ -1059,6 +1075,16 @@ static int app_run_capture_analysis(app_context_t *context)
             &packet,
             &read_status
         );
+
+        /*
+         * 实时网卡暂时没有数据时，libpcap可能返回读取超时。
+         *
+         * EAGAIN不是网卡故障，也不能增加数据包计数，
+         * 因此重新等待下一包。
+         */
+        if (live_capture && error_code == EAGAIN) {
+            continue;
+        }
 
         if (error_code != 0) {
             const char *read_error =
@@ -1071,8 +1097,9 @@ static int app_run_capture_analysis(app_context_t *context)
             (void)snprintf(
                 context->error_message,
                 sizeof(context->error_message),
-                "failed to read capture '%s': %s",
-                context->capture_path,
+                "failed to read %s '%s': %s",
+                live_capture ? "interface" : "capture",
+                capture_source,
                 read_error != NULL &&
                     read_error[0] != '\0'
                     ? read_error
@@ -1136,7 +1163,8 @@ static int app_run_capture_analysis(app_context_t *context)
     }
 
     /*
-     * PCAP已经读取完成，后续流汇总不再依赖libpcap句柄。
+     * 离线文件已经结束，或者实时抓包已经达到数量上限
+     * 后续流汇总不再依赖libpcap句柄。
      */
     capture_close(&capture);
 
@@ -1225,6 +1253,7 @@ int app_context_init(app_context_t *context)
         .program_name = "netflow-analyzer",
         .capture_path = NULL,
         .interface_name = NULL,
+        .packet_limit = 0U,
         .csv_output_path = NULL,
         .error_message = {0},
         .stop_requested = false,
@@ -1241,8 +1270,10 @@ int app_parse_arguments(app_context_t *context,
     const char *parsed_capture_path;
     const char *parsed_interface_name;
     const char *parsed_csv_output_path;
+    size_t parsed_packet_limit;
 
     int argument_index;
+    int error_code;
 
     if (context == NULL ||
         !context->initialized ||
@@ -1259,6 +1290,7 @@ int app_parse_arguments(app_context_t *context,
     context->command = APP_COMMAND_HELP;
     context->capture_path = NULL;
     context->interface_name = NULL;
+    context->packet_limit = 0U;
     context->csv_output_path = NULL;
     context->error_message[0] = '\0';
 
@@ -1290,6 +1322,7 @@ int app_parse_arguments(app_context_t *context,
 
     parsed_capture_path = NULL;
     parsed_interface_name = NULL;
+    parsed_packet_limit = 0U;
     parsed_csv_output_path = NULL;
     argument_index = 1;
 
@@ -1334,7 +1367,24 @@ int app_parse_arguments(app_context_t *context,
             }
 
             parsed_interface_name = option_value;
-        } else if (strcmp(option, "--csv") == 0) {
+        } else if (strcmp(option, "--count") == 0 ||
+                   strcmp(option, "-c") == 0) {
+            /*
+             * 0既表示尚未提供参数，也是非法的数据包数量。
+             */
+            if (parsed_packet_limit != 0U) {
+                return EINVAL;
+            }
+
+            error_code = app_parse_positive_size(
+                option_value,
+                &parsed_packet_limit
+            );
+
+            if (error_code != 0) {
+                return EINVAL;
+            }
+        }else if (strcmp(option, "--csv") == 0) {
             if (parsed_csv_output_path != NULL) {
                 return EINVAL;
             }
@@ -1369,6 +1419,22 @@ int app_parse_arguments(app_context_t *context,
     }
 
     /*
+     * --count只属于实时抓包。
+     */
+    if (parsed_capture_path != NULL &&
+        parsed_packet_limit != 0U) {
+        return EINVAL;
+    }
+
+    /*
+     * 实时抓包必须提供一个大于0的数据包数量。
+     */
+    if (parsed_interface_name != NULL &&
+        parsed_packet_limit == 0U) {
+        return EINVAL;
+    }
+
+    /*
      * 当前CSV导出只接在完整的离线聚合流程之后。
      *
      * 实时抓包还没有读取循环，因此暂不允许和--csv组合。
@@ -1383,6 +1449,7 @@ int app_parse_arguments(app_context_t *context,
      */
     context->capture_path = parsed_capture_path;
     context->interface_name = parsed_interface_name;
+    context->packet_limit = parsed_packet_limit;
     context->csv_output_path = parsed_csv_output_path;
 
     if (parsed_capture_path != NULL) {
@@ -1467,7 +1534,7 @@ int app_run(app_context_t *context)
 
         return app_run_capture_analysis(context);
 
-    case APP_COMMAND_CAPTURE_INTERFACE:
+        case APP_COMMAND_CAPTURE_INTERFACE:
         if (context->interface_name == NULL ||
             context->interface_name[0] == '\0') {
             (void)snprintf(
@@ -1479,7 +1546,17 @@ int app_run(app_context_t *context)
             return EINVAL;
         }
 
-        return app_run_live_capture(context);
+        if (context->packet_limit == 0U) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "live packet limit is missing"
+            );
+
+            return EINVAL;
+        }
+
+        return app_run_capture_analysis(context);
 
     default:
         (void)snprintf(

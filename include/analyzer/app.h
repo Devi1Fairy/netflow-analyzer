@@ -2,6 +2,7 @@
 #define NETFLOW_ANALYZER_APP_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 /*
  * 应用层错误信息缓冲区大小。
@@ -26,10 +27,7 @@ typedef enum {
     APP_COMMAND_READ_CAPTURE,
 
     /**
-     * 打开并检查实时抓包网卡。
-     *
-     * 当前阶段只验证网卡、权限和链路类型，
-     * 下一阶段再从该网卡持续读取数据包。
+     * 从实时网卡读取并分析有限数量的数据包。
      */
     APP_COMMAND_CAPTURE_INTERFACE
 } app_command_t;
@@ -69,6 +67,14 @@ typedef struct {
      * 只有command为APP_COMMAND_CAPTURE_INTERFACE时才应该使用。
      */
     const char *interface_name;
+
+    /**
+     * 实时抓包最多处理的数据包数量。
+     *
+     * 只有command为APP_COMMAND_CAPTURE_INTERFACE时才使用。
+     * 0表示尚未提供合法的--count参数。
+     */
+    size_t packet_limit;
 
     /**
      * CSV流记录输出文件路径。
@@ -122,7 +128,7 @@ int app_context_init(app_context_t *context);
  * - --version或-V。
  * - --read FILE或-r FILE
  * - --read FILE --csv CSV_FILE
- * - --interface NAME或-i NAME。
+ * - --interface NAME --count PACKETS
  *
  * @param context 指向已经初始化的应用上下文。
  * @param argc main函数收到的参数数量。
