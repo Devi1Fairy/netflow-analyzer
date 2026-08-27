@@ -1102,12 +1102,22 @@ static int app_run_capture_analysis(app_context_t *context)
     }
 
     /*
-     * 不再以预览数量作为循环结束条件。
+     * 从这里开始，停止请求需要能够中断正在进行的libpcap读取。
      *
-     * 循环一直执行到PCAP文件结束，只有输出逐包信息时才受
-     * APP_CAPTURE_PREVIEW_LIMIT限制。
+     * context只临时借用capture，真正的关闭职责仍属于本函数。
      */
+    context->active_capture = capture;
     for (;;) {
+        /*
+         * 停止请求可能发生在两次读取之间。
+         *
+         * 此时不再进入capture_next_packet，直接沿正常路径完成
+         * capture关闭、流汇总输出和资源清理。
+         */
+        if (context->stop_requested != 0) {
+            break;
+        }
+
         /*
          * 离线模式由文件末尾结束；
          * 实时模式由用户指定的数据包数量结束。
@@ -1123,6 +1133,16 @@ static int app_run_capture_analysis(app_context_t *context)
             &packet,
             &read_status
         );
+
+        /*
+         * 停止请求可能发生在capture_next_packet阻塞期间。
+         *
+         * 此时优先按正常停止处理，不把libpcap被中断后的返回值
+         * 错误解释为采集故障。
+         */
+        if (context->stop_requested != 0) {
+            break;
+        }
 
         /*
          * 实时网卡暂时没有数据时，libpcap可能返回读取超时。
@@ -1154,6 +1174,7 @@ static int app_run_capture_analysis(app_context_t *context)
                     : "unknown libpcap error"
             );
 
+            context->active_capture = NULL;
             flow_table_cleanup(&flow_table);
             capture_close(&capture);
             return error_code;
@@ -1170,6 +1191,7 @@ static int app_run_capture_analysis(app_context_t *context)
                 "capture returned an unexpected read status"
             );
 
+            context->active_capture = NULL;
             flow_table_cleanup(&flow_table);
             capture_close(&capture);
             return EIO;
@@ -1200,6 +1222,7 @@ static int app_run_capture_analysis(app_context_t *context)
                 strerror(error_code)
             );
 
+            context->active_capture = NULL;
             flow_table_cleanup(&flow_table);
             capture_close(&capture);
             return error_code;
@@ -1211,9 +1234,9 @@ static int app_run_capture_analysis(app_context_t *context)
     }
 
     /*
-     * 离线文件已经结束，或者实时抓包已经达到数量上限
-     * 后续流汇总不再依赖libpcap句柄。
+     * 先撤销context中的借用，再关闭真正拥有的capture对象。
      */
+    context->active_capture = NULL;
     capture_close(&capture);
 
     if (printf(
@@ -1304,8 +1327,9 @@ int app_context_init(app_context_t *context)
         .filter_expression = NULL,
         .packet_limit = 0U,
         .csv_output_path = NULL,
+        .active_capture = NULL,
         .error_message = {0},
-        .stop_requested = false,
+        .stop_requested = 0,
         .initialized = true
     };
 
@@ -1685,7 +1709,18 @@ int app_request_stop(app_context_t *context)
         return EINVAL;
     }
 
-    context->stop_requested = true;
+    /*
+     * 先发布停止标志，使读取循环恢复后能够识别正常停止。
+     */
+    context->stop_requested = 1;
+
+    /*
+     * active_capture为NULL时这是安全的无操作。
+     *
+     * 如果当前正在进行采集读取，则通知libpcap尽快返回。
+     * 真正的关闭和资源清理由正常应用控制流完成。
+     */
+    capture_break_loop(context->active_capture);
 
     return 0;
 }

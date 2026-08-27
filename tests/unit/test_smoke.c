@@ -34,18 +34,20 @@ static int test_context_lifecycle(void)
     TEST_CHECK(app_context_init(&context) == 0);
 
     TEST_CHECK(context.initialized);
-    TEST_CHECK(!context.stop_requested);
+    TEST_CHECK(context.stop_requested == 0);
     TEST_CHECK(context.command == APP_COMMAND_HELP);
     TEST_CHECK(context.capture_path == NULL);
     TEST_CHECK(context.csv_output_path == NULL);
     TEST_CHECK(context.interface_name == NULL);
     TEST_CHECK(context.filter_expression == NULL);
+    TEST_CHECK(context.active_capture == NULL);
     TEST_CHECK(context.packet_limit == 0U);
     TEST_CHECK(context.error_message[0] == '\0');
 
     TEST_CHECK(app_request_stop(&context) == 0);
 
-    TEST_CHECK(context.stop_requested);
+    TEST_CHECK(context.stop_requested != 0);
+    TEST_CHECK(context.active_capture == NULL);
 
     /*
      * 已请求停止后，app_run应该拒绝继续执行。
@@ -56,10 +58,12 @@ static int test_context_lifecycle(void)
 
     TEST_CHECK(!context.initialized);
     TEST_CHECK(context.capture_path == NULL);
+    TEST_CHECK(context.stop_requested == 0);
     TEST_CHECK(context.error_message[0] == '\0');
     TEST_CHECK(context.csv_output_path == NULL);
     TEST_CHECK(context.interface_name == NULL);
     TEST_CHECK(context.filter_expression == NULL);
+    TEST_CHECK(context.active_capture == NULL);
     TEST_CHECK(context.packet_limit == 0U);
 
     return EXIT_SUCCESS;

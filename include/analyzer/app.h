@@ -1,8 +1,11 @@
 #ifndef NETFLOW_ANALYZER_APP_H
 #define NETFLOW_ANALYZER_APP_H
 
+#include "analyzer/capture.h"
+
 #include <stdbool.h>
 #include <stddef.h>
+#include <signal.h>
 
 /*
  * 应用层错误信息缓冲区大小。
@@ -96,6 +99,19 @@ typedef struct {
     const char *csv_output_path;
 
     /**
+     * 当前正在使用的采集对象。
+     *
+     * 该指针只在采集读取循环运行期间临时借用，不拥有capture对象，
+     * 不能通过它释放资源。
+     *
+     * NULL表示当前没有正在运行的采集读取。
+     *
+     * 关闭采集对象前必须先将本字段恢复为NULL，避免停止请求访问
+     * 已经释放的capture。
+     */
+    capture_t *active_capture;
+
+    /**
      * 保存应用层最近一次可读错误说明。
      *
      * 该数组属于app_context_t本身，不需要单独free。
@@ -103,11 +119,14 @@ typedef struct {
     char error_message[APP_ERROR_MESSAGE_SIZE];
 
     /**
-     * true表示程序已经收到停止请求。
+     * 非0表示程序已经收到停止请求。
      *
-     * 后续实时抓包和多线程阶段会通过这个标志执行优雅退出。
+     * 使用volatile sig_atomic_t，使信号处理函数能够以最小操作
+     * 通知普通应用控制流停止。
+     *
+     * 该字段不是完整的多线程同步机制。
      */
-    bool stop_requested;
+    volatile sig_atomic_t stop_requested;
 
     /**
      * true表示上下文已经成功初始化。
@@ -165,9 +184,9 @@ int app_run(app_context_t *context);
 /**
  * @brief 请求应用程序停止。
  *
- * 当前只设置停止标志，不在这里释放资源。
+ * 设置停止标志；如果当前存在活动采集对象，同时请求中断正在进行的libpcap读取。
  *
- * 这种设计可以避免某个线程直接销毁其他线程仍在使用的资源。
+ * 本函数不直接关闭capture或释放其他资源。读取循环恢复控制后，仍由正常应用流程完成输出和清理。
  *
  * @param context 指向已经初始化的上下文。
  *
