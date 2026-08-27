@@ -2,7 +2,7 @@
 
 本文档记录Netflow Analyzer项目的重要技术、开发环境、测试方案和硬件选型。它回答的不只是“用了什么”，还包括“为什么使用、放弃了什么、承担了什么代价、何时需要重新评估”。
 
-最后更新：2026-08-26。
+最后更新：2026-08-27。
 
 ## 1. 记录规则
 
@@ -42,6 +42,7 @@
 | TD-018 | 首次上板先原生编译，再评估交叉编译 | 计划采用 |
 | TD-019 | 使用Git功能分支、Pull Request和版本标签 | 已采用 |
 | TD-020 | 通过libpcap classic BPF在读取循环前过滤实时流量 | 已采用 |
+| TD-021 | 使用POSIX信号和pcap_breakloop优雅停止实时采集 | 已采用 |
 
 ## 3. 核心语言与运行平台
 
@@ -164,7 +165,7 @@ Makefile仍需要理解，但当前项目的重点不是重复维护平台相关
 - 两种输入统一复用链路类型查询、逐包读取、错误查询和关闭接口；
 - CLI使用`--interface NAME --count PACKETS [--filter EXPRESSION]`运行有限包数的实时处理循环；
 - 实时与离线数据复用同一套协议解析、双向流聚合和输出函数，采集来源差异被限制在应用编排层；
-- `--count`限制返回应用的包数而不是等待秒数；安装BPF后只统计匹配包，信号优雅退出和抓包统计仍待接入。
+- `--count`限制返回应用的包数而不是等待秒数；安装BPF后只统计匹配包，实时模式可以通过`SIGINT`或`SIGTERM`提前结束，抓包统计仍待接入。
 
 选择libpcap的原因：
 
@@ -248,9 +249,71 @@ Wireshark是成熟分析工具，但项目目标是开发可嵌入业务程序�
 
 - `PCAP_NETMASK_UNKNOWN`不适合依赖真实IPv4网络掩码的广播过滤表达式；
 - CLI尚未开放离线PCAP过滤，出现明确需求后可以复用现有采集接口放宽限制；
-- 信号优雅退出、libpcap运行统计和实际丢包测量仍需后续实现。
+- libpcap运行统计和实际丢包测量仍需后续实现。
 
 参考：[pcap_compile手册](https://www.tcpdump.org/manpages/pcap_compile.3pcap.html)、[pcap_setfilter手册](https://www.tcpdump.org/manpages/pcap_setfilter.3pcap.html)、[pcap_freecode手册](https://www.tcpdump.org/manpages/pcap_freecode.3pcap.html)。
+
+### TD-021：使用POSIX信号和pcap_breakloop优雅停止实时采集
+
+状态：已采用。
+
+背景：
+
+终端中的Ctrl+C由Linux TTY子系统转换成发往前台进程组的`SIGINT`。没有自定义处理器时，默认动作会立即终止进程；操作系统会回收内存和文件描述符，但不会替应用输出已经聚合的流、取得抓包统计或执行后续线程和文件的业务收尾。接管信号后，如果处理器只设置停止标志，应用又可能仍阻塞在`pcap_next_ex()`中，无法回到读取循环观察标志。
+
+决定：
+
+- 仅为实时抓包使用`sigaction()`安装`SIGINT`和`SIGTERM`处理器，帮助、版本和离线模式保留默认信号行为；
+- 停止标志使用`volatile sig_atomic_t`，处理器不执行`printf()`、内存释放、文件关闭或流表遍历；
+- 采集层公开`capture_break_loop()`封装`pcap_breakloop()`，继续隐藏`pcap_t`；
+- 应用上下文在读取循环期间临时借用活动`capture_t`，停止请求先设置标志，再请求中断读取；
+- 读取循环在调用`capture_next_packet()`前后都检查停止标志，避免已经请求停止后再次阻塞，也避免把信号引起的返回误报成采集错误；
+- handler的信号掩码同时包含`SIGINT`和`SIGTERM`，避免两种停止信号嵌套执行；
+- 不设置`SA_RESTART`，防止被信号打断的底层读取自动重新开始；
+- 保存原来的信号处理方式，并在清理应用上下文前恢复。
+
+涉及的系统边界：
+
+```text
+Ctrl+C或kill/systemd
+→ Linux内核投递SIGINT或SIGTERM
+→ 用户态handler发布停止请求
+→ pcap_breakloop请求libpcap结束读取
+→ 应用循环恢复控制
+→ 关闭capture并输出包统计和流汇总
+```
+
+该机制使用Linux内核的信号投递和libpcap的采集中断接口，但不直接控制网卡硬件或驱动。`sigemptyset()`只初始化一个空的`sigset_t`，`sigaddset()`向处理器执行期间的临时屏蔽集合加入信号，真正的处理方式由`sigaction()`注册到进程。
+
+为什么不保留默认Ctrl+C行为：
+
+- 默认`SIGINT`虽然能终止进程，但会跳过读取循环之后的包统计、流汇总和应用清理；
+- 操作系统资源回收不能替代输出刷新、统计保存、线程退出和队列排空等业务收尾；
+- 开发板上通过systemd或管理脚本运行时还需要处理`SIGTERM`。
+
+为什么不只依赖读取超时：
+
+- libpcap的包缓冲超时不是所有平台上无流量时都必然发生的周期唤醒；
+- `pcap_breakloop()`由libpcap文档明确允许在UNIX信号处理器中调用，并能在受支持的Linux实时接口上唤醒阻塞读取；
+- 中断接口留在capture模块内，避免应用层依赖第三方原生类型。
+
+验证：
+
+- 使用包含一个数据包的离线PCAP验证提前调用`capture_break_loop()`后读取返回正常结束状态，而不是交付该数据包；
+- 在`lo`没有匹配流量时按Ctrl+C，程序能够从阻塞读取返回，输出0包和0条流并正常退出；
+- 捕获部分ICMP流量后按Ctrl+C，程序保留已聚合的数据并输出最终流汇总；
+- 从另一个终端发送`SIGTERM`时走同一条收尾路径；
+- 完成后全部15项CTest通过。
+
+代价与复审条件：
+
+- 当前只有一个静态应用上下文和一个活动采集对象，适合单线程CLI；接入多个采集线程后应重新评估`sigwait()`、专用信号线程、self-pipe、`eventfd`或`signalfd`；
+- `active_capture`是普通借用指针，当前依靠单线程生命周期以及处理器安装和恢复顺序保持有效，多线程阶段需要使用正式同步机制；
+- Linux实时接口的阻塞唤醒行为取决于libpcap版本和采集后端，开发板验收时需要记录并验证目标机libpcap版本；
+- 当前收到停止信号后正常返回成功状态；接入服务管理器后应根据监控和重启策略复审退出码约定；
+- 下一步仍需封装`pcap_stats()`，区分libpcap接收、内核丢包、接口丢包和应用实际处理包数。
+
+参考：[sigaction手册](https://man7.org/linux/man-pages/man2/sigaction.2.html)、[signal概览](https://man7.org/linux/man-pages/man7/signal.7.html)、[pcap_breakloop手册](https://www.tcpdump.org/manpages/pcap_breakloop.3pcap.html)。
 
 ## 6. 二进制数据与协议解析
 
@@ -592,7 +655,7 @@ eMMC容量：待填写
 以下问题满足条件后再更新本文档：
 
 - 获得真实流量和性能数据后：记录负载因子、平均探测长度以及是否需要重建或动态扩容；
-- 实时抓包继续完善后：记录信号退出、capability权限模型和丢包统计；
+- 实时抓包继续完善后：记录capability权限模型和丢包统计；
 - 多线程接入后：记录线程数量、队列容量、所有权和关闭顺序；
 - 结构化输出完成后：确定CSV、JSON或二者并存；
 - Qt或云端开始后：确定进程间／网络接口和协议；
