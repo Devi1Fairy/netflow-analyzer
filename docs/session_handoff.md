@@ -1070,14 +1070,25 @@ output线程（CSV/Qt/告警）
 
 ## 19. ARM Linux开发板计划
 
-用户已经购买野火LubanCat-2N，硬件尚未开始正式上板验证。选择原因主要是：
+用户已经收到野火LubanCat-2N，并开始首次上板环境准备。选择原因主要是：
 
 - 与嵌入式Linux学习目标匹配；
 - 网络接口条件更适合采集、管理口、入口/出口或旁路分析实验；
 - 文档和社区资料相对友好；
 - 相比只适合桌面演示的单网口板，更接近未来网络设备场景。
 
-不要宣称已经在开发板部署成功。当前仓库只有环境检查脚本：
+当前已确认：
+
+- SD卡分区为`/dev/mmcblk1p1`，以`vfat`（FAT32）格式挂载在`/media/usb0`；
+- 因VFAT不保存Linux原生UID、GID和权限位，直接对挂载内容执行`chown`返回`Operation not permitted`；
+- 通过挂载时指定当前用户对应的`uid`、`gid`、`dmask`和`fmask`，已经解决项目目录无法创建的问题；
+- 项目源码已经位于`/media/usb0/Workspace/netflow-analyzer`；
+- 开发板使用CMake/CTest 3.16.3，不支持3.20才加入的`ctest --test-dir`，测试需要先进入构建目录；
+- VFAT构建树中的ELF文件因执行权限被屏蔽而无法启动，现已把构建树改到`/home/cat/build/netflow-analyzer-debug`；
+- 板上Debug原生构建和16项CTest已经通过；
+- 详细排查过程记录在`docs/problem_log.md`第5.1和5.2节。
+
+不要宣称完整开发板部署已经结束。目前已经完成存储写权限、源码获取、原生Debug构建和CTest，尚未确认Release构建、离线PCAP结果对比或实时抓包验收。当前仓库提供环境检查脚本：
 
 ```bash
 sh scripts/check_target_env.sh
@@ -1151,4 +1162,4 @@ BPF过滤
 → 实时流过期输出
 ```
 
-当前下一步是增加周期PPS、Mbps、流表占用率、过期数量和应用处理分类指标，再测量单线程瓶颈，并决定是否把`labs/thread_pipeline`接入正式程序。开发板到达后可以并行进行ARM64原生构建、离线结果对比和低速实时抓包验收。
+当前下一步是增加周期PPS、Mbps、流表占用率、过期数量和应用处理分类指标，再测量单线程瓶颈，并决定是否把`labs/thread_pipeline`接入正式程序。开发板侧已经完成原生Debug构建和CTest；接下来可验证可执行文件架构与版本、进行Release构建、离线结果对比和低速实时抓包验收。

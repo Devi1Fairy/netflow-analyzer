@@ -459,3 +459,97 @@ Capture received packets - Total packets
 - 回环接口适合功能验证，但方向语义和物理网卡不同；
 - 遇到看似异常的计数时，应先检查操作系统、驱动和第三方库的统计定义，再判断业务计数是否错误；
 - 该现象属于平台统计语义，不需要通过修改应用计数来强行让两个数字相等。
+
+## 5. ARM Linux开发板环境
+
+### 5.1 VFAT格式SD卡挂载后无法创建文件或目录
+
+现象：
+
+在LubanCat-2N上准备项目目录时，SD卡分区`/dev/mmcblk1p1`挂载在`/media/usb0`，文件系统类型为`vfat`（FAT32）。普通用户无法在挂载目录内创建文件或目录；尝试执行：
+
+```bash
+sudo chown ubuntu:ubuntu /media/usb0
+```
+
+仍然返回`Operation not permitted`，提高到root权限没有解决问题。
+
+根因：
+
+FAT32不保存Linux原生的每文件UID、GID和Unix权限位。分区挂载后，Linux通过挂载参数为其中所有文件和目录统一呈现所有者与权限。因此，对已挂载VFAT文件系统中的目录执行`chown`或`chmod`，不能像ext4上一样持久修改所有者或权限。
+
+挂载点目录自身在未挂载时的权限，也不能决定已挂载VFAT内容的访问权限；挂载后的可见权限由该文件系统的挂载选项控制。
+
+解决办法：
+
+卸载后重新挂载`/dev/mmcblk1p1`，通过以下选项把文件系统映射给实际登录用户：
+
+- `uid`：所有文件和目录对Linux呈现的用户ID；
+- `gid`：所有文件和目录对Linux呈现的组ID；
+- `dmask`：从目录基础权限中屏蔽的权限位；
+- `fmask`：从普通文件基础权限中屏蔽的权限位。
+
+例如，`dmask=0022`通常使目录呈现为`0755`，`fmask=0133`通常使普通文件呈现为`0644`。`uid`和`gid`应取自开发板实际登录用户，可先通过`id`确认，不应固定假设用户名为`ubuntu`。该`fmask`示例会屏蔽普通文件的执行位，适合保存源码和数据，不适合直接运行放在VFAT上的构建产物。
+
+验证结果：
+
+使用适合当前用户的`uid`、`gid`、`dmask`和`fmask`重新挂载后，已能够在`/media/usb0`下创建项目文件和目录。该结果只证明SD卡写权限问题已解决，尚不代表项目已经在开发板完成克隆、构建或运行验收。
+
+经验：
+
+- `sudo`只能绕过Linux权限检查，不能为FAT32补充其原本不支持的Unix所有权元数据；
+- 排查移动存储权限问题时，应先用`findmnt`或`lsblk -f`确认设备、挂载点、文件系统类型和挂载选项；
+- `dmask`和`fmask`表示“要屏蔽的权限位”，不是最终权限值；
+- 如果需要重启后保持设置，可后续使用分区UUID在`/etc/fstab`中配置挂载选项，避免依赖可能变化的`/dev/mmcblk1p1`设备名；
+- 如果项目后续需要符号链接、原生Unix权限或其他Linux文件系统语义，应评估使用ext4；重新格式化会清除数据，不能把它当作无风险的权限修复步骤。
+
+### 5.2 CTest版本与VFAT执行权限导致板上测试无法启动
+
+现象：
+
+项目在LubanCat-2N上完成48个目标的链接后，从源码根目录执行：
+
+```bash
+ctest --test-dir build-arm --output-on-failure
+```
+
+CTest仍然显示源码根目录为测试目录，并报告`No tests were found`。检查确认开发板使用CTest 3.16.3，且`build-arm/CTestTestfile.cmake`已经生成。
+
+进入`build-arm`后，CTest成功发现16项测试，但15个C测试程序均显示`permission denied`和`BAD_COMMAND`；Python离线验收能够启动，随后也因无法执行`bin/netflow-analyzer`而失败。此时测试程序没有进入业务逻辑，不能把结果解释为16项功能测试失败。
+
+根因：
+
+问题由两个独立的目标环境差异叠加造成：
+
+1. CTest的`--test-dir`选项从CMake 3.20开始提供；开发板上的3.16.3不会按该选项切换到构建目录，因此应先`cd`进入构建目录；
+2. 构建目录位于VFAT分区，当前挂载权限屏蔽了普通文件的执行位。链接器可以创建ELF文件，但Linux在启动进程时仍会检查文件执行权限和挂载选项，所以“链接成功”不等于“能够执行”。
+
+解决办法：
+
+保留位于`/media/usb0/Workspace/netflow-analyzer`的源码树，把CMake二进制目录改到Linux根文件系统：
+
+```text
+/media/usb0/Workspace/netflow-analyzer        VFAT源码树
+/home/cat/build/netflow-analyzer-debug        Linux原生构建树
+```
+
+使用CMake的源码目录与构建目录分离能力，在`/home/cat/build/netflow-analyzer-debug`重新配置和构建。测试时先进入该目录，再执行：
+
+```bash
+ctest --output-on-failure
+```
+
+验证结果：
+
+- 开发板完成Debug配置和原生构建；
+- CTest在ext4构建目录中能够启动全部测试程序；
+- 用户确认16项CTest全部通过；
+- 不需要修改C源码、测试代码或放宽VFAT上全部文件的执行权限。
+
+经验：
+
+- CMake项目声明最低支持3.16时，文档中的测试命令也应兼容3.16，不能默认使用3.20才加入的选项；
+- out-of-source build不仅保持源码目录整洁，还允许源码与构建产物位于具有不同权限语义的文件系统；
+- 移动存储适合交换源码、PCAP和导出数据，Linux原生构建产物更适合放在ext4等支持Unix权限的文件系统；
+- 如果长期在开发板上进行Git操作和源码开发，源码树也放到ext4会更稳妥；VFAT缺少符号链接、大小写和Unix权限等完整语义；
+- 看到CTest的`BAD_COMMAND`时应先检查程序是否成功启动，再判断测试断言或业务代码。
