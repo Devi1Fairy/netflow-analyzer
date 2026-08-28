@@ -16,7 +16,7 @@ git branch --show-current
 git log -5 --oneline --decorate
 
 cmake --build build
-ctest --test-dir build --output-on-failure
+cmake -E chdir build ctest --output-on-failure
 ```
 
 预期基线：
@@ -105,7 +105,7 @@ ARM Linux开发板部署
 
 ```bash
 cmake --build build
-ctest --test-dir build --output-on-failure
+cmake -E chdir build ctest --output-on-failure
 ```
 
 不要提交`build/`、`build-release/`或链接后的可执行文件。它们是可重建产物，不属于源码仓库。
@@ -659,8 +659,7 @@ sudo ./build/bin/netflow-analyzer \
 只运行重点测试示例：
 
 ```bash
-ctest \
-    --test-dir build \
+cmake -E chdir build ctest \
     -R '^(analyzer_smoke_tests|capture_tests)$' \
     --output-on-failure
 ```
@@ -668,8 +667,7 @@ ctest \
 只运行离线端到端验收：
 
 ```bash
-ctest \
-    --test-dir build \
+cmake -E chdir build ctest \
     -R '^offline_flow_acceptance$' \
     --output-on-failure
 ```
@@ -1086,9 +1084,14 @@ output线程（CSV/Qt/告警）
 - 开发板使用CMake/CTest 3.16.3，不支持3.20才加入的`ctest --test-dir`，测试需要先进入构建目录；
 - VFAT构建树中的ELF文件因执行权限被屏蔽而无法启动，现已把构建树改到`/home/cat/build/netflow-analyzer-debug`；
 - 板上Debug原生构建和16项CTest已经通过；
-- 详细排查过程记录在`docs/problem_log.md`第5.1和5.2节。
+- 板上Release原生构建和确定性6包PCAP端到端验收已经通过；
+- 系统位于容量8GB的eMMC，安装系统后空间有限；当前源码仍在SD卡，构建树临时位于eMMC，不建议再把完整源码和多个构建树长期迁入eMMC；
+- eMMC根分区实际为7.0GB ext4，已用4.7GB、可用2.1GB；Debug和Release构建目录分别只有2.6MB与456KB，目前无需清理；
+- VMware NAT虚拟机`192.168.78.130`能够`ping`开发板`192.168.1.102`，开发板不能反向`ping`虚拟机；这是NAT与路由边界，不是程序故障；
+- Release程序已在开发板物理网卡完成来自虚拟机的ICMP实时抓包和双向流聚合；
+- 详细排查过程记录在`docs/problem_log.md`第5.1至5.3节。
 
-不要宣称完整开发板部署已经结束。目前已经完成存储写权限、源码获取、原生Debug构建和CTest，尚未确认Release构建、离线PCAP结果对比或实时抓包验收。当前仓库提供环境检查脚本：
+不要宣称完整开发板部署已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、CTest、确定性离线PCAP验收和首次跨设备ICMP实时抓包，尚未完成同一外部PCAP的跨平台输出对比、双向直连网络验证和性能验收。当前仓库提供环境检查脚本：
 
 ```bash
 sh scripts/check_target_env.sh
@@ -1162,4 +1165,4 @@ BPF过滤
 → 实时流过期输出
 ```
 
-当前下一步是增加周期PPS、Mbps、流表占用率、过期数量和应用处理分类指标，再测量单线程瓶颈，并决定是否把`labs/thread_pipeline`接入正式程序。开发板侧已经完成原生Debug构建和CTest；接下来可验证可执行文件架构与版本、进行Release构建、离线结果对比和低速实时抓包验收。
+当前下一步是增加周期PPS、Mbps、流表占用率、过期数量和应用处理分类指标，再测量单线程瓶颈，并决定是否把`labs/thread_pipeline`接入正式程序。开发板侧已经完成原生Debug/Release构建、CTest、确定性离线验收和存储占用测量；接下来可进行同一外部PCAP的跨平台结果对比和低速实时抓包验收。交叉编译仍有工程价值，但当前项目构建树只有数MB，不需要仅因eMMC容量立即切换。

@@ -260,7 +260,7 @@ cmake --build build
 
 # 执行CMake已经注册的全部测试。
 # --output-on-failure只在失败时展开测试输出，便于定位问题。
-ctest --test-dir build --output-on-failure
+cmake -E chdir build ctest --output-on-failure
 ```
 
 当前共16项测试：
@@ -272,7 +272,7 @@ ctest --test-dir build --output-on-failure
 
 ```bash
 # -R按测试名称筛选，只运行离线流聚合验收。
-ctest --test-dir build -R offline_flow_acceptance --output-on-failure
+cmake -E chdir build ctest -R offline_flow_acceptance --output-on-failure
 ```
 
 ## 模块职责
@@ -296,17 +296,19 @@ ctest --test-dir build -R offline_flow_acceptance --output-on-failure
 
 ## ARM Linux部署准备
 
-开发板到达前不需要提前宣称“部署完成”。仓库中的环境检查脚本只做准备性检查，不安装软件，也不修改系统：
+仓库中的环境检查脚本只做准备性检查，不安装软件，也不修改系统：
 
 ```bash
 # 在开发电脑上检查通用构建依赖；非ARM只会给出提示。
 sh scripts/check_target_env.sh
 
-# 开发板到达后，要求目标必须是ARM，并检查完整测试环境。
+# 在开发板上要求目标必须是ARM，并检查完整测试环境。
 sh scripts/check_target_env.sh --expect-arm --with-tests
 ```
 
-首次上板计划采用目标机原生编译：先确认依赖，再完成Release构建、离线PCAP分析和结果对比。原生流程稳定后，再评估交叉编译工具链。
+LubanCat-2N已经完成ARM64原生Debug/Release构建、16项CTest、确定性离线PCAP端到端验收，以及来自VMware NAT虚拟机的物理网卡ICMP实时抓包。板载系统位于容量8GB的eMMC，系统安装后空间有限；当前源码保留在SD卡，正在使用的构建树临时放在eMMC的Linux原生文件系统，避免VFAT缺少执行位和符号链接等Unix语义。不要在eMMC上长期积累源码和多个构建树。后续可以在备份后为SD卡规划ext4工作分区，或者在开发电脑交叉编译并只向板端部署Release程序；PCAP、CSV和交换数据继续优先放在SD卡。
+
+开发板上的CTest为3.16.3，低于`--test-dir`参数所需的3.20，因此测试时应先进入构建目录再运行`ctest`。原生离线流程稳定后，继续完成同一外部PCAP的跨平台结果对比和真实网卡抓包，再评估交叉编译工具链。
 
 ## 后续迭代
 
@@ -317,7 +319,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 3. 把实验中的阻塞队列和线程流水线接入正式分析链；
 4. 增加TCP状态跟踪、流重组与DNS、HTTP等应用层解析；
 5. 实现规则异常检测，再准备机器学习特征与模型；
-6. 开发板到达后完成ARM Linux原生构建与运行验收；
+6. 完成开发板跨平台离线结果对比、实时抓包和性能验收；
 7. 在稳定的数据接口之上实现Qt上位机，并按需要扩展云端展示。
 
 版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)，技术、环境和硬件选型见[docs/technical_decisions.md](docs/technical_decisions.md)。
