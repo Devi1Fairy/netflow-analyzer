@@ -82,6 +82,7 @@ add_library(
     src/flow/flow_table.c
     src/output/flow_export.c
     src/flow/flow_expiration.c
+    src/metrics/runtime_metrics.c
 )
 
 # PUBLIC表示使用analyzer_core的目标自动继承公开头文件目录。
@@ -587,6 +588,31 @@ if(BUILD_TESTING)
 
     set_tests_properties(
         flow_expiration_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+    # 创建周期运行指标计算单元测试程序。
+    add_executable(
+        runtime_metrics_tests
+        tests/unit/test_runtime_metrics.c
+    )
+
+    target_link_libraries(
+        runtime_metrics_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    enable_project_warnings(runtime_metrics_tests)
+
+    add_test(
+        NAME runtime_metrics_tests
+        COMMAND runtime_metrics_tests
+    )
+
+    set_tests_properties(
+        runtime_metrics_tests
         PROPERTIES
             TIMEOUT 5
     )
