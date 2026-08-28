@@ -81,6 +81,7 @@ add_library(
     src/flow/flow_record.c
     src/flow/flow_table.c
     src/output/flow_export.c
+    src/flow/flow_expiration.c
 )
 
 # PUBLIC表示使用analyzer_core的目标自动继承公开头文件目录。
@@ -561,6 +562,31 @@ if(BUILD_TESTING)
 
     set_tests_properties(
         flow_export_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+    # 创建流过期时间调度单元测试程序。
+    add_executable(
+        flow_expiration_tests
+        tests/unit/test_flow_expiration.c
+    )
+
+    target_link_libraries(
+        flow_expiration_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    enable_project_warnings(flow_expiration_tests)
+
+    add_test(
+        NAME flow_expiration_tests
+        COMMAND flow_expiration_tests
+    )
+
+    set_tests_properties(
+        flow_expiration_tests
         PROPERTIES
             TIMEOUT 5
     )

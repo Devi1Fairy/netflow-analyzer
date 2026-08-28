@@ -7,6 +7,7 @@
 #include "analyzer/ipv4_dispatch.h"
 #include "analyzer/flow_table.h"
 #include "analyzer/flow_export.h"
+#include "analyzer/flow_expiration.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -28,6 +29,15 @@
  * 后续将通过流超时清理或动态哈希表解决容量限制。
  */
 #define APP_FLOW_TABLE_CAPACITY 256U
+
+/*
+ * 第一版实时流过期策略。
+ *
+ * 一条流最后活动30秒后具备过期条件，
+ * 但最多每经过5秒的数据包事件时间扫描一次流表。
+ */
+#define APP_FLOW_IDLE_TIMEOUT_SECONDS INT64_C(30)
+#define APP_FLOW_EXPIRATION_SCAN_INTERVAL_SECONDS INT64_C(5)
 
 /*
  * 正常情况下，ANALYZER_VERSION由CMake根据project版本传入。
@@ -190,12 +200,145 @@ static const char *app_icmp_type_name(uint8_t type)
 }
 
 /**
- * @brief 输出流表中的全部双向流记录。
+ * @brief 使用统一终端格式输出一条流记录。
+ *
+ * label决定记录前缀，例如Flow或Expired flow。
+ * display_index是从1开始的显示编号。
+ */
+static int app_print_flow_record(
+    const char *label,
+    size_t display_index,
+    const flow_record_t *record)
+{
+    char endpoint_a_address[IPV4_ADDRESS_STRING_SIZE];
+    char endpoint_b_address[IPV4_ADDRESS_STRING_SIZE];
+
+    int error_code;
+
+    if (label == NULL ||
+        label[0] == '\0' ||
+        display_index == 0U ||
+        record == NULL ||
+        !record->initialized ||
+        record->first_seen.microseconds < INT32_C(0) ||
+        record->first_seen.microseconds > INT32_C(999999) ||
+        record->last_seen.microseconds < INT32_C(0) ||
+        record->last_seen.microseconds > INT32_C(999999)) {
+        return EINVAL;
+    }
+
+    error_code = ipv4_format_address(
+        record->key.endpoint_a.ipv4_address,
+        endpoint_a_address,
+        sizeof(endpoint_a_address)
+    );
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    error_code = ipv4_format_address(
+        record->key.endpoint_b.ipv4_address,
+        endpoint_b_address,
+        sizeof(endpoint_b_address)
+    );
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    /*
+     * ICMP没有端口，因此ICMP流的两个端口显示为0。
+     *
+     * 对活动流和过期流使用完全相同的字段顺序，
+     * 便于人工比较，也便于后续脚本解析。
+     */
+    if (printf(
+            "%s %zu: "
+            "protocol=%s "
+            "endpoint_a=%s:%u "
+            "endpoint_b=%s:%u "
+            "a_to_b_packets=%" PRIu64 " "
+            "a_to_b_captured_bytes=%" PRIu64 " "
+            "a_to_b_wire_bytes=%" PRIu64 " "
+            "b_to_a_packets=%" PRIu64 " "
+            "b_to_a_captured_bytes=%" PRIu64 " "
+            "b_to_a_wire_bytes=%" PRIu64 " "
+            "first_seen=%" PRId64 ".%06" PRId32 " "
+            "last_seen=%" PRId64 ".%06" PRId32 "\n",
+            label,
+            display_index,
+            app_ipv4_protocol_name(
+                record->key.protocol
+            ),
+            endpoint_a_address,
+            (unsigned int)record->key.endpoint_a.port,
+            endpoint_b_address,
+            (unsigned int)record->key.endpoint_b.port,
+            record->a_to_b.packet_count,
+            record->a_to_b.captured_byte_count,
+            record->a_to_b.wire_byte_count,
+            record->b_to_a.packet_count,
+            record->b_to_a.captured_byte_count,
+            record->b_to_a.wire_byte_count,
+            record->first_seen.seconds,
+            record->first_seen.microseconds,
+            record->last_seen.seconds,
+            record->last_seen.microseconds) < 0) {
+        return EIO;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief 输出一次扫描返回的全部过期流副本。
+ *
+ * already_printed表示以前已经成功输出的过期流数量，
+ * 用于让多批结果使用连续编号。
+ */
+static int app_print_expired_flows(
+    const flow_record_t *records,
+    size_t record_count,
+    size_t already_printed)
+{
+    size_t index;
+    int error_code;
+
+    if (records == NULL) {
+        return EINVAL;
+    }
+
+    /*
+     * 后面要计算already_printed + index + 1，
+     * 因此先检查编号累计是否可能溢出。
+     */
+    if (record_count > SIZE_MAX - already_printed) {
+        return EOVERFLOW;
+    }
+
+    for (index = 0U; index < record_count; index += 1U) {
+        error_code = app_print_flow_record(
+            "Expired flow",
+            already_printed + index + 1U,
+            &records[index]
+        );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+    }
+
+    return 0;
+}
+
+/**
+ * @brief 输出流表中仍然保留的全部双向流记录。
  *
  * endpoint_a和endpoint_b是规范化排序后的端点，
  * 不一定分别对应客户端和服务器。
  *
- * @param table 指向已经完成离线聚合的流表。
+ * @param table 指向已经初始化的流表。
  *
  * @return 成功时返回0；
  *         参数或流表状态无效时返回EINVAL；
@@ -205,9 +348,6 @@ static const char *app_icmp_type_name(uint8_t type)
 static int app_print_flow_summary(const flow_table_t *table)
 {
     const flow_record_t *record;
-
-    char endpoint_a_address[IPV4_ADDRESS_STRING_SIZE];
-    char endpoint_b_address[IPV4_ADDRESS_STRING_SIZE];
 
     size_t flow_count;
     size_t index;
@@ -236,63 +376,14 @@ static int app_print_flow_summary(const flow_table_t *table)
             return error_code;
         }
 
-        error_code = ipv4_format_address(
-            record->key.endpoint_a.ipv4_address,
-            endpoint_a_address,
-            sizeof(endpoint_a_address)
+        error_code = app_print_flow_record(
+            "Flow",
+            index + 1U,
+            record
         );
 
         if (error_code != 0) {
             return error_code;
-        }
-
-        error_code = ipv4_format_address(
-            record->key.endpoint_b.ipv4_address,
-            endpoint_b_address,
-            sizeof(endpoint_b_address)
-        );
-
-        if (error_code != 0) {
-            return error_code;
-        }
-
-        /*
-         * ICMP没有端口，因此ICMP流的两个端口都会显示为0。
-         *
-         * 对所有协议使用统一格式，便于后续脚本解析。
-         */
-        if (printf(
-                "Flow %zu: "
-                "protocol=%s "
-                "endpoint_a=%s:%" PRIu16 " "
-                "endpoint_b=%s:%" PRIu16 " "
-                "a_to_b_packets=%" PRIu64 " "
-                "a_to_b_captured_bytes=%" PRIu64 " "
-                "a_to_b_wire_bytes=%" PRIu64 " "
-                "b_to_a_packets=%" PRIu64 " "
-                "b_to_a_captured_bytes=%" PRIu64 " "
-                "b_to_a_wire_bytes=%" PRIu64 " "
-                "first_seen=%" PRId64 ".%06" PRId32 " "
-                "last_seen=%" PRId64 ".%06" PRId32 "\n",
-                index + 1U,
-                app_ipv4_protocol_name(
-                    record->key.protocol
-                ),
-                endpoint_a_address,
-                record->key.endpoint_a.port,
-                endpoint_b_address,
-                record->key.endpoint_b.port,
-                record->a_to_b.packet_count,
-                record->a_to_b.captured_byte_count,
-                record->a_to_b.wire_byte_count,
-                record->b_to_a.packet_count,
-                record->b_to_a.captured_byte_count,
-                record->b_to_a.wire_byte_count,
-                record->first_seen.seconds,
-                record->first_seen.microseconds,
-                record->last_seen.seconds,
-                record->last_seen.microseconds) < 0) {
-            return EIO;
         }
     }
 
@@ -909,6 +1000,22 @@ static int app_run_capture_analysis(app_context_t *context)
     flow_table_slot_t flow_slots[APP_FLOW_TABLE_CAPACITY];
     flow_table_t flow_table;
 
+    /*
+    * flow_table_expire_before会在删除前把过期记录复制到这里。
+    *
+    * 数组容量与流表相同，因此一次扫描最多过期整个流表时，
+    * 输出缓冲区仍然足够。
+    */
+    flow_record_t expired_flow_records[APP_FLOW_TABLE_CAPACITY];
+
+    /*
+    * 调度器只保存时间和策略，不拥有动态资源。
+    */
+    flow_expiration_schedule_t expiration_schedule = {0};
+
+    flow_timestamp_t packet_timestamp = {0};
+    flow_timestamp_t expiration_cutoff = {0};
+
     capture_t *capture = NULL;
     capture_link_type_t link_type = CAPTURE_LINK_TYPE_UNKNOWN;
 
@@ -922,6 +1029,9 @@ static int app_run_capture_analysis(app_context_t *context)
     size_t total_packet_count = 0U;
     size_t previewed_packet_count = 0U;
 
+    size_t expired_flow_count = 0U;
+    size_t total_expired_flow_count = 0U;
+
     bool live_capture;
     bool print_preview;
     /*
@@ -929,6 +1039,8 @@ static int app_run_capture_analysis(app_context_t *context)
      * 只有capture_get_statistics明确返回0时才设置为true。
      */
     bool capture_statistics_available = false;
+
+    bool expiration_scan_due = false;
 
     int error_code;
     int statistics_error_code = 0;
@@ -1087,15 +1199,45 @@ static int app_run_capture_analysis(app_context_t *context)
         return error_code;
     }
 
+    /*
+    * 离线PCAP继续保留完整文件级聚合语义。
+    * 第一版只为实时采集初始化并使用过期调度器。
+    */
+    if (live_capture) {
+        error_code = flow_expiration_schedule_init(
+            &expiration_schedule,
+            APP_FLOW_IDLE_TIMEOUT_SECONDS,
+            APP_FLOW_EXPIRATION_SCAN_INTERVAL_SECONDS
+        );
+
+        if (error_code != 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to initialize flow expiration schedule"
+            );
+
+            flow_table_cleanup(&flow_table);
+            capture_close(&capture);
+            return error_code;
+        }
+    }
+
     if (live_capture) {
         error_code = printf(
             "Capture interface: %s\n"
             "Packet limit: %zu\n"
             "BPF filter: %s\n"
-            "Link type: Ethernet\n",
+            "Link type: Ethernet\n"
+            "Flow idle timeout: %" PRId64 " second(s)\n"
+            "Flow expiration scan interval: %" PRId64 " second(s)\n",
             capture_source,
             context->packet_limit,
-            context->filter_expression != NULL ? context->filter_expression : "(none)"
+            context->filter_expression != NULL
+                ? context->filter_expression
+                : "(none)",
+            APP_FLOW_IDLE_TIMEOUT_SECONDS,
+            APP_FLOW_EXPIRATION_SCAN_INTERVAL_SECONDS
         );
     } else {
         error_code = printf(
@@ -1217,6 +1359,90 @@ static int app_run_capture_analysis(app_context_t *context)
 
         print_preview = previewed_packet_count < APP_CAPTURE_PREVIEW_LIMIT;
 
+    /*
+    * 必须在把当前数据包加入流表之前判断过期。
+    *
+    * 如果一条旧流已经空闲30秒，而当前包恰好与旧流五元组相同，
+    * 先更新流表会刷新last_seen，错误地把两个会话合并。
+    */
+    if (live_capture) {
+        packet_timestamp = (flow_timestamp_t){
+            .seconds = packet.timestamp_seconds,
+            .microseconds = packet.timestamp_microseconds
+        };
+
+        error_code = flow_expiration_schedule_observe(
+            &expiration_schedule,
+            &packet_timestamp,
+            &expiration_scan_due,
+            &expiration_cutoff
+        );
+
+        if (error_code != 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to update flow expiration schedule "
+                "for packet %zu: %s",
+                total_packet_count,
+                strerror(error_code)
+            );
+
+            context->active_capture = NULL;
+            flow_table_cleanup(&flow_table);
+            capture_close(&capture);
+            return error_code;
+        }
+
+        if (expiration_scan_due) {
+            error_code = flow_table_expire_before(
+                &flow_table,
+                &expiration_cutoff,
+                expired_flow_records,
+                sizeof(expired_flow_records) /
+                    sizeof(expired_flow_records[0]),
+                &expired_flow_count
+            );
+
+            if (error_code != 0) {
+                (void)snprintf(
+                    context->error_message,
+                    sizeof(context->error_message),
+                    "failed to expire flows before packet %zu: %s",
+                    total_packet_count,
+                    strerror(error_code)
+                );
+
+                context->active_capture = NULL;
+                flow_table_cleanup(&flow_table);
+                capture_close(&capture);
+                return error_code;
+            }
+
+            error_code = app_print_expired_flows(
+                expired_flow_records,
+                expired_flow_count,
+                total_expired_flow_count
+            );
+
+            if (error_code != 0) {
+                (void)snprintf(
+                    context->error_message,
+                    sizeof(context->error_message),
+                    "failed to write expired flow output: %s",
+                    strerror(error_code)
+                );
+
+                context->active_capture = NULL;
+                flow_table_cleanup(&flow_table);
+                capture_close(&capture);
+                return error_code;
+            }
+
+            total_expired_flow_count += expired_flow_count;
+        }
+    }
+
         /*
          * 必须在下一次capture_next_packet之前完成当前包的解析。
          *
@@ -1309,6 +1535,23 @@ static int app_run_capture_analysis(app_context_t *context)
             context->error_message,
             sizeof(context->error_message),
             "failed to write packet summary"
+        );
+
+        flow_table_cleanup(&flow_table);
+        return EIO;
+    }
+
+    /*
+    * 离线模式没有启用周期过期，因此只在实时模式输出该指标。
+    */
+    if (live_capture &&
+        printf(
+            "Expired flows: %zu\n",
+            total_expired_flow_count) < 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "failed to write expired flow count"
         );
 
         flow_table_cleanup(&flow_table);

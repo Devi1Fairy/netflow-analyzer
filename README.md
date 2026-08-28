@@ -30,6 +30,8 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 
 当前`Unreleased`开发进度进一步为实时模式加入`SIGINT`和`SIGTERM`优雅退出，以及基于`pcap_stats()`的运行统计。用户按下Ctrl+C或服务管理器发送终止信号后，程序会中断阻塞的libpcap读取，沿正常控制流取得libpcap累计统计、关闭采集句柄，并输出已经处理的数据包、抓包丢弃情况和流汇总。
 
+实时主循环现在还会按数据包事件时间执行流过期：使用不会随乱序包倒退的时间高水位，每5秒扫描一次，并把空闲30秒的流在处理当前包之前输出和删除。过期记录先复制到调用者提供的固定容量缓冲区，因此删除槽位后终端仍能取得完整结果；程序结束时分别显示累计过期流和仍在流表中的流。
+
 ## v0.2.0新增
 
 - 为流表增加稳定哈希、开放寻址和按最后活动时间清理过期流的接口；
@@ -61,8 +63,9 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 - `pcap_stats()`字段的精确统计范围依赖操作系统和捕获后端，不能假定`Capture received packets`一定等于应用输出的`Total packets`；
 - 只支持Ethernet链路类型和IPv4，不支持VLAN、IPv6与隧道封装；
 - 不做IPv4分片重组、TCP流重组和校验和验证；
-- 流表容量仍固定为256个槽位，尚未实现动态扩容和负载因子控制；
-- 流表已经提供按截止时间清理记录的底层接口，但离线应用主流程尚未配置自动清理周期和输出时机；
+- 流表容量仍固定为256个槽位；实时过期可以复用旧槽位，但尚未实现动态扩容、负载因子控制和满载驱逐；
+- 实时流过期暂时固定为空闲30秒、每5秒事件时间扫描一次，尚未开放CLI配置；
+- 事件时间只随实际收到的数据包推进，接口完全静默时不会定时输出，下一包到来后才继续判断过期；
 - 尚未解析DNS、HTTP等应用层协议；
 - 尚未实现规则异常检测、机器学习、Qt界面或云端展示；
 - ARM Linux开发板部署等待硬件到达后验证，不作为`v0.2.0`的发布阻塞项。
@@ -87,7 +90,8 @@ netflow-analyzer/
 │   ├── ipv4_dispatch.h
 │   ├── flow_key.h
 │   ├── flow_record.h
-│   └── flow_table.h
+│   ├── flow_table.h
+│   └── flow_expiration.h
 ├── src/
 │   ├── main.c
 │   ├── app/app.c
@@ -104,7 +108,8 @@ netflow-analyzer/
 │   └── flow/
 │       ├── flow_key.c
 │       ├── flow_record.c
-│       └── flow_table.c
+│       ├── flow_table.c
+│       └── flow_expiration.c
 ├── tests/
 │   ├── unit/
 │   └── integration/test_offline_flow.py
@@ -212,6 +217,21 @@ sudo ./build/bin/netflow-analyzer \
 ping -c 2 127.0.0.1
 ```
 
+验证实时流过期时，可以在终端1运行过滤后的4包采集，在终端2先执行一次IPv4 ping，等待至少31秒后再执行一次：
+
+```bash
+ping -c 1 127.0.0.1
+sleep 31
+ping -c 1 127.0.0.1
+```
+
+第二次ping的第一包到来时，程序会先输出第一段ICMP流，再用当前包创建新的流。最终输出应同时包含：
+
+```text
+Expired flows: 1
+Flow summary: 1 flow(s)
+```
+
 当前参数：
 
 | 参数 | 作用 |
@@ -228,6 +248,8 @@ ping -c 2 127.0.0.1
 
 实时分析会等待网卡流量，达到`--count`指定的数据包数量，或收到`SIGINT`、`SIGTERM`停止请求后，取得libpcap运行统计、关闭采集句柄并输出流汇总。不提供`--filter`时，计数针对接口上返回的全部数据包，不只包含用户主动执行`ping`等命令产生的流量；例如VS Code及其本地服务也可能通过`lo`持续交换TCP数据。提供过滤器后，libpcap在数据包进入应用读取循环前执行匹配，只有匹配包会增加`--count`计数并进入协议解析和流聚合。当前`--count`限制处理包数而不是等待时间；没有足够的匹配流量时程序会继续等待，用户可以使用Ctrl+C安全结束并保留已经聚合的结果。
 
+实时过期调度器使用捕获数据包时间戳的最大值作为时间高水位，避免乱序包让时间倒退。扫描发生在当前包加入流表之前，因此同一五元组在空闲30秒后重新出现时，旧记录会先输出和删除，当前包再建立新记录。`Expired flows`是运行期间已经输出的累计数量，最终`Flow summary`只包含仍留在流表中的记录。
+
 实时输出中的`Total packets`表示应用实际从libpcap取得的包数；`Capture received packets`、`Capture dropped packets`和`Interface dropped packets`来自捕获后端。它们观察的层级不同，不能通过`Capture received packets - Total packets`计算丢包。例如在Linux的`lo`接口上执行`ping -c 2`时，应用会处理2个请求和2个响应，共4个逻辑ICMP包；内核捕获统计可能同时计算每个包的outgoing和incoming事件而报告8，libpcap再抑制交付给应用的回环重复副本。这种`Total packets: 4`、`Capture received packets: 8`的结果不是应用重复处理或发生4个丢包。
 
 ## 自动化测试
@@ -241,9 +263,9 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-当前共15项测试：
+当前共16项测试：
 
-- 14项C语言单元测试，分别验证字节读取、抓包与BPF封装、数据模型、各层协议解析、分发、流键、流记录、流表和CSV格式化；
+- 15项C语言单元测试，分别验证字节读取、抓包与BPF封装、数据模型、各层协议解析、分发、流键、流记录、流表、流过期调度和CSV格式化；
 - 1项Python端到端测试，生成确定性的6包PCAP，启动真实命令行程序并验证完整分析、5包预览、双向流统计和CSV文件内容。
 
 只运行端到端验收：
@@ -268,7 +290,8 @@ ctest --test-dir build -R offline_flow_acceptance --output-on-failure
 | `ipv4_dispatch` | 根据IPv4协议号选择具体解析器 |
 | `flow_key` | 生成与方向无关的规范化双向五元组 |
 | `flow_record` | 保存一条流及两个方向的统计信息 |
-| `flow_table` | 查找或创建流记录，并把数据包聚合到对应方向 |
+| `flow_table` | 查找或创建流记录、聚合数据包，并在过期删除前返回值副本 |
+| `flow_expiration` | 维护事件时间高水位、扫描周期和空闲截止时间，处理乱序及整数边界 |
 | `flow_export` | 把流记录转换成具有固定字段顺序的CSV表头和数据行 |
 
 ## ARM Linux部署准备
@@ -289,13 +312,12 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 
 建议按以下顺序推进：
 
-1. 在实时主流程中配置流空闲超时、过期输出和定期清理策略；
-2. 增加应用层解析结果计数以及PPS、Mbps等周期运行指标；
-3. 使用性能和容量数据决定是否增加流表满载驱逐、负载因子控制、重建或动态扩容；
-4. 把实验中的阻塞队列和线程流水线接入正式分析链；
-5. 增加TCP状态跟踪、流重组与DNS、HTTP等应用层解析；
-6. 实现规则异常检测，再准备机器学习特征与模型；
-7. 开发板到达后完成ARM Linux原生构建与运行验收；
-8. 在稳定的数据接口之上实现Qt上位机，并按需要扩展云端展示。
+1. 增加应用层解析结果计数以及PPS、Mbps、流表占用率等周期运行指标；
+2. 使用性能和容量数据决定是否增加流表满载驱逐、负载因子控制、重建或动态扩容；
+3. 把实验中的阻塞队列和线程流水线接入正式分析链；
+4. 增加TCP状态跟踪、流重组与DNS、HTTP等应用层解析；
+5. 实现规则异常检测，再准备机器学习特征与模型；
+6. 开发板到达后完成ARM Linux原生构建与运行验收；
+7. 在稳定的数据接口之上实现Qt上位机，并按需要扩展云端展示。
 
 版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)，技术、环境和硬件选型见[docs/technical_decisions.md](docs/technical_decisions.md)。

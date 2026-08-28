@@ -485,6 +485,12 @@ static int test_expire_flows_and_reuse_capacity(void)
     size_t expired_count;
     bool created;
 
+    flow_record_t expired_records[3];
+
+    size_t expired_index;
+    bool old_snapshot_found;
+    bool boundary_snapshot_found;
+
     TEST_CHECK(
         flow_table_init(
             &table,
@@ -607,6 +613,9 @@ static int test_expire_flows_and_reuse_capacity(void)
         flow_table_expire_before(
             &table,
             &cutoff,
+            expired_records,
+            sizeof(expired_records) /
+                sizeof(expired_records[0]),
             &expired_count
         ) == 0
     );
@@ -649,9 +658,32 @@ static int test_expire_flows_and_reuse_capacity(void)
         found_record->key.endpoint_b.port ==
             UINT16_C(3000)
     );
+    
+    TEST_CHECK(expired_count == 2U);
+    TEST_CHECK(flow_table_count(&table) == 1U);
 
-        TEST_CHECK(expired_count == 2U);
-        TEST_CHECK(flow_table_count(&table) == 1U);
+    old_snapshot_found = false;
+    boundary_snapshot_found = false;
+
+    for (expired_index = 0U; expired_index < expired_count; expired_index += 1U) {
+        
+        TEST_CHECK(expired_records[expired_index].initialized);
+
+        if (flow_key_equal(
+                &expired_records[expired_index].key,
+                &old_key)) {
+            old_snapshot_found = true;
+        }
+
+        if (flow_key_equal(
+                &expired_records[expired_index].key,
+                &boundary_key)) {
+            boundary_snapshot_found = true;
+        }
+    }
+
+    TEST_CHECK(old_snapshot_found);
+    TEST_CHECK(boundary_snapshot_found);
 
     /*
      * 清理过期流后，流表重新拥有空闲容量。
@@ -699,6 +731,7 @@ static int test_expire_argument_validation(void)
     packet_info_t packet;
     const flow_record_t *record;
     const flow_record_t *stored_record;
+    flow_record_t expired_records[1];
 
     flow_timestamp_t invalid_cutoff;
     flow_timestamp_t valid_cutoff;
@@ -754,6 +787,9 @@ static int test_expire_argument_validation(void)
         flow_table_expire_before(
             &table,
             &invalid_cutoff,
+            expired_records,
+            sizeof(expired_records) /
+                sizeof(expired_records[0]),
             &expired_count
         ) == EINVAL
     );
@@ -774,11 +810,46 @@ static int test_expire_argument_validation(void)
         flow_table_expire_before(
             &table,
             &valid_cutoff,
+            expired_records,
+            sizeof(expired_records) /
+                sizeof(expired_records[0]),
             NULL
         ) == EINVAL
     );
 
     TEST_CHECK(flow_table_count(&table) == 1U);
+
+    expired_count = 99U;
+
+    TEST_CHECK(
+        flow_table_expire_before(
+            &table,
+            &valid_cutoff,
+            NULL,
+            1U,
+            &expired_count
+        ) == EINVAL
+    );
+
+    TEST_CHECK(expired_count == 99U);
+    TEST_CHECK(flow_table_count(&table) == 1U);
+    TEST_CHECK(stored_record->initialized);
+
+    expired_count = 99U;
+
+    TEST_CHECK(
+        flow_table_expire_before(
+            &table,
+            &valid_cutoff,
+            expired_records,
+            0U,
+            &expired_count
+        ) == ENOSPC
+    );
+
+    TEST_CHECK(expired_count == 99U);
+    TEST_CHECK(flow_table_count(&table) == 1U);
+    TEST_CHECK(stored_record->initialized);
 
     flow_table_cleanup(&table);
 
@@ -809,6 +880,7 @@ static int test_collision_wraparound_and_deleted_slot(void)
     const flow_record_t *record;
     const flow_record_t *second_record;
     const flow_record_t *found_record;
+    flow_record_t expired_records[1];
 
     flow_timestamp_t cutoff;
 
@@ -978,6 +1050,9 @@ static int test_collision_wraparound_and_deleted_slot(void)
         flow_table_expire_before(
             &table,
             &cutoff,
+            expired_records,
+            sizeof(expired_records) /
+                sizeof(expired_records[0]),
             &expired_count
         ) == 0
     );

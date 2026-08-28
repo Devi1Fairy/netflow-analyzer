@@ -331,16 +331,21 @@ int flow_table_process_packet(
     return 0;
 }
 
-int flow_table_expire_before(flow_table_t *table,
-                            const flow_timestamp_t *cutoff,
-                            size_t *expired_count)
+int flow_table_expire_before(
+    flow_table_t *table,
+    const flow_timestamp_t *cutoff,
+    flow_record_t *expired_records,
+    size_t expired_records_capacity,
+    size_t *expired_count)
 {
     size_t slot_index;
     size_t observed_count;
-    size_t result_expired_count;
+    size_t matched_count;
+    size_t output_index;
 
     if (!flow_table_has_valid_shape(table) ||
         cutoff == NULL ||
+        expired_records == NULL ||
         expired_count == NULL ||
         cutoff->microseconds < INT32_C(0) ||
         cutoff->microseconds > INT32_C(999999)) {
@@ -348,14 +353,16 @@ int flow_table_expire_before(flow_table_t *table,
     }
 
     observed_count = 0U;
+    matched_count = 0U;
 
     /*
-     * 修改流表前先验证所有槽位。
+     * 第一遍只验证和计数，不修改流表或输出数组。
      *
-     * 这样一旦发现内部状态异常，函数可以直接失败，
-     * 而不会留下只删除了一部分记录的流表。
+     * 只有确认流表结构有效、输出数组容量足够后，
+     * 才能进入真正的复制和删除阶段。
      */
     for (slot_index = 0U; slot_index < table->capacity; slot_index += 1U) {
+
         const flow_table_slot_t *slot = &table->slots[slot_index];
 
         switch (slot->state) {
@@ -365,12 +372,19 @@ int flow_table_expire_before(flow_table_t *table,
 
         case FLOW_TABLE_SLOT_OCCUPIED:
             if (!slot->record.initialized ||
-                slot->record.last_seen.microseconds < INT32_C(0) ||
-                slot->record.last_seen.microseconds > INT32_C(999999)) {
+                slot->record.last_seen.microseconds <
+                    INT32_C(0) ||
+                slot->record.last_seen.microseconds >
+                    INT32_C(999999)) {
                 return EINVAL;
             }
 
             observed_count += 1U;
+
+            if (flow_timestamp_at_or_before(&slot->record.last_seen, cutoff)) {
+                matched_count += 1U;
+            }
+
             break;
 
         default:
@@ -385,44 +399,51 @@ int flow_table_expire_before(flow_table_t *table,
         return EINVAL;
     }
 
-    result_expired_count = 0U;
+    /*
+     * 容量不足时必须在任何复制和删除之前失败。
+     */
+    if (matched_count > expired_records_capacity) {
+        return ENOSPC;
+    }
 
+    output_index = 0U;
+
+    /*
+     * 前面的验证已经排除了所有预期错误。
+     * 第二遍先复制记录，再清空原槽位。
+     */
     for (slot_index = 0U; slot_index < table->capacity; slot_index += 1U) {
-
+    
         flow_table_slot_t *slot = &table->slots[slot_index];
 
         if (slot->state != FLOW_TABLE_SLOT_OCCUPIED) {
             continue;
         }
 
-        if (!flow_timestamp_at_or_before(&slot->record.last_seen, cutoff)) {
+        if (!flow_timestamp_at_or_before(
+                &slot->record.last_seen,
+                cutoff)) {
             continue;
         }
 
-        /*
-         * 清除旧记录内容，并把槽位标记成DELETED。
-         *
-         * 不能直接标记成EMPTY，否则可能中断其他冲突记录的探测链。
-         */
+        expired_records[output_index] = slot->record;
+        output_index += 1U;
+
         slot->record = (flow_record_t){0};
         slot->state = FLOW_TABLE_SLOT_DELETED;
-
         table->count -= 1U;
-        result_expired_count += 1U;
     }
 
     /*
-     * 如果已经没有有效记录，所有探测链也都没有保留价值，
-     * 此时可以安全地把全部槽位恢复成EMPTY。
+     * 如果已经没有有效记录，DELETED探测链也没有保留价值。
      */
     if (table->count == 0U) {
         for (slot_index = 0U; slot_index < table->capacity; slot_index += 1U) {
-            table->slots[slot_index] =
-                (flow_table_slot_t){0};
+            table->slots[slot_index] = (flow_table_slot_t){0};
         }
     }
 
-    *expired_count = result_expired_count;
+    *expired_count = output_index;
 
     return 0;
 }

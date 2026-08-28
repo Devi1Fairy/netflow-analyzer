@@ -121,22 +121,43 @@ int flow_table_process_packet(
     bool *created);
 
 /**
- * @brief 删除最后活动时间不晚于cutoff的流记录。
+ * @brief 删除最后活动时间不晚于cutoff的流记录，并返回其值副本。
  *
  * 满足以下条件的记录会被删除：
  *
  * record->last_seen <= *cutoff
  *
- * 删除后的槽位被标记成DELETED，而不是EMPTY，保证哈希探测链不会中断。
+ * 删除前，每条过期记录会按值复制到expired_records数组。
+ * flow_record_t不拥有动态内存，因此这些副本不依赖流表槽位，
+ * 在原记录被删除后仍然有效。
  *
- * 如果删除后流表已经完全为空，则会把所有槽位恢复成EMPTY，
- * 清除已经没有意义的DELETED标记。
+ * expired_records中的记录顺序由哈希槽位的物理扫描顺序决定，
+ * 调用者不能依赖它们按创建时间或最后活动时间排序。
  *
- * 函数失败时不修改流表，也不修改expired_count。
+ * expired_records_capacity必须足以保存本次所有过期记录。
+ * 如果容量不足，函数返回ENOSPC，并且不修改流表、
+ * expired_records或expired_count。
+ *
+ * 删除后的槽位被标记成DELETED，而不是EMPTY，保证哈希探测链
+ * 不会中断。如果删除后流表完全为空，则把全部槽位恢复成EMPTY。
+ *
+ * 函数失败时不修改流表、expired_records或expired_count。
+ *
+ * @param table 指向待执行过期清理的流表。
+ * @param cutoff 指向包含截止时间的有效时间戳。
+ * @param expired_records 指向调用者提供的流记录输出数组。
+ * @param expired_records_capacity 输出数组最多可以保存的记录数量。
+ * @param expired_count 用于接收实际删除并复制的记录数量。
+ *
+ * @return 成功时返回0；
+ *         参数或流表状态无效时返回EINVAL；
+ *         输出数组容量不足时返回ENOSPC。
  */
 int flow_table_expire_before(
     flow_table_t *table,
     const flow_timestamp_t *cutoff,
+    flow_record_t *expired_records,
+    size_t expired_records_capacity,
     size_t *expired_count);
 
 /**

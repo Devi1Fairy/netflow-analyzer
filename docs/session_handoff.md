@@ -23,14 +23,14 @@ ctest --test-dir build --output-on-failure
 
 - 当前分支：`main`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前已提交基线：`3c54aba feat(cli): stop live capture gracefully on signals`；
-- 当前功能在该基线上继续加入`capture_get_statistics()`和实时统计输出；预计以`feat(capture): report live capture statistics`提交，准确哈希以实际`git log`为准；
+- 进入本轮前的已提交基线：`19d9f7c feat(capture): report live capture statistics`；
+- 当前工作区继续加入实时流过期、事件时间调度、过期值副本和输出；完成提交后以实际`git log`哈希为准；
 - 当前正式版本宏为`0.2.0`；
 - 已有标签：`v0.0.1`、`v0.1.0`、`v0.2.0`；
 - 完成本轮提交和推送后，预期`main`、`origin/main`一致且工作区干净；
 - Debug构建目录：`/home/zcb/workspace/netflow-analyzer/build`；
 - 主程序：`build/bin/netflow-analyzer`；
-- 当前15项CTest应全部通过。
+- 当前16项CTest应全部通过。
 
 如果实际状态与上面不同，应先查看用户是否在新会话开始前继续修改了代码，不要覆盖未提交改动。
 
@@ -237,7 +237,7 @@ e32a14c feat: parse TCP segments
 
 用户已经练习过feature分支、compare链接、Pull Request、review和merge。历史PR包括至少`#1`、`#2`，`v0.1.0`通过PR `#4`合入。近期为了连续学习直接在`main`提交；如果下一阶段需要模拟团队协作，应先创建feature分支，再通过PR合入，不要假设必须直接推main。
 
-`v0.1.0`是第一条完整离线分析链的发布标签。`v0.2.0`已经发布哈希流表、过期底层接口、CSV、实时抓包和BPF过滤。信号优雅退出与libpcap运行统计属于`Unreleased`开发进度，当前不需要立即更换版本标签。
+`v0.1.0`是第一条完整离线分析链的发布标签。`v0.2.0`已经发布哈希流表、过期底层接口、CSV、实时抓包和BPF过滤。信号优雅退出、libpcap运行统计和实时流过期属于`Unreleased`开发进度，当前不需要立即更换版本标签。
 
 ## 6. 当前目录结构与职责
 
@@ -260,6 +260,7 @@ netflow-analyzer/
 │   ├── flow_key.h
 │   ├── flow_record.h
 │   ├── flow_table.h
+│   ├── flow_expiration.h
 │   └── flow_export.h
 ├── src/
 │   ├── main.c
@@ -277,7 +278,8 @@ netflow-analyzer/
 │   ├── flow/
 │   │   ├── flow_key.c
 │   │   ├── flow_record.c
-│   │   └── flow_table.c
+│   │   ├── flow_table.c
+│   │   └── flow_expiration.c
 │   └── output/flow_export.c
 ├── tests/
 │   ├── unit/
@@ -310,7 +312,8 @@ netflow-analyzer/
 | `ipv4_dispatch` | 按IPv4协议号分发到TCP、UDP或ICMP解析器 |
 | `flow_key` | 生成规范化双向五元组，判断相等，计算FNV-1a 64位哈希 |
 | `flow_record` | 保存一个双向流的两个方向统计、首末时间并更新记录 |
-| `flow_table` | 开放寻址哈希表、线性探测、删除标记、查找、遍历和过期删除 |
+| `flow_table` | 开放寻址哈希表、线性探测、删除标记、查找、遍历，以及返回值副本的过期删除 |
+| `flow_expiration` | 维护数据包事件时间高水位、扫描周期和空闲截止时间，处理乱序与整数边界 |
 | `flow_export` | 将流记录写成固定字段顺序的CSV表头和记录 |
 
 `common`目录存放不属于某一种网络协议或业务模块、但多个模块可复用的基础工具。当前只有安全字节读取器，未来可以放通用时间、错误转换、日志等工具，但不要把所有无法分类的业务代码都堆入`common`。
@@ -370,7 +373,15 @@ capture_next_packet
     ↓ 超时EAGAIN
 继续等待，不增加包计数
     ↓ 收到包
-与离线模式复用同一解析和流聚合链
+更新flow_expiration事件时间高水位
+    ↓ 每推进5秒
+计算30秒空闲截止时间
+    ↓
+flow_table_expire_before复制并删除旧流
+    ↓
+输出Expired flow和累计过期数量
+    ↓
+当前包进入与离线模式复用的解析和流聚合链
     ↓
 总捕获包数达到N，或收到SIGINT/SIGTERM
     ↓
@@ -624,7 +635,7 @@ sudo ./build/bin/netflow-analyzer \
 
 ## 12. 当前测试体系
 
-当前CTest共15项，最近一次全量执行全部通过，总耗时约0.07秒：
+当前CTest共16项，最近一次全量执行全部通过，总耗时约0.07秒：
 
 | 编号 | CTest名称 | 主要覆盖 |
 |---:|---|---|
@@ -643,6 +654,7 @@ sudo ./build/bin/netflow-analyzer \
 | 13 | `flow_table_tests` | 哈希冲突、线性探测、回绕、删除标记、复用、遍历和过期 |
 | 14 | `offline_flow_acceptance` | Python生成确定性PCAP，运行真实CLI，检查全文件聚合、预览和CSV |
 | 15 | `flow_export_tests` | CSV表头、记录字段顺序、格式化和无效参数 |
+| 16 | `flow_expiration_tests` | 事件时间高水位、扫描边界、乱序时间戳、参数验证和截止时间下溢 |
 
 只运行重点测试示例：
 
@@ -670,7 +682,7 @@ ctest \
 - 不能假设外网可用；
 - 自动测试不应修改系统网卡权限。
 
-因此当前对实时功能采用三层验证：参数单元测试、采集接口的不依赖权限错误测试、人工`lo`验收。BPF使用离线确定性PCAP验证过滤语义；信号唤醒和`pcap_stats()`成功路径使用真实`lo`手工验收。
+因此当前对实时功能采用三层验证：参数单元测试、采集接口的不依赖权限错误测试、人工`lo`验收。BPF使用离线确定性PCAP验证过滤语义；信号唤醒、`pcap_stats()`成功路径和实时流过期使用真实`lo`手工验收。过期验收通过两次间隔31秒的IPv4 ping观察到一条过期ICMP流和一条最终活动ICMP流。
 
 ## 13. 已完成的实验项目
 
@@ -991,18 +1003,20 @@ feat(cli): expose live capture filter option
 
 后续可观测性仍包括：协议解析结果分类、流表拒绝、过期/驱逐、PPS、Mbps、CPU和RSS。
 
-### 18.3 实时流过期
+### 18.3 实时流过期（已完成第一版）
 
-已有`flow_table_expire_before()`，但还没有接入。需要决定：
+实时主循环已经接入以下策略：
 
-- 流空闲超时；
-- 扫描周期；
-- 过期记录删除前如何输出；
-- CSV、Qt或下游队列的所有权；
-- 时间戳倒退如何处理；
-- 固定表容量不足时的策略。
+- 以最大已观察数据包时间戳作为事件时间高水位，乱序包不能让时间倒退；
+- 空闲超时固定30秒，事件时间每推进5秒扫描一次；
+- 在处理当前包之前扫描，防止长时间空闲后的同五元组包刷新旧记录；
+- 流表先把过期`flow_record_t`按值复制到调用者的256条固定缓冲区，再删除槽位；
+- 运行期间逐条输出`Expired flow`，退出时分别显示累计`Expired flows`和剩余`Flow summary`；
+- 离线PCAP仍保持完整文件级聚合，不启用周期过期；
+- 单元测试覆盖扫描边界、乱序、值副本、容量不足和整数下溢，全部16项CTest通过；
+- `lo`上两次间隔31秒的IPv4 ping人工验收通过。
 
-不能直接调用过期删除然后丢弃结果，否则用户看不到已经结束的流。
+已知边界：接口完全静默时事件时间不推进，旧流要等下一包到来才输出；超时和周期尚未开放CLI配置；实时过期流当前只输出终端，没有追加到持续CSV；固定流表仍缺少满载驱逐和负载因子指标。
 
 ### 18.4 性能测量后再接线程流水线
 
@@ -1099,7 +1113,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-继续按照交接文档第18.3节，一步一步教我把现有流过期接口接入实时主流程。
+实时流过期第一版已经完成。继续按照交接文档第18.4节，先增加周期PPS、Mbps和流表容量指标，再用数据决定是否接入线程流水线。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1107,10 +1121,10 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 
 - 当前HEAD和测试状态；
 - 当前实时命令；
-- 为什么下一步是实时流过期与过期结果输出；
+- 为什么下一步是周期运行指标和单线程性能测量；
 - 本轮不会直接替用户修改C源码。
 
-然后再开始第一个实时流过期设计步骤。
+然后再开始第一个周期运行指标设计步骤。
 
 ## 21. 本次交接结论
 
@@ -1123,6 +1137,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 → Ethernet/IPv4/TCP/UDP/ICMP解析
 → 双向五元组
 → FNV-1a开放寻址哈希流表
+→ 事件时间调度、过期值副本与实时清理
 → 双向包数、字节数和时间统计
 → 终端流汇总或离线CSV
 ```
@@ -1133,6 +1148,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 BPF过滤
 → 信号优雅退出
 → 抓包统计
+→ 实时流过期输出
 ```
 
-当前下一步是把已有`flow_table_expire_before()`接入实时主循环，并先解决“过期记录删除前如何输出、扫描周期和时间语义”这三个问题。完成实时流过期输出后，再增加周期速率和容量指标，测量单线程瓶颈，并决定是否把`labs/thread_pipeline`接入正式程序。
+当前下一步是增加周期PPS、Mbps、流表占用率、过期数量和应用处理分类指标，再测量单线程瓶颈，并决定是否把`labs/thread_pipeline`接入正式程序。开发板到达后可以并行进行ARM64原生构建、离线结果对比和低速实时抓包验收。
