@@ -1,6 +1,6 @@
 # Netflow Analyzer会话交接文档
 
-最后更新：2026-08-26（Asia/Shanghai）
+最后更新：2026-08-28（Asia/Shanghai）
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
@@ -23,11 +23,11 @@ ctest --test-dir build --output-on-failure
 
 - 当前分支：`main`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前功能基线提交：`61076f1 feat(cli): analyze bounded live packet streams`；
-- 创建本文前`origin/main`与本地`main`一致；如果本文已经提交，HEAD会比该功能基线多一条纯文档提交；
-- 当前正式版本宏仍为`0.1.0`，但`main`已经包含多个尚未打新标签的功能；
-- 已有标签：`v0.0.1`、`v0.1.0`；
-- 交接文档创建前工作区干净；创建本文后，通常只会新增`docs/session_handoff.md`，是否提交由用户决定；
+- 当前已提交基线：`3c54aba feat(cli): stop live capture gracefully on signals`；
+- 当前功能在该基线上继续加入`capture_get_statistics()`和实时统计输出；预计以`feat(capture): report live capture statistics`提交，准确哈希以实际`git log`为准；
+- 当前正式版本宏为`0.2.0`；
+- 已有标签：`v0.0.1`、`v0.1.0`、`v0.2.0`；
+- 完成本轮提交和推送后，预期`main`、`origin/main`一致且工作区干净；
 - Debug构建目录：`/home/zcb/workspace/netflow-analyzer/build`；
 - 主程序：`build/bin/netflow-analyzer`；
 - 当前15项CTest应全部通过。
@@ -207,6 +207,13 @@ origin git@github.com:Devi1Fairy/netflow-analyzer.git
 当前重要提交，从新到旧：
 
 ```text
+（本轮提交后）feat(capture): report live capture statistics
+3c54aba feat(cli): stop live capture gracefully on signals
+768985f feat(app): propagate stop requests to capture loop
+3a3fb3e feat(capture): support breaking active reads
+a0de7df tag: v0.2.0
+a8fd76f feat(cli): expose live capture filter option
+8b047d2 feat(capture): add BPF filter support
 61076f1 feat(cli): analyze bounded live packet streams
 47d37ab feat(cli): add live capture interface probe
 bf73660 feat(capture): add live interface opening
@@ -230,7 +237,7 @@ e32a14c feat: parse TCP segments
 
 用户已经练习过feature分支、compare链接、Pull Request、review和merge。历史PR包括至少`#1`、`#2`，`v0.1.0`通过PR `#4`合入。近期为了连续学习直接在`main`提交；如果下一阶段需要模拟团队协作，应先创建feature分支，再通过PR合入，不要假设必须直接推main。
 
-`v0.1.0`是第一条完整离线分析链的发布标签。标签之后的哈希流表、过期接口、CSV和实时抓包仍属于`Unreleased`，后续合适时应准备`v0.2.0`，不要把当前HEAD错误描述成已经发布的`v0.2.0`。
+`v0.1.0`是第一条完整离线分析链的发布标签。`v0.2.0`已经发布哈希流表、过期底层接口、CSV、实时抓包和BPF过滤。信号优雅退出与libpcap运行统计属于`Unreleased`开发进度，当前不需要立即更换版本标签。
 
 ## 6. 当前目录结构与职责
 
@@ -293,7 +300,7 @@ netflow-analyzer/
 | `main.c` | 初始化上下文、解析参数、运行应用、统一清理，把错误码转换为进程退出码 |
 | `app.c` | 应用编排；连接采集、协议解析、流表和输出，不承担具体协议字段解析 |
 | `byte_reader` | 使用边界检查游标读取、跳过和切分原始二进制字节 |
-| `capture` | 封装libpcap，统一离线文件和实时网卡接口，隐藏`pcap_t`与`DLT_*` |
+| `capture` | 封装libpcap，统一离线文件、实时网卡、BPF、中断和运行统计接口，隐藏`pcap_t`、`struct pcap_stat`与`DLT_*` |
 | `packet_info` | 保存一条数据包的捕获元数据、协议字段和解析状态 |
 | `ethernet` | 解析Ethernet II头、MAC地址和EtherType |
 | `ipv4` | 解析IPv4头、长度、地址、TTL、协议号和分片信息 |
@@ -349,7 +356,7 @@ CSV导出
 实时模式：
 
 ```text
-CLI --interface NAME --count N
+CLI --interface NAME --count N [--filter EXPRESSION]
     ↓
 严格解析N为大于0的size_t
     ↓
@@ -357,17 +364,21 @@ capture_open_live
     ↓
 检查链路类型必须为Ethernet
     ↓
+可选capture_set_filter
+    ↓
 capture_next_packet
     ↓ 超时EAGAIN
 继续等待，不增加包计数
     ↓ 收到包
 与离线模式复用同一解析和流聚合链
     ↓
-总捕获包数达到N
+总捕获包数达到N，或收到SIGINT/SIGTERM
+    ↓
+capture_get_statistics
     ↓
 关闭capture句柄
     ↓
-输出总包数、预览数和流汇总
+输出应用包数、libpcap统计、预览数和流汇总
 ```
 
 `app_run_capture_analysis()`现在同时编排离线和实时输入。它根据`app_context_t.command`选择打开方式，后续处理链不区分数据来自文件还是网卡。这是刻意的职责分离：采集来源差异停留在采集层和应用编排层，协议解析器只接收字节与长度。
@@ -562,7 +573,8 @@ EtherType `0x0800`是IEEE/IANA约定的IPv4标识，不是项目自定义示例�
 ```bash
 sudo ./build/bin/netflow-analyzer \
     --interface lo \
-    --count 4
+    --count 4 \
+    --filter "icmp"
 ```
 
 `--count`使用严格正整数解析：
@@ -574,6 +586,8 @@ sudo ./build/bin/netflow-analyzer \
 - `--count`不能与`--read`组合；
 - 实时模式必须提供`--count`；
 - 当前实时模式不能与`--csv`组合。
+
+达到数量上限或收到`SIGINT`/`SIGTERM`后，实时模式在关闭capture句柄前查询`pcap_stats()`，输出捕获后端接收、抓包缓冲区丢弃和接口丢弃统计。统计查询失败只降级显示不可用，不丢弃已经完成的流分析。
 
 打开实时接口通常需要root权限或适当Linux capability。当前手工验收使用`sudo`运行主程序，但不要使用`sudo cmake`或`sudo cmake --build`，避免构建目录出现root所有权文件。
 
@@ -588,36 +602,25 @@ ens33  VMware呈现给Ubuntu虚拟机的Ethernet接口
 
 `lo`捕获本机经`127.0.0.1`或`::1`进行的通信，包不会离开系统。`ens33`承载虚拟机与宿主机、局域网或互联网的通信，具体范围取决于VMware NAT、桥接或Host-only模式。
 
-最近执行：
+最新统计验收执行：
 
 ```bash
-sudo ./build/bin/netflow-analyzer --interface lo --count 4
+sudo ./build/bin/netflow-analyzer \
+    --interface lo \
+    --count 4 \
+    --filter "icmp"
 ```
 
-用户没有另开终端执行`ping`，程序仍立即获得4个TCP包。端点为：
-
-```text
-127.0.0.1:45601 ↔ 127.0.0.1:50298
-```
-
-`ss -tnp`确认端口45601由VS Code的`code-...`进程持有，说明抓到的是VS Code/扩展与本地服务的回环TCP流量。
-
-四包统计：
-
-- 45601到50298：167字节和129字节，共2包、296字节；
-- 50298到45601：66字节和177字节，共2包、243字节；
-- 双向规范化后得到1条TCP流；
-- 首时间为第1包时间，末时间为第4包时间；
-- `0x018`是PSH+ACK，`0x010`是ACK；
-- 未看到SYN，说明抓包从一个已经建立的连接中途开始；
-- `lo`上MAC显示`00:00:00:00:00:00`在当前Linux抓包环境中是正常结果。
+另一个终端执行`ping -c 2 127.0.0.1`，应用取得2个Echo Request和2个Echo Reply，共4个逻辑ICMP包。终端同时输出`Total packets: 4`和`Capture received packets: 8`。
 
 重要结论：
 
 - 实时抓包看到的是接口上的全部匹配流量，不是只看到用户为了测试主动产生的流量；
-- 当前没有BPF，因此`--count 4`会接收最先到达的任意4个受支持链路包；
+- BPF已经能排除无关的VS Code回环TCP流量；
 - `--count`限制包数，不限制等待时间；接口没有足够流量时程序会继续等待；
-- 这正是下一步需要BPF过滤和之后需要信号退出的直接动机。
+- Ctrl+C和SIGTERM已经能中断读取并沿正常路径输出已有统计；
+- Linux回环包会出现outgoing和incoming捕获事件，libpcap向应用交付前会抑制重复副本，因此捕获后端的8和应用处理的4处于不同统计层级；
+- 不能用`Capture received packets - Total packets`推导丢包，应查看专门的drop字段并保留平台可用性限制。
 
 ## 12. 当前测试体系
 
@@ -627,7 +630,7 @@ sudo ./build/bin/netflow-analyzer --interface lo --count 4
 |---:|---|---|
 | 1 | `analyzer_smoke_tests` | 上下文生命周期、帮助、版本、离线/实时CLI参数及错误组合 |
 | 2 | `byte_reader_tests` | 字节读取、跳过、切片、边界和失败不修改输出 |
-| 3 | `capture_tests` | PCAP打开、链路类型、逐包读取、关闭、实时打开参数和不存在网卡 |
+| 3 | `capture_tests` | PCAP打开、链路类型、逐包读取、BPF、中断、实时统计参数、离线不支持语义和关闭 |
 | 4 | `packet_info_tests` | 统一结果对象初始化、时间戳和错误状态 |
 | 5 | `ethernet_tests` | Ethernet II字段、负载、截断和格式化 |
 | 6 | `ipv4_tests` | IPv4长度、IHL、地址、分片、截断和畸形输入 |
@@ -667,7 +670,7 @@ ctest \
 - 不能假设外网可用；
 - 自动测试不应修改系统网卡权限。
 
-因此当前对实时功能采用三层验证：参数单元测试、采集接口的不依赖权限错误测试、人工`lo`验收。加入BPF时仍应尽量在离线确定性PCAP上验证过滤语义，再用`lo`手工验收。
+因此当前对实时功能采用三层验证：参数单元测试、采集接口的不依赖权限错误测试、人工`lo`验收。BPF使用离线确定性PCAP验证过滤语义；信号唤醒和`pcap_stats()`成功路径使用真实`lo`手工验收。
 
 ## 13. 已完成的实验项目
 
@@ -731,6 +734,7 @@ ctest \
 8. 未主动`ping`仍捕获到`lo` TCP包，通过`ss -tnp`定位到VS Code本地通信；
 9. libpcap的`caplen`和`wirelen`容易混淆，明确规定前者用于内存边界、后者只用于线路统计；
 10. 测试通过不等于测试有效，断言本身也需要评审。
+11. `lo`上应用处理4个ICMP包而`pcap_stats().ps_recv`报告8，确认是回环方向事件与libpcap重复抑制造成的统计层级差异。
 
 讲面试故事时推荐结构：
 
@@ -764,6 +768,8 @@ ctest \
 - `DELETED`保留探测链；
 - 活动流放内存，当前用CSV进行测试、演示和离线交换，不急于引入数据库；
 - 可视化优先Qt上位机，云端展示作为后续扩展；
+- BPF、信号退出和libpcap运行统计都停留在capture边界内，不向上层暴露第三方原生类型；
+- 捕获后端计数与应用处理计数分别输出，不能用二者差值计算丢包；
 - 不在没有性能数据时提前引入AF_XDP、DPDK或复杂线程池。
 
 数据库目前不是必需项。只有出现历史查询、持久告警、用户配置、跨重启状态等明确需求时，再评估SQLite或外部数据库。
@@ -772,12 +778,11 @@ ctest \
 
 ### 16.1 实时抓包
 
-- 没有BPF，所有到达接口的包都进入用户态并计入`--count`；
-- 没有SIGINT/SIGTERM优雅退出；
-- `app_request_stop()`存在，但没有接入信号处理或实时循环中的外部停止源；
+- 已支持BPF、SIGINT/SIGTERM优雅退出和`pcap_stats()`累计统计；
 - `--count`只限制成功捕获的包数，不限制等待时间；
 - libpcap读取超时在不同平台和捕获后端上的行为可能不同，不能把它当作严格定时器；
-- 没有调用`pcap_stats`，不能展示接收包、内核丢包和接口丢包；
+- `pcap_stats()`字段语义和可用性依赖平台，`ps_recv`不等于应用完成处理的包数，`ps_ifdrop == 0`也可能表示指标不可用；
+- 当前只有应用取得的总包数，没有按协议解析成功、截断、畸形和不支持状态分类的运行计数；
 - 当前混杂模式固定为false，没有CLI选项；
 - 实时CSV尚未开放；
 - `any`接口在Linux通常是cooked capture链路类型，当前只支持Ethernet，可能返回`ENOTSUP`；
@@ -810,7 +815,9 @@ ctest \
 - 实时路径只有手工验收，没有环境独立的端到端自动化；
 - Sanitizer还没有正式接入主项目构建预设；此前已向用户介绍ASan/UBSan和TSan，但不应假设已配置完成。
 
-## 17. 下一步：BPF过滤（推荐立即实现）
+## 17. 已完成阶段：BPF过滤
+
+本节保留BPF实施时的设计依据和测试方案，相关接口、CLI、自动化测试和`lo`人工验收均已完成。不要再把本节当成当前下一步重复实现。
 
 ### 17.1 为什么现在做BPF
 
@@ -963,11 +970,11 @@ feat(capture): add BPF filter support
 feat(cli): expose live capture filter option
 ```
 
-## 18. BPF之后的推荐路线
+## 18. 当前推荐路线
 
-### 18.1 信号优雅退出
+### 18.1 信号优雅退出（已完成）
 
-目标：允许用户不提供很小的`--count`，并使用Ctrl+C安全结束。
+当前已经使用`sigaction()`、`volatile sig_atomic_t`和`pcap_breakloop()`实现Ctrl+C及SIGTERM的安全结束。下面保留实施时需要持续遵守的约束。
 
 注意：
 
@@ -978,17 +985,11 @@ feat(cli): expose live capture filter option
 - libpcap阻塞读取是否需要`pcap_breakloop`以及它在目标平台的信号安全语义，实施前要核对官方文档；
 - 后续可考虑`--count`变为可选：达到数量或收到信号均退出。
 
-### 18.2 抓包运行统计
+### 18.2 抓包运行统计（基础完成）
 
-封装`pcap_stats`，在实时退出时输出：
+`capture_statistics_t`和`capture_get_statistics()`已经封装`pcap_stats()`，实时退出时分别输出捕获后端累计接收、抓包缓冲区丢包、接口丢包和应用实际取得的总包数。平台原生`struct pcap_stat`没有暴露给上层，离线句柄明确返回`ENOTSUP`。
 
-- libpcap接收包数；
-- 内核丢包数；
-- 接口丢包数（平台支持时）；
-- 应用实际处理包数；
-- 被协议层拒绝或不支持的包数。
-
-不要把平台原生`struct pcap_stat`直接暴露给上层，建立项目自己的统计结构。
+后续可观测性仍包括：协议解析结果分类、流表拒绝、过期/驱逐、PPS、Mbps、CPU和RSS。
 
 ### 18.3 实时流过期
 
@@ -1055,7 +1056,7 @@ output线程（CSV/Qt/告警）
 
 ## 19. ARM Linux开发板计划
 
-用户当前还没有开始正式上板，之前讨论后倾向选择野火LubanCat-2N，原因主要是：
+用户已经购买野火LubanCat-2N，硬件尚未开始正式上板验证。选择原因主要是：
 
 - 与嵌入式Linux学习目标匹配；
 - 网络接口条件更适合采集、管理口、入口/出口或旁路分析实验；
@@ -1098,7 +1099,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-继续按照交接文档第17节，一步一步教我实现BPF过滤。
+继续按照交接文档第18.3节，一步一步教我把现有流过期接口接入实时主流程。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1106,10 +1107,10 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 
 - 当前HEAD和测试状态；
 - 当前实时命令；
-- 为什么下一步是BPF；
+- 为什么下一步是实时流过期与过期结果输出；
 - 本轮不会直接替用户修改C源码。
 
-然后再开始第一个BPF实现步骤。
+然后再开始第一个实时流过期设计步骤。
 
 ## 21. 本次交接结论
 
@@ -1118,6 +1119,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 ```text
 离线PCAP或实时网卡
 → libpcap统一采集
+→ 可选BPF过滤、信号中断与捕获后端统计
 → Ethernet/IPv4/TCP/UDP/ICMP解析
 → 双向五元组
 → FNV-1a开放寻址哈希流表
@@ -1125,13 +1127,12 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 → 终端流汇总或离线CSV
 ```
 
-当前最有价值的下一步不是立即引入线程、数据库、Qt或机器学习，而是补全实时采集的可控性：
+实时采集的第一组可控性能力已经完成：
 
 ```text
 BPF过滤
 → 信号优雅退出
 → 抓包统计
-→ 实时流过期输出
 ```
 
-完成这组能力后，再测量单线程瓶颈，决定是否把`labs/thread_pipeline`接入正式程序。这个顺序既保持学习过程可理解，也能让项目逐步接近嵌入式Linux网络协议与DPI岗位的真实工程问题。
+当前下一步是把已有`flow_table_expire_before()`接入实时主循环，并先解决“过期记录删除前如何输出、扫描周期和时间语义”这三个问题。完成实时流过期输出后，再增加周期速率和容量指标，测量单线程瓶颈，并决定是否把`labs/thread_pipeline`接入正式程序。

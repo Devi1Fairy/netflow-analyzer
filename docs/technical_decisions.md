@@ -2,7 +2,7 @@
 
 本文档记录Netflow Analyzer项目的重要技术、开发环境、测试方案和硬件选型。它回答的不只是“用了什么”，还包括“为什么使用、放弃了什么、承担了什么代价、何时需要重新评估”。
 
-最后更新：2026-08-27。
+最后更新：2026-08-28。
 
 ## 1. 记录规则
 
@@ -43,6 +43,7 @@
 | TD-019 | 使用Git功能分支、Pull Request和版本标签 | 已采用 |
 | TD-020 | 通过libpcap classic BPF在读取循环前过滤实时流量 | 已采用 |
 | TD-021 | 使用POSIX信号和pcap_breakloop优雅停止实时采集 | 已采用 |
+| TD-022 | 区分捕获后端统计与应用处理计数 | 已采用 |
 
 ## 3. 核心语言与运行平台
 
@@ -165,7 +166,7 @@ Makefile仍需要理解，但当前项目的重点不是重复维护平台相关
 - 两种输入统一复用链路类型查询、逐包读取、错误查询和关闭接口；
 - CLI使用`--interface NAME --count PACKETS [--filter EXPRESSION]`运行有限包数的实时处理循环；
 - 实时与离线数据复用同一套协议解析、双向流聚合和输出函数，采集来源差异被限制在应用编排层；
-- `--count`限制返回应用的包数而不是等待秒数；安装BPF后只统计匹配包，实时模式可以通过`SIGINT`或`SIGTERM`提前结束，抓包统计仍待接入。
+- `--count`限制返回应用的包数而不是等待秒数；安装BPF后只统计匹配包，实时模式可以通过`SIGINT`或`SIGTERM`提前结束，并在关闭句柄前取得libpcap运行统计。
 
 选择libpcap的原因：
 
@@ -249,7 +250,7 @@ Wireshark是成熟分析工具，但项目目标是开发可嵌入业务程序�
 
 - `PCAP_NETMASK_UNKNOWN`不适合依赖真实IPv4网络掩码的广播过滤表达式；
 - CLI尚未开放离线PCAP过滤，出现明确需求后可以复用现有采集接口放宽限制；
-- libpcap运行统计和实际丢包测量仍需后续实现。
+- libpcap运行统计已经接入；下一阶段继续增加协议层分类计数、周期速率和流表容量指标。
 
 参考：[pcap_compile手册](https://www.tcpdump.org/manpages/pcap_compile.3pcap.html)、[pcap_setfilter手册](https://www.tcpdump.org/manpages/pcap_setfilter.3pcap.html)、[pcap_freecode手册](https://www.tcpdump.org/manpages/pcap_freecode.3pcap.html)。
 
@@ -311,9 +312,46 @@ Ctrl+C或kill/systemd
 - `active_capture`是普通借用指针，当前依靠单线程生命周期以及处理器安装和恢复顺序保持有效，多线程阶段需要使用正式同步机制；
 - Linux实时接口的阻塞唤醒行为取决于libpcap版本和采集后端，开发板验收时需要记录并验证目标机libpcap版本；
 - 当前收到停止信号后正常返回成功状态；接入服务管理器后应根据监控和重启策略复审退出码约定；
-- 下一步仍需封装`pcap_stats()`，区分libpcap接收、内核丢包、接口丢包和应用实际处理包数。
+- `pcap_stats()`已经通过项目自有结构封装，并与应用实际处理包数分开输出；后续多线程阶段仍需重新定义各阶段的应用丢弃计数。
 
 参考：[sigaction手册](https://man7.org/linux/man-pages/man2/sigaction.2.html)、[signal概览](https://man7.org/linux/man-pages/man7/signal.7.html)、[pcap_breakloop手册](https://www.tcpdump.org/manpages/pcap_breakloop.3pcap.html)。
+
+### TD-022：区分捕获后端统计与应用处理计数
+
+状态：已采用。
+
+背景：
+
+`app.c`中的`Total packets`统计应用通过`capture_next_packet()`实际取得并进入处理链的数据包。libpcap的`pcap_stats()`则查询操作系统捕获后端的累计统计，两者处于不同观察层，数值不保证相等。只输出应用包数无法判断抓包缓冲区是否因读取不及时而丢包，只输出`ps_recv`又容易被误解成应用完成处理的数量。
+
+决定：
+
+- 采集模块定义不含第三方类型的`capture_statistics_t`，把`ps_recv`、`ps_drop`和`ps_ifdrop`转换为项目统一的`uint64_t`字段；
+- `capture_get_statistics()`只支持实时句柄，离线PCAP没有原运行环境统计，明确返回`ENOTSUP`；
+- capture对象在私有实现中记录来源类型，不把该状态和`struct pcap_stat`暴露给上层；
+- 统计查询在读取循环结束后、`capture_close()`之前执行；依赖句柄的libpcap错误文本也必须在关闭前复制；
+- 统计查询属于辅助可观测性。查询失败时输出不可用说明，但不把已经成功完成的包解析和流聚合改判为失败；
+- 终端同时保留`Total packets`和三项捕获后端统计，不使用两者之差推导丢包。
+
+Linux与回环接口语义：
+
+- Linux上的`ps_recv`统计通过捕获过滤器的PF_PACKET事件，并可能包含尚未被应用读取的包；
+- 回环通信中的同一个逻辑包会同时以outgoing和incoming形式出现；
+- libpcap会抑制交付给应用的loopback outgoing重复副本，但底层统计仍可能已经计算该事件；
+- 因此`ping -c 2`产生2个Echo Request和2个Echo Reply时，本项目观察到`Total packets: 4`和`Capture received packets: 8`是合理结果，不表示应用重复处理，也不表示丢失4个包；
+- `ps_ifdrop`为0在部分平台上也可能表示不支持该指标，不能无条件解释为接口确定没有丢包。
+
+验证：
+
+- 单元测试覆盖NULL参数、离线句柄`ENOTSUP`和失败不修改输出对象；
+- 实时`lo`与ICMP BPF过滤验收成功取得统计，并观察到4个应用包对应8个捕获后端事件；
+- 全部15项CTest通过。
+
+后续：
+
+`pcap_stats()`只提供捕获后端累计值。下一阶段还需要为协议解析成功、截断、畸形、不支持、流表拒绝和以后线程队列丢弃建立项目自己的应用计数，并基于单调时钟计算PPS和Mbps。
+
+参考：[pcap_stats手册](https://man7.org/linux/man-pages/man3/pcap_stats.3pcap.html)、[libpcap Linux统计与回环处理实现](https://github.com/the-tcpdump-group/libpcap/blob/master/pcap-linux.c)。
 
 ## 6. 二进制数据与协议解析
 

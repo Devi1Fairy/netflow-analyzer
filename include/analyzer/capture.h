@@ -134,6 +134,44 @@ typedef struct {
 } capture_packet_view_t;
 
 /**
+ * @brief 保存实时采集句柄提供的累计抓包统计。
+ *
+ * 这些数值来自libpcap的pcap_stats，并表示从实时采集开始到查询时的
+ * 累计结果，不是本次查询之后新增的数量。
+ *
+ * 不同操作系统和抓包后端对各字段的统计范围可能不同。例如，
+ * received_packets可能统计BPF过滤前或过滤后的数据包。
+ *
+ * 某个丢包字段为0也不一定能证明没有发生丢包，因为部分平台可能
+ * 不提供对应统计。
+ *
+ * 本结构体不拥有动态内存，不需要cleanup或free。
+ */
+typedef struct {
+    /**
+     * libpcap报告的接收数据包数量。
+     *
+     * 该数值不等同于应用层已经成功处理的数据包数量。
+     */
+    uint64_t received_packets;
+
+    /**
+     * libpcap报告的操作系统抓包缓冲区丢包数量。
+     *
+     * 当应用读取速度跟不上数据包到达速度时，该数值可能增加。
+     */
+    uint64_t dropped_packets;
+
+    /**
+     * libpcap报告的网络接口或驱动丢包数量。
+     *
+     * 部分平台不支持该统计；此时0可能表示不支持，而不是确定没有
+     * 发生丢包。
+     */
+    uint64_t interface_dropped_packets;
+} capture_statistics_t;
+
+/**
  * @brief 打开一个离线PCAP文件。
  *
  * 函数成功时创建capture_t对象，并通过capture输出对象地址。
@@ -214,6 +252,30 @@ int capture_open_live(const char *interface_name,
  */
 int capture_get_link_type(const capture_t *capture,
                           capture_link_type_t *link_type);
+
+/**
+ * @brief 查询实时采集对象的累计抓包统计。
+ *
+ * capture必须由capture_open_live成功创建。离线PCAP文件不保存
+ * 抓包运行统计，因此对离线采集对象调用本函数会返回ENOTSUP。
+ *
+ * 函数成功后才修改statistics。参数错误、不支持或libpcap查询失败
+ * 时，statistics原有内容保持不变。
+ *
+ * 本函数只读取统计，不取得capture或statistics的所有权。
+ *
+ * @param capture 指向已经成功打开的采集对象。
+ * @param statistics 指向用于接收统计结果的结构体。
+ *
+ * @return 成功时返回0；
+ *         参数无效时返回EINVAL；
+ *         对离线采集对象调用时返回ENOTSUP；
+ *         libpcap查询失败时返回EIO。
+ */
+int capture_get_statistics(
+    const capture_t *capture,
+    capture_statistics_t *statistics
+);
 
 /**
  * @brief 编译并安装一个libpcap BPF过滤表达式。

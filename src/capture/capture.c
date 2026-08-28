@@ -33,6 +33,14 @@ struct capture {
      * 转换后的项目内部链路层类型。
      */
     capture_link_type_t link_type;
+
+    /**
+     * true表示对象来自实时网卡，false表示来自离线PCAP文件。
+     *
+     * pcap_stats只支持实时采集，因此统计接口通过该字段在进入
+     * libpcap之前拒绝离线句柄。
+     */
+    bool is_live;
 };
 
 /**
@@ -156,6 +164,8 @@ int capture_open_offline(const char *file_path,
     new_capture->link_type =
         capture_map_link_type(native_link_type);
 
+    new_capture->is_live = false;
+
     /*
      * 所有初始化步骤成功后，才把对象地址交给调用者。
      *
@@ -278,6 +288,8 @@ int capture_open_live(const char *interface_name,
 
     new_capture->link_type = capture_map_link_type(native_link_type);
 
+    new_capture->is_live = true;
+
     /*
      * 所有操作成功后才发布新对象。
      *
@@ -296,6 +308,68 @@ int capture_get_link_type(const capture_t *capture,
     }
 
     *link_type = capture->link_type;
+
+    return 0;
+}
+
+int capture_get_statistics(
+    const capture_t *capture,
+    capture_statistics_t *statistics)
+{
+    struct pcap_stat native_statistics = {0};
+
+    capture_statistics_t new_statistics;
+    int native_result;
+
+    if (capture == NULL ||
+        capture->native_handle == NULL ||
+        statistics == NULL) {
+        return EINVAL;
+    }
+
+    /*
+     * 离线PCAP不保存当时运行系统的接收和丢包计数。
+     *
+     * 在这里明确返回ENOTSUP，比把libpcap的“不支持”统一解释为
+     * 普通I/O错误更能表达真实原因。
+     */
+    if (!capture->is_live) {
+        return ENOTSUP;
+    }
+
+    /*
+     * pcap_stats返回的是从实时采集开始到当前时刻的累计统计快照。
+     *
+     * 查询失败时，详细错误仍保存在capture句柄中，调用者可以在
+     * capture_close之前通过capture_get_error读取。
+     */
+    native_result = pcap_stats(
+        capture->native_handle,
+        &native_statistics
+    );
+
+    if (native_result != 0) {
+        return EIO;
+    }
+
+    /*
+     * 先在局部对象中完成从libpcap类型到项目类型的转换。
+     *
+     * 只有全部成功后才发布输出，保证失败时调用者原有的statistics
+     * 内容保持不变。
+     */
+    new_statistics = (capture_statistics_t){
+        .received_packets =
+            (uint64_t)native_statistics.ps_recv,
+
+        .dropped_packets =
+            (uint64_t)native_statistics.ps_drop,
+
+        .interface_dropped_packets =
+            (uint64_t)native_statistics.ps_ifdrop
+    };
+
+    *statistics = new_statistics;
 
     return 0;
 }

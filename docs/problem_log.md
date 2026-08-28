@@ -421,3 +421,41 @@ sudo ./build/bin/netflow-analyzer --interface lo --count 4
 - `--count`统计所有捕获成功的包，不保证包属于某个指定进程或协议；
 - 需要可重复验证指定流量时，应关闭无关程序，或者使用后续将加入的BPF过滤；
 - 端口号只能描述连接端点，结合`ss -tnp`等工具才能进一步定位持有套接字的进程。
+
+### 4.3 应用处理4个ICMP包，但libpcap报告接收8个包
+
+现象：
+
+在`lo`上使用`--filter "icmp" --count 4`抓包，并执行`ping -c 2 127.0.0.1`后，应用输出：
+
+```text
+Total packets: 4
+Capture received packets: 8
+```
+
+最初疑问是程序是否重复计数，或者是否发生了4个包的丢失。
+
+排查结论：
+
+- `ping -c 2`会产生2个Echo Request和2个Echo Reply，共4个逻辑ICMP包；
+- Linux回环路径会让每个逻辑包同时出现outgoing和incoming捕获事件；
+- Linux PF_PACKET统计已经计算通过BPF的这些事件，因此`pcap_stats().ps_recv`可以得到8；
+- libpcap在向应用交付回环数据时会抑制outgoing重复副本，因此`capture_next_packet()`仍只返回4个逻辑包；
+- Linux统计还可能包含已经进入内核捕获缓冲区、但尚未被应用读取的包。
+
+结果解释：
+
+`Total packets`属于应用处理层，`Capture received packets`属于捕获后端层。二者的差值不是丢包数，不能使用：
+
+```text
+Capture received packets - Total packets
+```
+
+推导应用丢包。抓包缓冲区和接口层丢包应分别查看`Capture dropped packets`和`Interface dropped packets`，同时保留平台可能不提供某些指标的限制说明。
+
+经验：
+
+- 监控指标必须标明观察层级，名称相似不代表统计口径相同；
+- 回环接口适合功能验证，但方向语义和物理网卡不同；
+- 遇到看似异常的计数时，应先检查操作系统、驱动和第三方库的统计定义，再判断业务计数是否错误；
+- 该现象属于平台统计语义，不需要通过修改应用计数来强行让两个数字相等。

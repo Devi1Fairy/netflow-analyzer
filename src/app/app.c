@@ -893,6 +893,14 @@ static int app_run_capture_analysis(app_context_t *context)
     char capture_error[CAPTURE_ERROR_BUFFER_SIZE] = {0};
 
     /*
+     * pcap_stats错误信息可能依赖仍然存活的capture句柄。
+     *
+     * 如果查询失败，必须在capture_close之前把说明复制到这个
+     * 应用层局部缓冲区，关闭后才能继续安全打印。
+     */
+    char statistics_error_message[CAPTURE_ERROR_BUFFER_SIZE] = {0};
+
+    /*
     * 哈希流表的每个物理位置都是一个槽位。
     *
     * 槽位中同时保存状态和流记录，因此这里不能再直接声明
@@ -906,16 +914,24 @@ static int app_run_capture_analysis(app_context_t *context)
 
     capture_packet_view_t packet;
     capture_read_status_t read_status;
+    capture_statistics_t capture_statistics = {0};
 
     const char *capture_source;
+    const char *native_statistics_error = NULL;
 
     size_t total_packet_count = 0U;
     size_t previewed_packet_count = 0U;
 
     bool live_capture;
     bool print_preview;
+    /*
+     * false既可能表示尚未查询，也可能表示当前平台查询失败。
+     * 只有capture_get_statistics明确返回0时才设置为true。
+     */
+    bool capture_statistics_available = false;
 
     int error_code;
+    int statistics_error_code = 0;
 
     if (context == NULL) {
         return EINVAL;
@@ -1234,6 +1250,51 @@ static int app_run_capture_analysis(app_context_t *context)
     }
 
     /*
+     * pcap_stats只支持实时采集，因此离线模式不调用统计接口。
+     *
+     * 查询必须发生在capture_close之前，因为底层pcap_t仍然是
+     * pcap_stats和capture_get_error所依赖的对象。
+     */
+    if (live_capture) {
+        statistics_error_code =
+            capture_get_statistics(
+                capture,
+                &capture_statistics
+            );
+
+        if (statistics_error_code == 0) {
+            capture_statistics_available = true;
+        } else {
+            /*
+             * EIO表示libpcap查询失败，详细说明保存在capture句柄中。
+             *
+             * 其他错误通常表示项目内部调用条件不满足，使用strerror
+             * 转换项目返回的errno风格错误码。
+             */
+            if (statistics_error_code == EIO) {
+                native_statistics_error = capture_get_error(capture);
+            }
+
+            if (native_statistics_error != NULL &&
+                native_statistics_error[0] != '\0') {
+                (void)snprintf(
+                    statistics_error_message,
+                    sizeof(statistics_error_message),
+                    "%s",
+                    native_statistics_error
+                );
+            } else {
+                (void)snprintf(
+                    statistics_error_message,
+                    sizeof(statistics_error_message),
+                    "%s",
+                    strerror(statistics_error_code)
+                );
+            }
+        }
+    }
+
+    /*
      * 先撤销context中的借用，再关闭真正拥有的capture对象。
      */
     context->active_capture = NULL;
@@ -1252,6 +1313,43 @@ static int app_run_capture_analysis(app_context_t *context)
 
         flow_table_cleanup(&flow_table);
         return EIO;
+    }
+
+    /*
+     * Total packets是应用实际从capture_next_packet取得的包数。
+     *
+     * 以下数字来自libpcap和操作系统。由于平台、抓包后端和BPF
+     * 实现不同，它们不保证与Total packets完全相等。
+     */
+    if (live_capture) {
+        if (capture_statistics_available) {
+            error_code = printf(
+                "Capture received packets: %" PRIu64 "\n"
+                "Capture dropped packets: %" PRIu64 "\n"
+                "Interface dropped packets: %" PRIu64 "\n",
+                capture_statistics.received_packets,
+                capture_statistics.dropped_packets,
+                capture_statistics.interface_dropped_packets
+            );
+        } else {
+            error_code = printf(
+                "Capture statistics: unavailable (%s)\n",
+                statistics_error_message[0] != '\0'
+                    ? statistics_error_message
+                    : "unknown statistics error"
+            );
+        }
+
+        if (error_code < 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to write capture statistics"
+            );
+
+            flow_table_cleanup(&flow_table);
+            return EIO;
+        }
     }
 
     error_code = app_print_flow_summary(&flow_table);

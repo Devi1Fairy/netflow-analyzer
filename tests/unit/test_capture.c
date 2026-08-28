@@ -767,6 +767,109 @@ static int test_capture_break_loop(void)
 }
 
 /**
+ * @brief 验证抓包统计接口的参数和离线句柄语义。
+ *
+ * pcap_stats只支持实时采集，而自动化测试不能依赖root权限和真实
+ * 网卡，因此本测试使用离线PCAP验证：
+ *
+ * 1. NULL参数被拒绝；
+ * 2. 离线句柄返回ENOTSUP；
+ * 3. 所有失败路径均不修改调用者原有统计内容。
+ *
+ * 实时成功路径将在应用层接入后通过lo接口手工验收。
+ */
+static int test_capture_statistics_error_handling(void)
+{
+    char pcap_path[] =
+        "/tmp/netflow-analyzer-statistics-XXXXXX";
+
+    char error_buffer[CAPTURE_ERROR_BUFFER_SIZE] = {0};
+
+    capture_t *capture = NULL;
+
+    capture_statistics_t statistics = {
+        .received_packets = UINT64_C(11),
+        .dropped_packets = UINT64_C(22),
+        .interface_dropped_packets = UINT64_C(33)
+    };
+
+    int null_capture_error;
+    int create_error;
+    int open_error;
+    int null_output_error = -1;
+    int offline_statistics_error = -1;
+    int remove_error;
+
+    null_capture_error = capture_get_statistics(
+        NULL,
+        &statistics
+    );
+
+    create_error = create_ethernet_pcap(
+        pcap_path,
+        NULL,
+        0U,
+        0U
+    );
+
+    TEST_CHECK(create_error == 0);
+
+    open_error = capture_open_offline(
+        pcap_path,
+        &capture,
+        error_buffer,
+        sizeof(error_buffer)
+    );
+
+    if (open_error == 0) {
+        null_output_error = capture_get_statistics(
+            capture,
+            NULL
+        );
+
+        offline_statistics_error =
+            capture_get_statistics(
+                capture,
+                &statistics
+            );
+    }
+
+    capture_close(&capture);
+    remove_error = remove(pcap_path);
+
+    TEST_CHECK(null_capture_error == EINVAL);
+
+    TEST_CHECK(open_error == 0);
+    TEST_CHECK(error_buffer[0] == '\0');
+
+    TEST_CHECK(null_output_error == EINVAL);
+    TEST_CHECK(offline_statistics_error == ENOTSUP);
+
+    /*
+     * 所有失败调用都必须保持输出对象原值不变。
+     */
+    TEST_CHECK(
+        statistics.received_packets ==
+            UINT64_C(11)
+    );
+
+    TEST_CHECK(
+        statistics.dropped_packets ==
+            UINT64_C(22)
+    );
+
+    TEST_CHECK(
+        statistics.interface_dropped_packets ==
+            UINT64_C(33)
+    );
+
+    TEST_CHECK(capture == NULL);
+    TEST_CHECK(remove_error == 0);
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 验证BPF过滤参数、编译错误以及实际包过滤语义。
  *
  * 测试使用离线PCAP，因此不依赖真实网卡或root权限。
@@ -1027,6 +1130,13 @@ int main(void)
     }
 
     printf("[PASS] open empty Ethernet capture\n");
+
+    if (test_capture_statistics_error_handling() != EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] capture statistics error handling\n");
+
 
     if (test_capture_packet_reading() != EXIT_SUCCESS) {
         return EXIT_FAILURE;

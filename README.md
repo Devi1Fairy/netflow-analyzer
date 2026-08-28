@@ -28,7 +28,7 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 
 `v0.2.0`在这条链路上增加了流过期清理、FNV-1a哈希流表、CSV导出、实时抓包和BPF过滤。CLI可以通过`--interface NAME --count PACKETS [--filter EXPRESSION]`从网卡读取有限数量的数据包，并复用离线模式的协议解析、双向流聚合和终端汇总流程。
 
-当前`Unreleased`开发进度进一步为实时模式加入`SIGINT`和`SIGTERM`优雅退出。用户按下Ctrl+C或服务管理器发送终止信号后，程序会中断阻塞的libpcap读取，沿正常控制流关闭采集句柄，并输出已经处理的数据包和流汇总。
+当前`Unreleased`开发进度进一步为实时模式加入`SIGINT`和`SIGTERM`优雅退出，以及基于`pcap_stats()`的运行统计。用户按下Ctrl+C或服务管理器发送终止信号后，程序会中断阻塞的libpcap读取，沿正常控制流取得libpcap累计统计、关闭采集句柄，并输出已经处理的数据包、抓包丢弃情况和流汇总。
 
 ## v0.2.0新增
 
@@ -57,7 +57,8 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 
 当前版本有意保持实现简单，便于先验证数据模型和处理链：
 
-- 实时模式已经支持BPF过滤以及`SIGINT`、`SIGTERM`优雅退出，但尚未加入libpcap抓包统计，并且打开网卡需要相应Linux权限；
+- 实时模式已经支持BPF过滤、`SIGINT`/`SIGTERM`优雅退出和libpcap抓包统计，但打开网卡仍需要相应Linux权限；
+- `pcap_stats()`字段的精确统计范围依赖操作系统和捕获后端，不能假定`Capture received packets`一定等于应用输出的`Total packets`；
 - 只支持Ethernet链路类型和IPv4，不支持VLAN、IPv6与隧道封装；
 - 不做IPv4分片重组、TCP流重组和校验和验证；
 - 流表容量仍固定为256个槽位，尚未实现动态扩容和负载因子控制；
@@ -225,7 +226,9 @@ ping -c 2 127.0.0.1
 
 离线分析会先显示文件与链路类型，再预览前5个数据包。程序仍会处理文件中的所有数据包，最后输出总包数、预览包数和双向流汇总。指定`--csv`后，应用层在聚合成功后创建CSV文件，写入固定表头和全部流记录；C11的独占创建模式会在目标已存在时失败，避免静默覆盖原文件。
 
-实时分析会等待网卡流量，达到`--count`指定的数据包数量，或收到`SIGINT`、`SIGTERM`停止请求后，关闭采集句柄并输出流汇总。不提供`--filter`时，计数针对接口上返回的全部数据包，不只包含用户主动执行`ping`等命令产生的流量；例如VS Code及其本地服务也可能通过`lo`持续交换TCP数据。提供过滤器后，libpcap在数据包进入应用读取循环前执行匹配，只有匹配包会增加`--count`计数并进入协议解析和流聚合。当前`--count`限制处理包数而不是等待时间；没有足够的匹配流量时程序会继续等待，用户可以使用Ctrl+C安全结束并保留已经聚合的结果。
+实时分析会等待网卡流量，达到`--count`指定的数据包数量，或收到`SIGINT`、`SIGTERM`停止请求后，取得libpcap运行统计、关闭采集句柄并输出流汇总。不提供`--filter`时，计数针对接口上返回的全部数据包，不只包含用户主动执行`ping`等命令产生的流量；例如VS Code及其本地服务也可能通过`lo`持续交换TCP数据。提供过滤器后，libpcap在数据包进入应用读取循环前执行匹配，只有匹配包会增加`--count`计数并进入协议解析和流聚合。当前`--count`限制处理包数而不是等待时间；没有足够的匹配流量时程序会继续等待，用户可以使用Ctrl+C安全结束并保留已经聚合的结果。
+
+实时输出中的`Total packets`表示应用实际从libpcap取得的包数；`Capture received packets`、`Capture dropped packets`和`Interface dropped packets`来自捕获后端。它们观察的层级不同，不能通过`Capture received packets - Total packets`计算丢包。例如在Linux的`lo`接口上执行`ping -c 2`时，应用会处理2个请求和2个响应，共4个逻辑ICMP包；内核捕获统计可能同时计算每个包的outgoing和incoming事件而报告8，libpcap再抑制交付给应用的回环重复副本。这种`Total packets: 4`、`Capture received packets: 8`的结果不是应用重复处理或发生4个丢包。
 
 ## 自动化测试
 
@@ -257,7 +260,7 @@ ctest --test-dir build -R offline_flow_acceptance --output-on-failure
 | `main.c` | 安装和恢复实时模式的POSIX信号处理器，调用应用接口，并把错误码转换为进程退出状态 |
 | `app.c` | 解析CLI参数，组织离线或实时采集、停止请求、协议解析、流表更新和输出 |
 | `byte_reader` | 对无符号字节执行边界检查、跳过、读取和切片 |
-| `capture` | 隔离libpcap类型和错误信息，统一封装离线文件、实时网卡采集、BPF编译安装和读取中断 |
+| `capture` | 隔离libpcap类型和错误信息，统一封装离线文件、实时网卡采集、BPF编译安装、读取中断和实时抓包统计 |
 | `packet_info` | 保存一个数据包的元数据、原始视图和解析结果 |
 | `ethernet` | 解析MAC地址、EtherType和Ethernet负载 |
 | `ipv4` | 解析IPv4头部、地址、长度、协议号和负载 |
@@ -286,9 +289,9 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 
 建议按以下顺序推进：
 
-1. 为实时抓包增加libpcap运行统计；
-2. 在实时主流程中配置流空闲超时、过期输出和定期清理策略；
-3. 使用性能和容量数据决定是否增加负载因子控制、重建或动态扩容；
+1. 在实时主流程中配置流空闲超时、过期输出和定期清理策略；
+2. 增加应用层解析结果计数以及PPS、Mbps等周期运行指标；
+3. 使用性能和容量数据决定是否增加流表满载驱逐、负载因子控制、重建或动态扩容；
 4. 把实验中的阻塞队列和线程流水线接入正式分析链；
 5. 增加TCP状态跟踪、流重组与DNS、HTTP等应用层解析；
 6. 实现规则异常检测，再准备机器学习特征与模型；
