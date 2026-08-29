@@ -140,6 +140,11 @@ static int app_print_runtime_metrics(
             "Runtime metrics: "
             "interval=%.3f "
             "packets=%" PRIu64 " "
+            "complete=%" PRIu64 " "
+            "truncated=%" PRIu64 " "
+            "malformed=%" PRIu64 " "
+            "unsupported=%" PRIu64 " "
+            "flow_rejected=%" PRIu64 " "
             "captured_bytes=%" PRIu64 " "
             "wire_bytes=%" PRIu64 " "
             "pps=%.2f "
@@ -150,6 +155,11 @@ static int app_print_runtime_metrics(
             "expired_flows=%" PRIu64 "\n\n",
             report->elapsed_seconds,
             report->interval_packet_count,
+            report->interval_complete_packet_count,
+            report->interval_truncated_packet_count,
+            report->interval_malformed_packet_count,
+            report->interval_unsupported_packet_count,
+            report->interval_flow_rejected_packet_count,
             report->interval_captured_byte_count,
             report->interval_wire_byte_count,
             report->packets_per_second,
@@ -682,20 +692,23 @@ static int app_export_flow_table_csv(
  * @param packet 指向libpcap返回的只读数据包视图。
  * @param print_preview true表示输出逐包信息。
  * @param flow_table 指向当前离线分析使用的流表。
+ * @param packet_result 接收当前数据包的最终处理分类。函数返回0时一定写入packet_result。函数返回非0时，packet_result内容未定义，调用者不能使用。
  *
  * @return 成功处理时返回0；
  *         参数或程序内部状态错误时返回对应错误码；
- *         流表容量耗尽时返回ENOSPC；
+ *         新流因流表容量耗尽而被拒绝时返回0，并通过packet_result报告FLOW_REJECTED；
  *         终端输出失败时返回EIO。
  */
 static int app_process_packet(
     size_t packet_number,
     const capture_packet_view_t *packet,
     bool print_preview,
-    flow_table_t *flow_table)
+    flow_table_t *flow_table,
+    runtime_metrics_packet_result_t *packet_result)
 {
     packet_info_t packet_info;
     const flow_record_t *updated_flow;
+    runtime_metrics_packet_result_t result;
     bool flow_created;
 
     char source_mac[ETHERNET_MAC_STRING_SIZE];
@@ -708,7 +721,8 @@ static int app_process_packet(
 
     if (packet == NULL ||
         flow_table == NULL ||
-        !flow_table->initialized) {
+        !flow_table->initialized ||
+        packet_result == NULL) {
         return EINVAL;
     }
     /*
@@ -744,6 +758,7 @@ static int app_process_packet(
     if (error_code == ENODATA) {
 
         if (!print_preview) {
+            *packet_result = RUNTIME_METRICS_PACKET_RESULT_TRUNCATED;
             return 0;
         }
 
@@ -767,7 +782,7 @@ static int app_process_packet(
                 packet_info.error_offset) < 0) {
             return EIO;
         }
-
+        *packet_result = RUNTIME_METRICS_PACKET_RESULT_TRUNCATED;
         return 0;
     }
 
@@ -813,6 +828,8 @@ static int app_process_packet(
     if (packet_info.ether_type != ETHERNET_TYPE_IPV4) {
         
         if (!print_preview) {
+            *packet_result =
+                RUNTIME_METRICS_PACKET_RESULT_UNSUPPORTED;
             return 0;
         }
 
@@ -835,7 +852,8 @@ static int app_process_packet(
                 packet_info.ether_type) < 0) {
             return EIO;
         }
-
+        *packet_result =
+            RUNTIME_METRICS_PACKET_RESULT_UNSUPPORTED;
         return 0;
     }
 
@@ -850,7 +868,14 @@ static int app_process_packet(
 
     if (error_code == ENODATA || error_code == EBADMSG) {
 
+        result = 
+            error_code == 
+                ENODATA
+                ? RUNTIME_METRICS_PACKET_RESULT_TRUNCATED
+                : RUNTIME_METRICS_PACKET_RESULT_MALFORMED;
+
         if (!print_preview) {
+            *packet_result = result;
             return 0;
         }
 
@@ -888,6 +913,7 @@ static int app_process_packet(
         /*
          * 单个数据包异常不终止整个PCAP文件预览。
          */
+        *packet_result = result;
         return 0;
     }
 
@@ -948,6 +974,21 @@ static int app_process_packet(
     }
 
     /*
+     * 把协议解析器使用的errno风格结果，
+     * 转换成稳定的应用处理分类。
+     */
+    if (error_code == ENODATA) {
+        result =
+            RUNTIME_METRICS_PACKET_RESULT_TRUNCATED;
+    } else if (error_code == EBADMSG) {
+        result =
+            RUNTIME_METRICS_PACKET_RESULT_MALFORMED;
+    } else if (error_code == ENOTSUP) {
+        result =
+            RUNTIME_METRICS_PACKET_RESULT_UNSUPPORTED;
+    }
+
+    /*
      * 只有协议分发成功、parse_status为COMPLETE的数据包，
      * 才能生成可靠的双向五元组并进入流表。
      */
@@ -959,22 +1000,39 @@ static int app_process_packet(
             &flow_created
         );
 
-        if (error_code != 0) {
-            return error_code;
-        }
+        if (error_code == ENOSPC) {
+            /*
+             * 流表已满时，当前包已经成功解析，只是无法加入新流。
+             *
+             * flow_table_process_packet保证ENOSPC不会留下部分更新，
+             * 因此可以记录拒绝并继续分析后续数据包。
+             */
+            result =
+                RUNTIME_METRICS_PACKET_RESULT_FLOW_REJECTED;
 
-        /*
-         * 当前应用层只需要流表完成更新，不立即使用返回记录和
-         * created标志。读取结束后会统一遍历流表。
-         */
-        (void)updated_flow;
-        (void)flow_created;
+            /*
+             * 后续逐包输出仍应显示已经成功解析的协议字段。
+             */
+            error_code = 0;
+        } else if (error_code != 0) {
+            return error_code;
+        } else {
+            result =
+                RUNTIME_METRICS_PACKET_RESULT_COMPLETE;
+
+            /*
+             * 当前应用只需要知道流表已经完成更新。
+             */
+            (void)updated_flow;
+            (void)flow_created;
+        }
     }
 
     /*
      * 第6包及后续数据包仍然参与流量聚合，但不输出逐包信息。
      */
     if (!print_preview) {
+        *packet_result = result;
         return 0;
     }
 
@@ -1035,7 +1093,7 @@ static int app_process_packet(
                 packet_info.error_offset) < 0) {
             return EIO;
         }
-
+        *packet_result = result;
         return 0;
     }
 
@@ -1063,7 +1121,7 @@ static int app_process_packet(
                     : "false") < 0) {
             return EIO;
         }
-
+        *packet_result = result;
         return 0;
     }
 
@@ -1084,7 +1142,7 @@ static int app_process_packet(
                     : "false") < 0) {
             return EIO;
         }
-
+        *packet_result = result;
         return 0;
     }
 
@@ -1130,7 +1188,7 @@ static int app_process_packet(
                 return EIO;
             }
         }
-
+        *packet_result = result;
         return 0;
     }
 
@@ -1191,6 +1249,7 @@ static int app_run_capture_analysis(app_context_t *context)
     runtime_metrics_totals_t runtime_metrics_totals = {0};
     runtime_metrics_schedule_t runtime_metrics_schedule = {0};
     runtime_metrics_timestamp_t runtime_metrics_start = {0};
+    runtime_metrics_packet_result_t packet_result = RUNTIME_METRICS_PACKET_RESULT_COMPLETE;
 
     flow_timestamp_t packet_timestamp = {0};
     flow_timestamp_t expiration_cutoff = {0};
@@ -1706,26 +1765,24 @@ static int app_run_capture_analysis(app_context_t *context)
 
         total_packet_count += 1U;
 
-        if (live_capture) {
-            error_code = runtime_metrics_totals_add_packet(
-                &runtime_metrics_totals,
-                packet.captured_length,
-                packet.wire_length
+        error_code = runtime_metrics_totals_add_packet(
+            &runtime_metrics_totals,
+            packet.captured_length,
+            packet.wire_length
+        );
+
+        if (error_code != 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to accumulate runtime packet metrics: %s",
+                strerror(error_code)
             );
 
-            if (error_code != 0) {
-                (void)snprintf(
-                    context->error_message,
-                    sizeof(context->error_message),
-                    "failed to accumulate runtime packet metrics: %s",
-                    strerror(error_code)
-                );
-
-                context->active_capture = NULL;
-                flow_table_cleanup(&flow_table);
-                capture_close(&capture);
-                return error_code;
-            }
+            context->active_capture = NULL;
+            flow_table_cleanup(&flow_table);
+            capture_close(&capture);
+            return error_code;
         }
 
         print_preview = previewed_packet_count < APP_CAPTURE_PREVIEW_LIMIT;
@@ -1843,7 +1900,8 @@ static int app_run_capture_analysis(app_context_t *context)
             total_packet_count,
             &packet,
             print_preview,
-            &flow_table
+            &flow_table,
+            &packet_result
         );
 
         if (error_code != 0) {
@@ -1851,6 +1909,27 @@ static int app_run_capture_analysis(app_context_t *context)
                 context->error_message,
                 sizeof(context->error_message),
                 "failed to process packet %zu: %s",
+                total_packet_count,
+                strerror(error_code)
+            );
+
+            context->active_capture = NULL;
+            flow_table_cleanup(&flow_table);
+            capture_close(&capture);
+            return error_code;
+        }
+
+        error_code = runtime_metrics_totals_add_packet_result(
+                &runtime_metrics_totals,
+                packet_result
+            );
+
+        if (error_code != 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to accumulate packet result "
+                "for packet %zu: %s",
                 total_packet_count,
                 strerror(error_code)
             );
@@ -1946,9 +2025,20 @@ static int app_run_capture_analysis(app_context_t *context)
 
     if (printf(
             "Total packets: %zu\n"
-            "Previewed packets: %zu\n",
+            "Previewed packets: %zu\n"
+            "Processing results: "
+            "complete=%" PRIu64 " "
+            "truncated=%" PRIu64 " "
+            "malformed=%" PRIu64 " "
+            "unsupported=%" PRIu64 " "
+            "flow_rejected=%" PRIu64 "\n",
             total_packet_count,
-            previewed_packet_count) < 0) {
+            previewed_packet_count,
+            runtime_metrics_totals.complete_packet_count,
+            runtime_metrics_totals.truncated_packet_count,
+            runtime_metrics_totals.malformed_packet_count,
+            runtime_metrics_totals.unsupported_packet_count,
+            runtime_metrics_totals.flow_rejected_packet_count) < 0) {
         (void)snprintf(
             context->error_message,
             sizeof(context->error_message),

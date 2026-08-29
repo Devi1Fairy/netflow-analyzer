@@ -104,6 +104,47 @@ def build_icmp_frame(
 
     return ethernet_header + ipv4_header + icmp_message
 
+def write_pcap(
+    pcap_path: Path,
+    packets: list[tuple[int, int, bytes]],
+) -> None:
+    """
+    把给定数据包记录写成小端、微秒时间戳的Ethernet PCAP。
+    """
+
+    with pcap_path.open("wb") as pcap_file:
+        # PCAP全局文件头。
+        pcap_file.write(
+            struct.pack(
+                "<IHHIIII",
+                0xA1B2C3D4,  # Magic number。
+                2,           # Major version。
+                4,           # Minor version。
+                0,           # This zone。
+                0,           # Timestamp accuracy。
+                65535,       # Snapshot length。
+                1,           # Link type：Ethernet。
+            )
+        )
+
+        for (
+            timestamp_seconds,
+            timestamp_microseconds,
+            frame,
+        ) in packets:
+            frame_length = len(frame)
+
+            pcap_file.write(
+                struct.pack(
+                    "<IIII",
+                    timestamp_seconds,
+                    timestamp_microseconds,
+                    frame_length,
+                    frame_length,
+                )
+            )
+
+            pcap_file.write(frame)
 
 def write_test_pcap(pcap_path: Path) -> None:
     """
@@ -154,40 +195,108 @@ def write_test_pcap(pcap_path: Path) -> None:
             )
         )
 
-    with pcap_path.open("wb") as pcap_file:
-        # PCAP全局文件头。
-        pcap_file.write(
-            struct.pack(
-                "<IHHIIII",
-                0xA1B2C3D4,  # Magic number。
-                2,           # Major version。
-                4,           # Minor version。
-                0,           # This zone。
-                0,           # Timestamp accuracy。
-                65535,       # Snapshot length。
-                1,           # Link type：Ethernet。
+    write_pcap(pcap_path, packets)
+
+def write_processing_results_pcap(
+    pcap_path: Path,
+) -> None:
+    """
+    构造覆盖全部应用处理结果的确定性PCAP。
+
+    内容包括：
+
+    - 1个截断Ethernet帧；
+    - 1个当前不支持的ARP Ethernet帧；
+    - 1个IPv4版本字段错误的畸形帧；
+    - 257个不同的合法ICMP流。
+
+    流表容量为256，因此最后一个合法ICMP包应被记为
+    FLOW_REJECTED，而不是导致程序退出。
+    """
+
+    source_mac = bytes.fromhex("001122334455")
+    destination_mac = bytes.fromhex("66778899aabb")
+
+    packets: list[tuple[int, int, bytes]] = []
+    base_timestamp = 1_700_001_000
+
+    # 只有10字节，连14字节Ethernet头都不完整。
+    truncated_frame = b"\x00" * 10
+
+    packets.append(
+        (
+            base_timestamp,
+            100,
+            truncated_frame,
+        )
+    )
+
+    # Ethernet头完整，但EtherType为ARP；项目当前只处理IPv4。
+    unsupported_frame = (
+        destination_mac
+        + source_mac
+        + struct.pack("!H", 0x0806)
+    )
+
+    packets.append(
+        (
+            base_timestamp + 1,
+            100,
+            unsupported_frame,
+        )
+    )
+
+    # 先构造合法IPv4/ICMP帧，再把IPv4版本从4改成6。
+    malformed_frame = bytearray(
+        build_icmp_frame(
+            source_mac=source_mac,
+            destination_mac=destination_mac,
+            source_ipv4="198.51.100.1",
+            destination_ipv4="198.51.100.2",
+            icmp_type=8,
+            sequence=1,
+        )
+    )
+
+    # Ethernet头是14字节，因此索引14是IPv4头第一个字节。
+    # 0x65表示Version=6、IHL=5，与EtherType=IPv4矛盾。
+    malformed_frame[14] = 0x65
+
+    packets.append(
+        (
+            base_timestamp + 2,
+            100,
+            bytes(malformed_frame),
+        )
+    )
+
+    # 生成257条不同的ICMP流。
+    for index in range(257):
+        third_octet = index // 250
+        fourth_octet = index % 250 + 1
+
+        unique_source_ipv4 = (
+            f"10.1.{third_octet}.{fourth_octet}"
+        )
+
+        frame = build_icmp_frame(
+            source_mac=source_mac,
+            destination_mac=destination_mac,
+            source_ipv4=unique_source_ipv4,
+            destination_ipv4="192.0.2.1",
+            icmp_type=8,
+            sequence=index + 1,
+        )
+
+        packets.append(
+            (
+                base_timestamp + 3 + index,
+                100,
+                frame,
             )
         )
 
-        for (
-            timestamp_seconds,
-            timestamp_microseconds,
-            frame,
-        ) in packets:
-            frame_length = len(frame)
-
-            # 每条数据包的PCAP记录头。
-            pcap_file.write(
-                struct.pack(
-                    "<IIII",
-                    timestamp_seconds,
-                    timestamp_microseconds,
-                    frame_length,
-                    frame_length,
-                )
-            )
-
-            pcap_file.write(frame)
+    write_pcap(pcap_path, packets)
 
 def require_text(output: str, expected: str) -> None:
     """要求程序输出中包含指定文本。"""
@@ -268,6 +377,15 @@ def run_acceptance_test(
 
         require_text(output, "Total packets: 6")
         require_text(output, "Previewed packets: 5")
+        require_text(
+            output,
+            "Processing results: "
+            "complete=6 "
+            "truncated=0 "
+            "malformed=0 "
+            "unsupported=0 "
+            "flow_rejected=0",
+        )
         require_text(output, "Flow summary: 1 flow(s)")
 
         require_text(
@@ -373,6 +491,65 @@ def run_acceptance_test(
                 "existing CSV content changed after overwrite rejection"
             )
 
+def run_processing_results_test(
+    program: Path,
+    work_dir: Path,
+) -> None:
+    """
+    验证异常包分类和流表满载后的继续运行策略。
+    """
+
+    with tempfile.TemporaryDirectory(
+        prefix="offline-processing-results-",
+        dir=work_dir,
+    ) as temporary_directory:
+        pcap_path = (
+            Path(temporary_directory)
+            / "processing-results-test.pcap"
+        )
+
+        write_processing_results_pcap(pcap_path)
+
+        completed_process = subprocess.run(
+            [
+                str(program),
+                "--read",
+                str(pcap_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+        if completed_process.returncode != 0:
+            raise RuntimeError(
+                "processing-results analysis returned "
+                "non-zero status\n"
+                f"exit code: {completed_process.returncode}\n"
+                f"stdout:\n{completed_process.stdout}\n"
+                f"stderr:\n{completed_process.stderr}"
+            )
+
+        output = completed_process.stdout
+
+        require_text(output, "Total packets: 260")
+        require_text(output, "Previewed packets: 5")
+
+        require_text(
+            output,
+            "Processing results: "
+            "complete=256 "
+            "truncated=1 "
+            "malformed=1 "
+            "unsupported=1 "
+            "flow_rejected=1",
+        )
+
+        require_text(
+            output,
+            "Flow summary: 256 flow(s)",
+        )
 
 def main() -> int:
     """验收测试程序入口。"""
@@ -381,6 +558,11 @@ def main() -> int:
 
     try:
         run_acceptance_test(
+            program=arguments.program.resolve(),
+            work_dir=arguments.work_dir.resolve(),
+        )
+
+        run_processing_results_test(
             program=arguments.program.resolve(),
             work_dir=arguments.work_dir.resolve(),
         )

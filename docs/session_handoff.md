@@ -23,8 +23,8 @@ cmake -E chdir build ctest --output-on-failure
 
 - 当前分支：`main`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前已提交基线：`5e407ad feat(metrics): report periodic live capture metrics`；
-- 当前工作区为`runtime_metrics`增加完整、截断、畸形、不支持和流表拒绝五种处理结果的累计及区间差分；应用主循环尚未产生这些分类；完成提交后以实际`git log`哈希为准；
+- 当前已提交基线：`d1ef086 feat(metrics): model packet processing results`；
+- 当前工作区把五种处理结果接入单包控制流、周期报告和退出汇总，并增加260包流表满载压力验收；完成提交后以实际`git log`哈希为准；
 - 当前正式版本宏为`0.2.0`；
 - 已有标签：`v0.0.1`、`v0.1.0`、`v0.2.0`；
 - 完成本轮提交和推送后，预期`main`、`origin/main`一致；用户本地`.vscode/settings.json`改动不应被加入本功能提交；
@@ -207,7 +207,9 @@ origin git@github.com:Devi1Fairy/netflow-analyzer.git
 当前重要提交，从新到旧：
 
 ```text
-（当前工作区，待提交）feat(metrics): report periodic live capture metrics
+（当前工作区，待提交）feat(metrics): report packet processing results
+d1ef086 feat(metrics): model packet processing results
+5e407ad feat(metrics): report periodic live capture metrics
 5224f93 feat(metrics): add periodic traffic rate calculations
 0471f0d docs(board): record ARM deployment and live capture validation
 0f4a34e docs(board): record native ARM bring-up issues
@@ -393,7 +395,11 @@ flow_table_expire_before复制并删除旧流
     ↓
 输出Expired flow和累计过期数量
     ↓
-当前包进入与离线模式复用的解析和流聚合链
+当前包进入与离线模式复用的解析链
+    ↓
+输出完整/截断/畸形/不支持/流表拒绝分类
+    ↓ 完整且有容量
+流表聚合；满载新流计入flow_rejected后继续
     ↓
 总捕获包数达到N，或收到SIGINT/SIGTERM
     ↓
@@ -649,7 +655,7 @@ sudo ./build/bin/netflow-analyzer \
 
 ## 12. 当前测试体系
 
-当前CTest共17项，最近一次全量执行全部通过，总耗时约0.08秒：
+当前CTest共17项，最近一次全量执行全部通过，总耗时约0.12秒：
 
 | 编号 | CTest名称 | 主要覆盖 |
 |---:|---|---|
@@ -666,7 +672,7 @@ sudo ./build/bin/netflow-analyzer \
 | 11 | `flow_key_tests` | 双向规范化、方向、字段比较和稳定FNV-1a哈希 |
 | 12 | `flow_record_tests` | 两个方向统计、首末时间、错误和溢出保护 |
 | 13 | `flow_table_tests` | 哈希冲突、线性探测、回绕、删除标记、复用、遍历和过期 |
-| 14 | `offline_flow_acceptance` | Python生成确定性PCAP，运行真实CLI，检查全文件聚合、预览和CSV |
+| 14 | `offline_flow_acceptance` | 6包PCAP验证聚合、预览和CSV；260包PCAP验证四类异常/拒绝、256槽满载和继续运行 |
 | 15 | `flow_export_tests` | CSV表头、记录字段顺序、格式化和无效参数 |
 | 16 | `flow_expiration_tests` | 事件时间高水位、扫描边界、乱序时间戳、参数验证和截止时间下溢 |
 | 17 | `runtime_metrics_tests` | 累计值差分、PPS/Mbps、流表占用率、零流量、时间边界和溢出保护 |
@@ -807,7 +813,7 @@ cmake -E chdir build ctest \
 - `--count`只限制成功捕获的包数，不限制等待时间；
 - libpcap读取超时在不同平台和捕获后端上的行为可能不同，不能把它当作严格定时器；
 - `pcap_stats()`字段语义和可用性依赖平台，`ps_recv`不等于应用完成处理的包数，`ps_ifdrop == 0`也可能表示指标不可用；
-- 周期指标数据模型已经具备完整、截断、畸形、不支持和流表拒绝计数，但应用主循环尚未向它提交单包分类；
+- 应用主循环已经提交完整、截断、畸形、不支持和流表拒绝分类，并在周期及退出汇总中输出；
 - 当前混杂模式固定为false，没有CLI选项；
 - 实时CSV尚未开放；
 - `any`接口在Linux通常是cooked capture链路类型，当前只支持Ethernet，可能返回`ENOTSUP`；
@@ -1041,7 +1047,7 @@ feat(cli): expose live capture filter option
 - capture层通过可选择文件描述符和`poll()`提供有界等待，应用每次返回后检查周期任务和停止请求；
 - 没有增加统计线程，避免为当前单线程所有的计数和流表引入锁、一致快照及线程回收复杂度；
 - 静默、突发60个ICMP包、再次静默和Ctrl+C人工验收通过，全部17项CTest通过。
-- 五种互斥的数据包处理结果已经进入累计量、单调性检查和报告区间差分，尚未接入`app_process_packet()`。
+- 五种互斥的数据包处理结果已经接入`app_process_packet()`、累计量、周期报告和退出汇总；流表满载的新流包计入拒绝后继续运行。
 
 已知边界：当前报告周期固定为5秒，等待检查粒度固定为1秒；`poll()`依赖POSIX可选择描述符；尚未在开发板记录空闲及高流量CPU/RSS。
 
@@ -1158,7 +1164,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率以及非阻塞加poll的静默报告已经完成，五种应用处理结果的数据模型也已建立。继续让app_process_packet返回最终分类并接入周期与最终输出，再把最新代码同步到开发板验收。
+周期PPS、Mbps、流表占用率、静默报告和五种应用处理结果已经完成，并通过260包流表满载压力PCAP。继续把最新代码同步到开发板，运行17项CTest并测量空闲及受控流量下的CPU、RSS、PPS和drop。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1166,10 +1172,10 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 
 - 当前HEAD和测试状态；
 - 当前实时命令；
-- 为什么下一步是应用处理结果分类和开发板单线程性能测量；
+- 为什么下一步是开发板单线程性能与容量测量；
 - 本轮不会直接替用户修改C源码。
 
-然后从`app_process_packet()`的结果输出参数和状态映射开始接入分类。
+然后从开发板Release同步、17项CTest和可重复的资源测量命令开始。
 
 ## 21. 本次交接结论
 
@@ -1198,4 +1204,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-当前下一步是让`app_process_packet()`把每包最终处理结果提交给现有分类指标，并在周期及退出汇总中输出；之后把最新17项测试和周期指标同步到开发板，记录空闲及受控流量下的CPU、RSS、PPS和drop数据。开发板侧已经完成原生Debug/Release构建、16项旧基线CTest、确定性PCAP跨平台一致性和物理网卡实时抓包。交叉编译仍有工程价值，但当前项目构建树只有数MB，不需要仅因eMMC容量立即切换。
+应用处理结果分类和满载继续运行策略已经完成。当前下一步是把最新代码同步到开发板，运行17项CTest，并记录空闲及受控流量下的CPU、RSS、PPS、流表占用率和drop数据；根据这些证据决定流表容量/驱逐策略以及是否把`labs/thread_pipeline`接入正式程序。开发板侧已经完成原生Debug/Release构建、16项旧基线CTest、确定性PCAP跨平台一致性和物理网卡实时抓包。交叉编译仍有工程价值，但当前项目构建树只有数MB，不需要仅因eMMC容量立即切换。
