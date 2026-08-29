@@ -14,6 +14,7 @@
 #include <pcap/pcap.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <poll.h>
 
 /**
  * @brief 采集模块的内部对象。
@@ -41,6 +42,19 @@ struct capture {
      * libpcap之前拒绝离线句柄。
      */
     bool is_live;
+
+    /**
+     * libpcap提供的可等待文件描述符。
+     *
+     * -1表示当前句柄没有取得可等待描述符。
+     * 该描述符由libpcap句柄拥有，capture_close不能单独close它。
+     */
+    int selectable_fd;
+
+    /**
+     * true表示当前实时句柄已经启用非阻塞读取。
+     */
+    bool nonblocking;
 };
 
 /**
@@ -126,6 +140,8 @@ int capture_open_offline(const char *file_path,
 
         return ENOMEM;
     }
+    new_capture->selectable_fd = -1;
+    new_capture->nonblocking = false;
 
     /*
      * pcap_open_offline打开已有的PCAP文件。
@@ -236,6 +252,8 @@ int capture_open_live(const char *interface_name,
 
         return ENOMEM;
     }
+    new_capture->selectable_fd = -1;
+    new_capture->nonblocking = false;
 
     /*
      * pcap_open_live参数依次表示：
@@ -477,6 +495,202 @@ int capture_set_filter(capture_t *capture,
     return 0;
 }
 
+int capture_enable_nonblocking(
+    capture_t *capture,
+    char *error_buffer,
+    size_t error_buffer_size)
+{
+    char native_error[PCAP_ERRBUF_SIZE] = {0};
+
+    int selectable_fd;
+    int native_result;
+
+    /*
+     * 错误缓冲区和大小必须成对提供或同时省略。
+     */
+    if ((error_buffer == NULL &&
+         error_buffer_size != 0U) ||
+        (error_buffer != NULL &&
+         error_buffer_size == 0U)) {
+        return EINVAL;
+    }
+
+    capture_copy_error(
+        error_buffer,
+        error_buffer_size,
+        ""
+    );
+
+    if (capture == NULL ||
+        capture->native_handle == NULL) {
+        capture_copy_error(
+            error_buffer,
+            error_buffer_size,
+            "invalid capture nonblocking arguments"
+        );
+
+        return EINVAL;
+    }
+
+    /*
+     * 离线PCAP不需要等待网卡事件，也没有实时可等待语义。
+     */
+    if (!capture->is_live) {
+        capture_copy_error(
+            error_buffer,
+            error_buffer_size,
+            "nonblocking event wait is unavailable "
+            "for offline captures"
+        );
+
+        return ENOTSUP;
+    }
+
+    /*
+     * 已经成功配置时保持幂等。
+     */
+    if (capture->nonblocking &&
+        capture->selectable_fd >= 0) {
+        return 0;
+    }
+
+    /*
+     * 先确认能够取得可由poll等待的描述符。
+     *
+     * 如果平台不支持，则不改变libpcap句柄的阻塞模式。
+     */
+    selectable_fd = pcap_get_selectable_fd(
+        capture->native_handle
+    );
+
+    if (selectable_fd < 0) {
+        capture_copy_error(
+            error_buffer,
+            error_buffer_size,
+            "capture handle does not provide "
+            "a selectable file descriptor"
+        );
+
+        return ENOTSUP;
+    }
+
+    /*
+     * pcap_setnonblock要求错误缓冲区至少能容纳PCAP_ERRBUF_SIZE，
+     * 因此使用模块内部的完整缓冲区，不能直接传入调用者可能更小
+     * 的error_buffer。
+     */
+    native_result = pcap_setnonblock(
+        capture->native_handle,
+        1,
+        native_error
+    );
+
+    if (native_result != 0) {
+        capture_copy_error(
+            error_buffer,
+            error_buffer_size,
+            native_error[0] != '\0'
+                ? native_error
+                : pcap_geterr(capture->native_handle)
+        );
+
+        return EIO;
+    }
+
+    /*
+     * libpcap配置成功后再发布完整状态。
+     */
+    capture->selectable_fd = selectable_fd;
+    capture->nonblocking = true;
+
+    return 0;
+}
+
+int capture_wait_readable(
+    capture_t *capture,
+    int timeout_ms,
+    capture_wait_status_t *status)
+{
+    struct pollfd descriptor;
+
+    capture_wait_status_t result_status;
+    int native_result;
+    int native_error;
+
+    if (capture == NULL ||
+        capture->native_handle == NULL ||
+        timeout_ms <= 0 ||
+        status == NULL) {
+        return EINVAL;
+    }
+
+    if (!capture->is_live) {
+        return ENOTSUP;
+    }
+
+    /*
+     * 必须先完成非阻塞配置。
+     *
+     * 否则poll返回后调用pcap_next_ex仍可能重新进入阻塞。
+     */
+    if (!capture->nonblocking ||
+        capture->selectable_fd < 0) {
+        return EINVAL;
+    }
+
+    descriptor = (struct pollfd){
+        .fd = capture->selectable_fd,
+        .events = POLLIN,
+        .revents = 0
+    };
+
+    errno = 0;
+
+    native_result = poll(
+        &descriptor,
+        1U,
+        timeout_ms
+    );
+
+    if (native_result < 0) {
+        native_error = errno;
+
+        return native_error != 0
+            ? native_error
+            : EIO;
+    }
+
+    if (native_result == 0) {
+        result_status = CAPTURE_WAIT_STATUS_TIMEOUT;
+        *status = result_status;
+        return 0;
+    }
+
+    /*
+     * POLLNVAL通常表示描述符无效；
+     * POLLERR和POLLHUP表示底层采集描述符异常。
+     */
+    if ((descriptor.revents & POLLNVAL) != 0) {
+        return EBADF;
+    }
+
+    if ((descriptor.revents &
+         (POLLERR | POLLHUP)) != 0) {
+        return EIO;
+    }
+
+    if ((descriptor.revents & POLLIN) != 0) {
+        result_status = CAPTURE_WAIT_STATUS_READY;
+        *status = result_status;
+        return 0;
+    }
+
+    /*
+     * poll报告了事件数量，但没有出现项目认识的事件位。
+     */
+    return EIO;
+}
+
 const char *capture_get_error(const capture_t *capture)
 {
     if (capture == NULL || capture->native_handle == NULL) {
@@ -513,6 +727,8 @@ void capture_close(capture_t **capture)
     object = *capture;
 
     if (object->native_handle != NULL) {
+        object->selectable_fd = -1;
+        object->nonblocking = false;
         pcap_close(object->native_handle);
         object->native_handle = NULL;
     }

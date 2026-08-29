@@ -1,6 +1,6 @@
 # Netflow Analyzer会话交接文档
 
-最后更新：2026-08-28（Asia/Shanghai）
+最后更新：2026-08-29（Asia/Shanghai）
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
@@ -23,14 +23,14 @@ cmake -E chdir build ctest --output-on-failure
 
 - 当前分支：`main`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 进入本轮前的已提交基线：`19d9f7c feat(capture): report live capture statistics`；
-- 当前工作区继续加入实时流过期、事件时间调度、过期值副本和输出；完成提交后以实际`git log`哈希为准；
+- 当前已提交基线：`5224f93 feat(metrics): add periodic traffic rate calculations`；
+- 当前工作区继续把实时采集改为非阻塞加`poll()`等待，并把周期指标接入应用主循环；完成提交后以实际`git log`哈希为准；
 - 当前正式版本宏为`0.2.0`；
 - 已有标签：`v0.0.1`、`v0.1.0`、`v0.2.0`；
-- 完成本轮提交和推送后，预期`main`、`origin/main`一致且工作区干净；
+- 完成本轮提交和推送后，预期`main`、`origin/main`一致；用户本地`.vscode/settings.json`改动不应被加入本功能提交；
 - Debug构建目录：`/home/zcb/workspace/netflow-analyzer/build`；
 - 主程序：`build/bin/netflow-analyzer`；
-- 当前16项CTest应全部通过。
+- 当前17项CTest应全部通过。
 
 如果实际状态与上面不同，应先查看用户是否在新会话开始前继续修改了代码，不要覆盖未提交改动。
 
@@ -207,7 +207,11 @@ origin git@github.com:Devi1Fairy/netflow-analyzer.git
 当前重要提交，从新到旧：
 
 ```text
-（本轮提交后）feat(capture): report live capture statistics
+（当前工作区，待提交）feat(metrics): report periodic live capture metrics
+5224f93 feat(metrics): add periodic traffic rate calculations
+0471f0d docs(board): record ARM deployment and live capture validation
+0f4a34e docs(board): record native ARM bring-up issues
+0cdfdb1 feat(flow): expire inactive flows during live capture
 3c54aba feat(cli): stop live capture gracefully on signals
 768985f feat(app): propagate stop requests to capture loop
 3a3fb3e feat(capture): support breaking active reads
@@ -261,7 +265,8 @@ netflow-analyzer/
 │   ├── flow_record.h
 │   ├── flow_table.h
 │   ├── flow_expiration.h
-│   └── flow_export.h
+│   ├── flow_export.h
+│   └── runtime_metrics.h
 ├── src/
 │   ├── main.c
 │   ├── app/app.c
@@ -280,6 +285,7 @@ netflow-analyzer/
 │   │   ├── flow_record.c
 │   │   ├── flow_table.c
 │   │   └── flow_expiration.c
+│   ├── metrics/runtime_metrics.c
 │   └── output/flow_export.c
 ├── tests/
 │   ├── unit/
@@ -300,9 +306,9 @@ netflow-analyzer/
 | 模块 | 职责 |
 |---|---|
 | `main.c` | 初始化上下文、解析参数、运行应用、统一清理，把错误码转换为进程退出码 |
-| `app.c` | 应用编排；连接采集、协议解析、流表和输出，不承担具体协议字段解析 |
+| `app.c` | 应用编排；连接采集、协议解析、流表、周期运行指标和输出，不承担具体协议字段解析 |
 | `byte_reader` | 使用边界检查游标读取、跳过和切分原始二进制字节 |
-| `capture` | 封装libpcap，统一离线文件、实时网卡、BPF、中断和运行统计接口，隐藏`pcap_t`、`struct pcap_stat`与`DLT_*` |
+| `capture` | 封装libpcap，统一离线文件、实时网卡、BPF、非阻塞等待、中断和运行统计接口，隐藏`pcap_t`、`struct pcap_stat`与`DLT_*` |
 | `packet_info` | 保存一条数据包的捕获元数据、协议字段和解析状态 |
 | `ethernet` | 解析Ethernet II头、MAC地址和EtherType |
 | `ipv4` | 解析IPv4头、长度、地址、TTL、协议号和分片信息 |
@@ -315,6 +321,7 @@ netflow-analyzer/
 | `flow_table` | 开放寻址哈希表、线性探测、删除标记、查找、遍历，以及返回值副本的过期删除 |
 | `flow_expiration` | 维护数据包事件时间高水位、扫描周期和空闲截止时间，处理乱序与整数边界 |
 | `flow_export` | 将流记录写成固定字段顺序的CSV表头和记录 |
+| `runtime_metrics` | 使用单调时钟和累计值差分计算区间PPS、Mbps、流表占用率和过期流数量 |
 
 `common`目录存放不属于某一种网络协议或业务模块、但多个模块可复用的基础工具。当前只有安全字节读取器，未来可以放通用时间、错误转换、日志等工具，但不要把所有无法分类的业务代码都堆入`common`。
 
@@ -369,9 +376,14 @@ capture_open_live
     ↓
 可选capture_set_filter
     ↓
+capture_enable_nonblocking
+    ↓
 capture_next_packet
-    ↓ 超时EAGAIN
-继续等待，不增加包计数
+    ↓ 暂时无包EAGAIN
+capture_wait_readable使用poll等待可读或最多1秒
+    ↓
+检查CLOCK_MONOTONIC；约每5秒输出区间运行指标
+    ↓ 可读后再次读取
     ↓ 收到包
 更新flow_expiration事件时间高水位
     ↓ 每推进5秒
@@ -613,35 +625,37 @@ ens33  VMware呈现给Ubuntu虚拟机的Ethernet接口
 
 `lo`捕获本机经`127.0.0.1`或`::1`进行的通信，包不会离开系统。`ens33`承载虚拟机与宿主机、局域网或互联网的通信，具体范围取决于VMware NAT、桥接或Host-only模式。
 
-最新统计验收执行：
+最新周期指标验收执行：
 
 ```bash
 sudo ./build/bin/netflow-analyzer \
     --interface lo \
-    --count 4 \
+    --count 100 \
     --filter "icmp"
 ```
 
-另一个终端执行`ping -c 2 127.0.0.1`，应用取得2个Echo Request和2个Echo Reply，共4个逻辑ICMP包。终端同时输出`Total packets: 4`和`Capture received packets: 8`。
+先保持接口静默，程序连续输出约5.007至5.008秒的零包报告；另一个终端执行`ping -i 0.2 -c 30 127.0.0.1`后，60个逻辑ICMP包分别进入16包和44包两个报告区间；流量结束后报告再次归零。Ctrl+C正常收尾，最终输出`Total packets: 60`、`Capture received packets: 120`和两个drop字段为0。
 
 重要结论：
 
 - 实时抓包看到的是接口上的全部匹配流量，不是只看到用户为了测试主动产生的流量；
 - BPF已经能排除无关的VS Code回环TCP流量；
 - `--count`限制包数，不限制等待时间；接口没有足够流量时程序会继续等待；
-- Ctrl+C和SIGTERM已经能中断读取并沿正常路径输出已有统计；
-- Linux回环包会出现outgoing和incoming捕获事件，libpcap向应用交付前会抑制重复副本，因此捕获后端的8和应用处理的4处于不同统计层级；
+- libpcap读取缓冲区超时不是应用周期定时器；显式非阻塞模式配合`poll()`后，完全静默时主循环仍能定期获得控制权；
+- 周期指标使用`CLOCK_MONOTONIC`和真实区间计算，`poll()`的1秒超时只决定检查粒度；
+- Ctrl+C和SIGTERM已经能中断等待并沿正常路径输出已有统计；
+- Linux回环包会出现outgoing和incoming捕获事件，libpcap向应用交付前会抑制重复副本，因此捕获后端的120和应用处理的60处于不同统计层级；
 - 不能用`Capture received packets - Total packets`推导丢包，应查看专门的drop字段并保留平台可用性限制。
 
 ## 12. 当前测试体系
 
-当前CTest共16项，最近一次全量执行全部通过，总耗时约0.07秒：
+当前CTest共17项，最近一次全量执行全部通过，总耗时约0.08秒：
 
 | 编号 | CTest名称 | 主要覆盖 |
 |---:|---|---|
 | 1 | `analyzer_smoke_tests` | 上下文生命周期、帮助、版本、离线/实时CLI参数及错误组合 |
 | 2 | `byte_reader_tests` | 字节读取、跳过、切片、边界和失败不修改输出 |
-| 3 | `capture_tests` | PCAP打开、链路类型、逐包读取、BPF、中断、实时统计参数、离线不支持语义和关闭 |
+| 3 | `capture_tests` | PCAP打开、链路类型、逐包读取、BPF、非阻塞与等待参数、中断、实时统计、离线不支持语义和关闭 |
 | 4 | `packet_info_tests` | 统一结果对象初始化、时间戳和错误状态 |
 | 5 | `ethernet_tests` | Ethernet II字段、负载、截断和格式化 |
 | 6 | `ipv4_tests` | IPv4长度、IHL、地址、分片、截断和畸形输入 |
@@ -655,6 +669,7 @@ sudo ./build/bin/netflow-analyzer \
 | 14 | `offline_flow_acceptance` | Python生成确定性PCAP，运行真实CLI，检查全文件聚合、预览和CSV |
 | 15 | `flow_export_tests` | CSV表头、记录字段顺序、格式化和无效参数 |
 | 16 | `flow_expiration_tests` | 事件时间高水位、扫描边界、乱序时间戳、参数验证和截止时间下溢 |
+| 17 | `runtime_metrics_tests` | 累计值差分、PPS/Mbps、流表占用率、零流量、时间边界和溢出保护 |
 
 只运行重点测试示例：
 
@@ -680,7 +695,7 @@ cmake -E chdir build ctest \
 - 不能假设外网可用；
 - 自动测试不应修改系统网卡权限。
 
-因此当前对实时功能采用三层验证：参数单元测试、采集接口的不依赖权限错误测试、人工`lo`验收。BPF使用离线确定性PCAP验证过滤语义；信号唤醒、`pcap_stats()`成功路径和实时流过期使用真实`lo`手工验收。过期验收通过两次间隔31秒的IPv4 ping观察到一条过期ICMP流和一条最终活动ICMP流。
+因此当前对实时功能采用三层验证：参数单元测试、采集接口的不依赖权限错误测试、人工`lo`验收。BPF使用离线确定性PCAP验证过滤语义；信号唤醒、`pcap_stats()`成功路径、实时流过期和静默周期报告使用真实`lo`手工验收。过期验收通过两次间隔31秒的IPv4 ping观察到一条过期ICMP流和一条最终活动ICMP流；周期指标验收覆盖静默、突发流量、再次静默和Ctrl+C。
 
 ## 13. 已完成的实验项目
 
@@ -792,7 +807,7 @@ cmake -E chdir build ctest \
 - `--count`只限制成功捕获的包数，不限制等待时间；
 - libpcap读取超时在不同平台和捕获后端上的行为可能不同，不能把它当作严格定时器；
 - `pcap_stats()`字段语义和可用性依赖平台，`ps_recv`不等于应用完成处理的包数，`ps_ifdrop == 0`也可能表示指标不可用；
-- 当前只有应用取得的总包数，没有按协议解析成功、截断、畸形和不支持状态分类的运行计数；
+- 已有周期PPS、Mbps、流表占用率和过期数量，但没有按协议解析成功、截断、畸形和不支持状态分类的运行计数；
 - 当前混杂模式固定为false，没有CLI选项；
 - 实时CSV尚未开放；
 - `any`接口在Linux通常是cooked capture链路类型，当前只支持Ethernet，可能返回`ENOTSUP`；
@@ -813,7 +828,7 @@ cmake -E chdir build ctest \
 
 - 固定256槽；
 - 达到容量返回`ENOSPC`；
-- 已有过期API，但主循环未定期调用；
+- 实时主循环已经按事件时间定期调用过期API；接口完全静默时仍要等下一包推进事件时间；
 - 过期记录删除前没有输出到下游；
 - 没有负载因子、重建或动态扩容；
 - 没有并发保护。
@@ -999,7 +1014,7 @@ feat(cli): expose live capture filter option
 
 `capture_statistics_t`和`capture_get_statistics()`已经封装`pcap_stats()`，实时退出时分别输出捕获后端累计接收、抓包缓冲区丢包、接口丢包和应用实际取得的总包数。平台原生`struct pcap_stat`没有暴露给上层，离线句柄明确返回`ENOTSUP`。
 
-后续可观测性仍包括：协议解析结果分类、流表拒绝、过期/驱逐、PPS、Mbps、CPU和RSS。
+后续可观测性仍包括：协议解析结果分类、流表拒绝、满载驱逐、CPU和RSS；周期PPS、Mbps、流表占用率和累计过期数量已经完成。
 
 ### 18.3 实时流过期（已完成第一版）
 
@@ -1011,12 +1026,25 @@ feat(cli): expose live capture filter option
 - 流表先把过期`flow_record_t`按值复制到调用者的256条固定缓冲区，再删除槽位；
 - 运行期间逐条输出`Expired flow`，退出时分别显示累计`Expired flows`和剩余`Flow summary`；
 - 离线PCAP仍保持完整文件级聚合，不启用周期过期；
-- 单元测试覆盖扫描边界、乱序、值副本、容量不足和整数下溢，全部16项CTest通过；
+- 单元测试覆盖扫描边界、乱序、值副本、容量不足和整数下溢，当前全部17项CTest通过；
 - `lo`上两次间隔31秒的IPv4 ping人工验收通过。
 
 已知边界：接口完全静默时事件时间不推进，旧流要等下一包到来才输出；超时和周期尚未开放CLI配置；实时过期流当前只输出终端，没有追加到持续CSV；固定流表仍缺少满载驱逐和负载因子指标。
 
-### 18.4 性能测量后再接线程流水线
+### 18.4 周期运行指标与静默唤醒（已完成）
+
+当前已经完成：
+
+- 独立`runtime_metrics`模块按累计值差分生成区间包数、字节数、PPS、捕获/线路Mbps、流表占用率和累计过期数量；
+- 使用`CLOCK_MONOTONIC`测量真实经过时间，不受系统墙钟调整影响；
+- 实时句柄显式进入非阻塞模式，没有可交付包时返回暂时无数据；
+- capture层通过可选择文件描述符和`poll()`提供有界等待，应用每次返回后检查周期任务和停止请求；
+- 没有增加统计线程，避免为当前单线程所有的计数和流表引入锁、一致快照及线程回收复杂度；
+- 静默、突发60个ICMP包、再次静默和Ctrl+C人工验收通过，全部17项CTest通过。
+
+已知边界：当前报告周期固定为5秒，等待检查粒度固定为1秒；`poll()`依赖POSIX可选择描述符；尚未在开发板记录空闲及高流量CPU/RSS。
+
+### 18.5 性能测量后再接线程流水线
 
 候选正式结构：
 
@@ -1030,7 +1058,7 @@ output线程（CSV/Qt/告警）
 
 但是原始`packet.data`由libpcap拥有，只到下一次读取有效。capture线程如果把包交给其他线程，必须复制`captured_length`字节到拥有明确生命周期的堆对象，不能直接把libpcap内部指针推入队列。这是正式接入线程时最重要的所有权变化之一。
 
-### 18.5 应用层与DPI
+### 18.6 应用层与DPI
 
 推荐顺序：
 
@@ -1044,7 +1072,7 @@ output线程（CSV/Qt/告警）
 
 没有TCP重组时，不能可靠地假设一个应用层消息完整存在于一个TCP包中。
 
-### 18.6 异常检测
+### 18.7 异常检测
 
 先实现可解释规则，再做机器学习：
 
@@ -1057,7 +1085,7 @@ output线程（CSV/Qt/告警）
 
 规则输出应使用稳定事件模型，后续Qt和云平台都消费同一数据，不应让检测逻辑直接依赖GUI。
 
-### 18.7 可视化
+### 18.8 可视化
 
 当前建议：
 
@@ -1090,9 +1118,10 @@ output线程（CSV/Qt/告警）
 - VMware NAT虚拟机`192.168.78.130`能够`ping`开发板`192.168.1.102`，开发板不能反向`ping`虚拟机；这是NAT与路由边界，不是程序故障；
 - Release程序已在开发板物理网卡完成来自虚拟机的ICMP实时抓包和双向流聚合；开发板实际观察到NAT后对端`192.168.1.100`；
 - 受控测试中应用处理4个Echo包，后端报告接收6包且两个drop字段为0；多出的2包未进入应用，现有汇总统计无法还原其具体内容；
-- 详细排查过程记录在`docs/problem_log.md`第5.1至5.3节。
+- 同一确定性6包PCAP已经核对SHA-256，并在x86_64与ARM64上得到相同标准输出和退出状态；
+- 详细排查过程记录在`docs/problem_log.md`第5.1至5.5节。
 
-不要宣称完整开发板部署已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、CTest、确定性离线PCAP验收和首次跨设备ICMP实时抓包，尚未完成同一外部PCAP的跨平台输出对比、双向直连网络验证和性能验收。当前仓库提供环境检查脚本：
+不要宣称完整开发板部署已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、CTest、确定性PCAP跨平台输出对比和首次跨设备ICMP实时抓包，尚未完成新增第17项测试的板端回归、双向直连网络验证和性能验收。当前仓库提供环境检查脚本：
 
 ```bash
 sh scripts/check_target_env.sh
@@ -1128,7 +1157,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-实时流过期第一版已经完成。继续按照交接文档第18.4节，先增加周期PPS、Mbps和流表容量指标，再用数据决定是否接入线程流水线。
+周期PPS、Mbps、流表占用率以及非阻塞加poll的静默报告已经完成。继续增加应用处理结果分类，并把最新代码同步到开发板完成17项CTest、周期指标和CPU/RSS验收。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1136,10 +1165,10 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 
 - 当前HEAD和测试状态；
 - 当前实时命令；
-- 为什么下一步是周期运行指标和单线程性能测量；
+- 为什么下一步是应用处理结果分类和开发板单线程性能测量；
 - 本轮不会直接替用户修改C源码。
 
-然后再开始第一个周期运行指标设计步骤。
+然后再开始应用处理结果分类的数据模型设计。
 
 ## 21. 本次交接结论
 
@@ -1148,12 +1177,13 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 ```text
 离线PCAP或实时网卡
 → libpcap统一采集
-→ 可选BPF过滤、信号中断与捕获后端统计
+→ 可选BPF过滤、非阻塞poll等待、信号中断与捕获后端统计
 → Ethernet/IPv4/TCP/UDP/ICMP解析
 → 双向五元组
 → FNV-1a开放寻址哈希流表
 → 事件时间调度、过期值副本与实时清理
 → 双向包数、字节数和时间统计
+→ 周期PPS、Mbps、流表占用率和过期数量
 → 终端流汇总或离线CSV
 ```
 
@@ -1164,6 +1194,7 @@ BPF过滤
 → 信号优雅退出
 → 抓包统计
 → 实时流过期输出
+→ 静默期周期运行指标
 ```
 
-当前下一步是增加周期PPS、Mbps、流表占用率、过期数量和应用处理分类指标，再测量单线程瓶颈，并决定是否把`labs/thread_pipeline`接入正式程序。开发板侧已经完成原生Debug/Release构建、CTest、确定性离线验收和存储占用测量；接下来可进行同一外部PCAP的跨平台结果对比和低速实时抓包验收。交叉编译仍有工程价值，但当前项目构建树只有数MB，不需要仅因eMMC容量立即切换。
+当前下一步是增加应用处理结果分类，再把最新17项测试和周期指标同步到开发板，记录空闲及受控流量下的CPU、RSS、PPS和drop数据；根据这些证据决定是否把`labs/thread_pipeline`接入正式程序。开发板侧已经完成原生Debug/Release构建、16项旧基线CTest、确定性PCAP跨平台一致性和物理网卡实时抓包。交叉编译仍有工程价值，但当前项目构建树只有数MB，不需要仅因eMMC容量立即切换。

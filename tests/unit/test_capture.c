@@ -199,6 +199,139 @@ static int test_capture_open_error_handling(void)
 }
 
 /**
+ * @brief 验证非阻塞配置与等待接口的错误语义。
+ *
+ * 自动测试使用离线PCAP，不依赖root权限或真实网卡。
+ * 实时成功路径后续通过lo接口人工验收。
+ */
+static int test_capture_wait_error_handling(void)
+{
+    char pcap_path[] =
+        "/tmp/netflow-analyzer-wait-XXXXXX";
+
+    char error_buffer[CAPTURE_ERROR_BUFFER_SIZE] = {0};
+
+    capture_t *capture = NULL;
+
+    capture_wait_status_t wait_status =
+        CAPTURE_WAIT_STATUS_READY;
+
+    int null_enable_error;
+    int create_error;
+    int open_error;
+    int missing_buffer_error = -1;
+    int offline_enable_error = -1;
+    int null_wait_error;
+    int null_status_error = -1;
+    int invalid_timeout_error = -1;
+    int offline_wait_error = -1;
+    int remove_error;
+
+    bool null_enable_message;
+    bool offline_enable_message = false;
+
+    null_enable_error = capture_enable_nonblocking(
+        NULL,
+        error_buffer,
+        sizeof(error_buffer)
+    );
+
+    null_enable_message =
+        error_buffer[0] != '\0';
+
+    null_wait_error = capture_wait_readable(
+        NULL,
+        1000,
+        &wait_status
+    );
+
+    create_error = create_ethernet_pcap(
+        pcap_path,
+        NULL,
+        0U,
+        0U
+    );
+
+    TEST_CHECK(create_error == 0);
+
+    open_error = capture_open_offline(
+        pcap_path,
+        &capture,
+        error_buffer,
+        sizeof(error_buffer)
+    );
+
+    if (open_error == 0) {
+        missing_buffer_error =
+            capture_enable_nonblocking(
+                capture,
+                NULL,
+                CAPTURE_ERROR_BUFFER_SIZE
+            );
+
+        offline_enable_error =
+            capture_enable_nonblocking(
+                capture,
+                error_buffer,
+                sizeof(error_buffer)
+            );
+
+        offline_enable_message =
+            error_buffer[0] != '\0';
+
+        null_status_error =
+            capture_wait_readable(
+                capture,
+                1000,
+                NULL
+            );
+
+        invalid_timeout_error =
+            capture_wait_readable(
+                capture,
+                0,
+                &wait_status
+            );
+
+        offline_wait_error =
+            capture_wait_readable(
+                capture,
+                1000,
+                &wait_status
+            );
+    }
+
+    capture_close(&capture);
+    remove_error = remove(pcap_path);
+
+    TEST_CHECK(null_enable_error == EINVAL);
+    TEST_CHECK(null_enable_message);
+    TEST_CHECK(null_wait_error == EINVAL);
+
+    TEST_CHECK(open_error == 0);
+    TEST_CHECK(missing_buffer_error == EINVAL);
+    TEST_CHECK(offline_enable_error == ENOTSUP);
+    TEST_CHECK(offline_enable_message);
+
+    TEST_CHECK(null_status_error == EINVAL);
+    TEST_CHECK(invalid_timeout_error == EINVAL);
+    TEST_CHECK(offline_wait_error == ENOTSUP);
+
+    /*
+     * 所有失败路径必须保留调用者原来的等待状态。
+     */
+    TEST_CHECK(
+        wait_status ==
+            CAPTURE_WAIT_STATUS_READY
+    );
+
+    TEST_CHECK(capture == NULL);
+    TEST_CHECK(remove_error == 0);
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 验证实时抓包接口拒绝无效参数和不存在的网卡。
  *
  * 本测试不要求root权限，因为不会成功打开真实网卡。
@@ -257,8 +390,11 @@ static int test_capture_open_live_error_handling(void)
     );
 
     /*
-     * 正数超时保证上层以后能够定期检查停止请求。
-     */
+    * libpcap数据包缓冲超时要求使用正值。
+    *
+    * 它不保证静默接口按固定周期唤醒应用；
+    * 周期等待由非阻塞模式和poll接口负责。
+    */
     TEST_CHECK(
         capture_open_live(
             "lo",
@@ -1161,6 +1297,13 @@ int main(void)
     }
 
     printf("[PASS] capture break loop\n");
+
+    if (test_capture_wait_error_handling() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] capture wait error handling\n");
 
     return EXIT_SUCCESS;
 }

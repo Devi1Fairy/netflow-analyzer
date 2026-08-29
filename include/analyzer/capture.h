@@ -22,10 +22,13 @@
 #define CAPTURE_DEFAULT_SNAPSHOT_LENGTH 65535
 
 /*
- * 实时读取默认最多等待1000毫秒。
+ * 实时抓包默认使用1000毫秒的数据包缓冲超时。
  *
- * 超时不是抓包失败，而是让调用者定期获得控制权，
- * 以后可以在这里检查停止信号和运行状态。
+ * 这是libpcap的数据包缓冲策略，不是可靠的应用层周期定时器。
+ * 某些平台或采集后端在第一个包到达前不会按该时间返回。
+ *
+ * 应用需要可靠周期唤醒时，应启用非阻塞模式并使用
+ * capture_wait_readable()的显式等待超时。
  */
 #define CAPTURE_DEFAULT_READ_TIMEOUT_MS 1000
 
@@ -74,6 +77,31 @@ typedef enum {
      */
     CAPTURE_READ_STATUS_END_OF_FILE = 2
 } capture_read_status_t;
+
+/**
+ * @brief 表示一次实时采集描述符等待的正常结果。
+ */
+typedef enum {
+    /**
+     * 尚未产生有效等待结果。
+     */
+    CAPTURE_WAIT_STATUS_UNKNOWN = 0,
+
+    /**
+     * 采集描述符已经就绪，应再次尝试读取数据包。
+     *
+     * 由于libpcap缓冲和平台语义不同，就绪不保证下一次读取
+     * 一定取得数据包；非阻塞读取仍可能返回EAGAIN。
+     */
+    CAPTURE_WAIT_STATUS_READY,
+
+    /**
+     * 指定等待时间已经到达，但没有发现描述符就绪。
+     *
+     * 这不是采集错误，上层可以借此执行周期任务。
+     */
+    CAPTURE_WAIT_STATUS_TIMEOUT
+} capture_wait_status_t;
 
 /**
  * @brief 离线或实时采集句柄的不透明类型。
@@ -210,8 +238,10 @@ int capture_open_offline(const char *file_path,
  * 但目标MAC地址不一定属于本机的数据包。是否真正生效还取决于
  * 网卡类型、驱动、操作系统权限和网络环境。
  *
- * read_timeout_ms表示实时读取等待时间。等待期间没有收到数据包时，
- * capture_next_packet返回EAGAIN，让上层有机会检查停止请求。
+ * read_timeout_ms控制libpcap的数据包缓冲策略。
+ * 它不是可靠的应用周期定时器；不同平台在第一个包到达前的超时行为可能不同。
+ * 当libpcap实际报告缓冲超时时，capture_next_packet返回EAGAIN，让上层获得一次控制机会。
+ * 可靠的应用层周期唤醒应使用非阻塞模式和capture_wait_readable()。
  *
  * 打开实时网卡通常需要root权限，或者为程序配置CAP_NET_RAW等
  * Linux capability。权限不足时返回EIO，并通过error_buffer提供
@@ -308,6 +338,52 @@ int capture_set_filter(capture_t *capture,
                        const char *filter_expression,
                        char *error_buffer,
                        size_t error_buffer_size);
+
+/**
+ * @brief 把实时采集句柄切换到非阻塞模式。
+ *
+ * 非阻塞模式下，当前没有可读数据包时，
+ * capture_next_packet()立即返回EAGAIN。
+ *
+ * 本函数同时确认当前UNIX平台能够为该采集句柄提供可供poll等待的
+ * 文件描述符。文件描述符只保存在capture模块内部，不向上层暴露。
+ *
+ * 重复对已经启用非阻塞模式的句柄调用是安全的。
+ *
+ * error_buffer和error_buffer_size必须同时提供或同时省略。
+ * 函数失败时不关闭capture。
+ *
+ * @return 成功时返回0；
+ *         参数无效时返回EINVAL；
+ *         离线句柄或没有可等待描述符时返回ENOTSUP；
+ *         libpcap无法启用非阻塞模式时返回EIO。
+ */
+int capture_enable_nonblocking(
+    capture_t *capture,
+    char *error_buffer,
+    size_t error_buffer_size);
+
+/**
+ * @brief 等待实时采集描述符可读或等待时间到达。
+ *
+ * capture必须已经通过capture_enable_nonblocking()配置。
+ *
+ * timeout_ms是应用层明确等待时间，不依赖libpcap的数据包缓冲
+ * 超时语义。等待期间不会忙轮询。
+ *
+ * 成功时通过status区分描述符就绪和正常超时。
+ * 函数失败时不修改status。
+ *
+ * @return 成功就绪或正常超时时返回0；
+ *         参数或句柄状态无效时返回EINVAL；
+ *         离线句柄返回ENOTSUP；
+ *         poll被信号中断时返回EINTR；
+ *         描述符或等待操作失败时返回对应errno或EIO。
+ */
+int capture_wait_readable(
+    capture_t *capture,
+    int timeout_ms,
+    capture_wait_status_t *status);
 
 /**
  * @brief 返回libpcap为当前采集对象保存的最近错误信息。

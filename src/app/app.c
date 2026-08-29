@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "analyzer/app.h"
 #include "analyzer/capture.h"
 #include "analyzer/ethernet.h"
@@ -8,6 +10,7 @@
 #include "analyzer/flow_table.h"
 #include "analyzer/flow_export.h"
 #include "analyzer/flow_expiration.h"
+#include "analyzer/runtime_metrics.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -16,6 +19,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <time.h>
 
 /*
  * 当前命令只显示前5个数据包，避免大型PCAP在终端输出数万行。
@@ -31,6 +35,13 @@
 #define APP_FLOW_TABLE_CAPACITY 256U
 
 /*
+ * 实时事件循环最多等待1秒就重新获得一次控制权。
+ *
+ * 这个时间属于应用层poll等待，不是libpcap数据包缓冲超时。
+ */
+#define APP_CAPTURE_WAIT_TIMEOUT_MS 1000
+
+/*
  * 第一版实时流过期策略。
  *
  * 一条流最后活动30秒后具备过期条件，
@@ -40,6 +51,14 @@
 #define APP_FLOW_EXPIRATION_SCAN_INTERVAL_SECONDS INT64_C(5)
 
 /*
+ * 实时运行指标每5秒产生一次周期报告。
+ *
+ * 实际速率使用两次报告之间的真实单调时钟间隔计算，
+ * 不直接假设每次正好经过5秒。
+ */
+#define APP_RUNTIME_METRICS_INTERVAL_SECONDS INT64_C(5)
+
+/*
  * 正常情况下，ANALYZER_VERSION由CMake根据project版本传入。
  *
  * 保留development作为脱离CMake单独编译时的兜底值。
@@ -47,6 +66,157 @@
 #ifndef ANALYZER_VERSION
 #define ANALYZER_VERSION "development"
 #endif
+
+/**
+ * @brief 读取适合运行时间测量的单调时钟。
+ *
+ * CLOCK_MONOTONIC不表示真实日期，只用于计算运行间隔。
+ * 系统时间校准或人工修改日期不会使它正常倒退。
+ *
+ * 函数成功后才修改timestamp。
+ *
+ * @return 成功时返回0；
+ *         参数无效时返回EINVAL；
+ *         系统调用失败时返回errno或EIO；
+ *         系统时间值无法转换时返回ERANGE。
+ */
+static int app_get_monotonic_timestamp(
+    runtime_metrics_timestamp_t *timestamp)
+{
+    struct timespec native_timestamp;
+    runtime_metrics_timestamp_t result_timestamp;
+
+    int native_error;
+
+    if (timestamp == NULL) {
+        return EINVAL;
+    }
+
+    errno = 0;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &native_timestamp) != 0) {
+        native_error = errno;
+
+        return native_error != 0 ? native_error : EIO;
+    }
+
+    if (native_timestamp.tv_sec < (time_t)0 ||
+        native_timestamp.tv_nsec < 0L ||
+        native_timestamp.tv_nsec >= 1000000000L) {
+        return ERANGE;
+    }
+
+    result_timestamp.seconds = (int64_t)native_timestamp.tv_sec;
+
+    /*
+     * 通过转换回来比较，检查time_t是否存在无法放入int64_t的值。
+     */
+    if ((time_t)result_timestamp.seconds != native_timestamp.tv_sec) {
+        return ERANGE;
+    }
+
+    result_timestamp.nanoseconds = (int32_t)native_timestamp.tv_nsec;
+
+    *timestamp = result_timestamp;
+
+    return 0;
+}
+
+/**
+ * @brief 输出一条周期运行指标报告。
+ */
+static int app_print_runtime_metrics(
+    const runtime_metrics_report_t *report)
+{
+    if (report == NULL ||
+        report->elapsed_seconds <= 0.0 ||
+        report->flow_table_capacity == 0U ||
+        report->active_flow_count >
+            report->flow_table_capacity) {
+        return EINVAL;
+    }
+
+    if (printf(
+            "Runtime metrics: "
+            "interval=%.3f "
+            "packets=%" PRIu64 " "
+            "captured_bytes=%" PRIu64 " "
+            "wire_bytes=%" PRIu64 " "
+            "pps=%.2f "
+            "captured_mbps=%.6f "
+            "wire_mbps=%.6f "
+            "active_flows=%zu/%zu "
+            "flow_table_usage=%.2f%% "
+            "expired_flows=%" PRIu64 "\n\n",
+            report->elapsed_seconds,
+            report->interval_packet_count,
+            report->interval_captured_byte_count,
+            report->interval_wire_byte_count,
+            report->packets_per_second,
+            report->captured_megabits_per_second,
+            report->wire_megabits_per_second,
+            report->active_flow_count,
+            report->flow_table_capacity,
+            report->flow_table_usage_percent,
+            report->interval_expired_flow_count) < 0) {
+        return EIO;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief 检查实时运行指标周期，并在到期时输出报告。
+ *
+ * 无论当前是否刚收到数据包，都可以调用本函数。
+ * 尚未到周期时成功返回，但不产生输出。
+ */
+static int app_maybe_print_runtime_metrics(
+    runtime_metrics_schedule_t *schedule,
+    const runtime_metrics_totals_t *totals,
+    const flow_table_t *flow_table)
+{
+    runtime_metrics_timestamp_t current_timestamp;
+    runtime_metrics_report_t report;
+
+    bool report_due;
+    int error_code;
+
+    if (schedule == NULL ||
+        totals == NULL ||
+        flow_table == NULL ||
+        !flow_table->initialized) {
+        return EINVAL;
+    }
+
+    error_code = app_get_monotonic_timestamp(
+        &current_timestamp
+    );
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    error_code = runtime_metrics_schedule_observe(
+        schedule,
+        &current_timestamp,
+        totals,
+        flow_table_count(flow_table),
+        flow_table->capacity,
+        &report_due,
+        &report
+    );
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    if (!report_due) {
+        return 0;
+    }
+
+    return app_print_runtime_metrics(&report);
+}
 
 /**
  * @brief 把十进制字符串解析为大于0的size_t数值。
@@ -881,7 +1051,7 @@ static int app_process_packet(
                 "acknowledgment=%" PRIu32 " "
                 "flags=0x%03" PRIx16 " "
                 "payload_length=%zu "
-                "payload_truncated=%s\n",
+                "payload_truncated=%s\n\n",
                 packet_info.tcp_source_port,
                 packet_info.tcp_destination_port,
                 packet_info.tcp_sequence_number,
@@ -904,7 +1074,7 @@ static int app_process_packet(
                 "dst_port=%" PRIu16 " "
                 "udp_length=%" PRIu16 " "
                 "payload_length=%zu "
-                "payload_truncated=%s\n",
+                "payload_truncated=%s\n\n",
                 packet_info.udp_source_port,
                 packet_info.udp_destination_port,
                 packet_info.udp_length,
@@ -927,7 +1097,7 @@ static int app_process_packet(
                     "identifier=%" PRIu16 " "
                     "sequence=%" PRIu16 " "
                     "payload_length=%zu "
-                    "payload_truncated=%s\n",
+                    "payload_truncated=%s\n\n",
                     app_icmp_type_name(
                         packet_info.icmp_type
                     ),
@@ -947,7 +1117,7 @@ static int app_process_packet(
                     "type_number=%u "
                     "code=%u "
                     "payload_length=%zu "
-                    "payload_truncated=%s\n",
+                    "payload_truncated=%s\n\n",
                     app_icmp_type_name(
                         packet_info.icmp_type
                     ),
@@ -1013,6 +1183,15 @@ static int app_run_capture_analysis(app_context_t *context)
     */
     flow_expiration_schedule_t expiration_schedule = {0};
 
+    /*
+    * runtime_metrics_totals保存启动以来的累计量。
+    *
+    * runtime_metrics_schedule保存上一次周期报告的时间和累计基线。
+    */
+    runtime_metrics_totals_t runtime_metrics_totals = {0};
+    runtime_metrics_schedule_t runtime_metrics_schedule = {0};
+    runtime_metrics_timestamp_t runtime_metrics_start = {0};
+
     flow_timestamp_t packet_timestamp = {0};
     flow_timestamp_t expiration_cutoff = {0};
 
@@ -1021,6 +1200,7 @@ static int app_run_capture_analysis(app_context_t *context)
 
     capture_packet_view_t packet;
     capture_read_status_t read_status;
+    capture_wait_status_t wait_status = CAPTURE_WAIT_STATUS_UNKNOWN;
     capture_statistics_t capture_statistics = {0};
 
     const char *capture_source;
@@ -1182,6 +1362,39 @@ static int app_run_capture_analysis(app_context_t *context)
         }
     }
 
+    /*
+     * BPF安装完成后，把实时采集切换到非阻塞模式。
+     *
+     * 后续capture_next_packet没有现成数据时会立即返回EAGAIN，
+     * 主循环再通过capture_wait_readable低CPU等待数据或超时。
+     */
+    if (live_capture) {
+        error_code = capture_enable_nonblocking(
+            capture,
+            capture_error,
+            sizeof(capture_error)
+        );
+
+        if (error_code != 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to enable nonblocking capture "
+                "on interface '%s': %s",
+                capture_source,
+                capture_error[0] != '\0'
+                    ? capture_error
+                    : strerror(error_code)
+            );
+
+            /*
+             * 流表尚未初始化，此处只需要关闭capture。
+             */
+            capture_close(&capture);
+            return error_code;
+        }
+    }
+
     error_code = flow_table_init(
         &flow_table,
         flow_slots,
@@ -1221,6 +1434,41 @@ static int app_run_capture_analysis(app_context_t *context)
             capture_close(&capture);
             return error_code;
         }
+
+        error_code = app_get_monotonic_timestamp(&runtime_metrics_start);
+
+        if (error_code != 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to read initial monotonic clock: %s",
+                strerror(error_code)
+            );
+
+            flow_table_cleanup(&flow_table);
+            capture_close(&capture);
+            return error_code;
+        }
+
+        error_code = runtime_metrics_schedule_init(
+            &runtime_metrics_schedule,
+            APP_RUNTIME_METRICS_INTERVAL_SECONDS,
+            &runtime_metrics_start,
+            &runtime_metrics_totals
+        );
+
+        if (error_code != 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to initialize runtime metrics: %s",
+                strerror(error_code)
+            );
+
+            flow_table_cleanup(&flow_table);
+            capture_close(&capture);
+            return error_code;
+        }
     }
 
     if (live_capture) {
@@ -1230,14 +1478,16 @@ static int app_run_capture_analysis(app_context_t *context)
             "BPF filter: %s\n"
             "Link type: Ethernet\n"
             "Flow idle timeout: %" PRId64 " second(s)\n"
-            "Flow expiration scan interval: %" PRId64 " second(s)\n",
+            "Flow expiration scan interval: %" PRId64 " second(s)\n"
+            "Runtime metrics interval: %" PRId64 " second(s)\n\n",
             capture_source,
             context->packet_limit,
             context->filter_expression != NULL
                 ? context->filter_expression
                 : "(none)",
             APP_FLOW_IDLE_TIMEOUT_SECONDS,
-            APP_FLOW_EXPIRATION_SCAN_INTERVAL_SECONDS
+            APP_FLOW_EXPIRATION_SCAN_INTERVAL_SECONDS,
+            APP_RUNTIME_METRICS_INTERVAL_SECONDS
         );
     } else {
         error_code = printf(
@@ -1303,12 +1553,111 @@ static int app_run_capture_analysis(app_context_t *context)
         }
 
         /*
-         * 实时网卡暂时没有数据时，libpcap可能返回读取超时。
-         *
-         * EAGAIN不是网卡故障，也不能增加数据包计数，
-         * 因此重新等待下一包。
-         */
+        * 实时句柄使用非阻塞模式；当前没有可交付的数据包时，
+        * capture_next_packet()返回EAGAIN。
+        *
+        * EAGAIN不是网卡故障，也不能增加数据包计数，
+        * 因此进入有界等待，而不是立即重试。
+        */
         if (live_capture && error_code == EAGAIN) {
+            /*
+             * 非阻塞读取当前没有现成数据。
+             *
+             * 使用poll等待描述符可读或应用层等待超时，
+             * 避免立即重试形成忙轮询。
+             */
+            wait_status = CAPTURE_WAIT_STATUS_UNKNOWN;
+
+            error_code = capture_wait_readable(
+                capture,
+                APP_CAPTURE_WAIT_TIMEOUT_MS,
+                &wait_status
+            );
+
+            /*
+             * SIGINT或SIGTERM可能在poll等待期间到达。
+             *
+             * 信号处理函数已经设置stop_requested，此时优先走
+             * 正常停止路径，不把EINTR解释成采集故障。
+             */
+            if (context->stop_requested != 0) {
+                break;
+            }
+
+            /*
+             * poll也可能被项目没有接管的其他信号中断。
+             *
+             * 此时没有发现永久故障，可以从循环顶部重新检查状态。
+             */
+            if (error_code == EINTR) {
+                continue;
+            }
+
+            if (error_code != 0) {
+                (void)snprintf(
+                    context->error_message,
+                    sizeof(context->error_message),
+                    "failed to wait for capture activity "
+                    "on interface '%s': %s",
+                    capture_source,
+                    strerror(error_code)
+                );
+
+                context->active_capture = NULL;
+                flow_table_cleanup(&flow_table);
+                capture_close(&capture);
+                return error_code;
+            }
+
+            /*
+             * 成功返回只能产生READY或TIMEOUT。
+             *
+             * READY表示下一轮应重新尝试非阻塞读取；
+             * TIMEOUT表示本轮没有流量，但仍要推进周期指标。
+             */
+            if (wait_status != CAPTURE_WAIT_STATUS_READY &&
+                wait_status != CAPTURE_WAIT_STATUS_TIMEOUT) {
+                (void)snprintf(
+                    context->error_message,
+                    sizeof(context->error_message),
+                    "capture wait returned an unexpected status"
+                );
+
+                context->active_capture = NULL;
+                flow_table_cleanup(&flow_table);
+                capture_close(&capture);
+                return EIO;
+            }
+
+            /*
+             * 无论因为数据就绪还是正常超时返回，都检查单调时钟。
+             *
+             * 尚未到5秒时函数只返回0，不产生输出。
+             */
+            error_code = app_maybe_print_runtime_metrics(
+                &runtime_metrics_schedule,
+                &runtime_metrics_totals,
+                &flow_table
+            );
+
+            if (error_code != 0) {
+                (void)snprintf(
+                    context->error_message,
+                    sizeof(context->error_message),
+                    "failed to update runtime metrics: %s",
+                    strerror(error_code)
+                );
+
+                context->active_capture = NULL;
+                flow_table_cleanup(&flow_table);
+                capture_close(&capture);
+                return error_code;
+            }
+
+            /*
+             * READY时下一轮读取已经到达的数据；
+             * TIMEOUT时下一轮先尝试读取，再按需重新进入poll。
+             */
             continue;
         }
 
@@ -1356,6 +1705,28 @@ static int app_run_capture_analysis(app_context_t *context)
         }
 
         total_packet_count += 1U;
+
+        if (live_capture) {
+            error_code = runtime_metrics_totals_add_packet(
+                &runtime_metrics_totals,
+                packet.captured_length,
+                packet.wire_length
+            );
+
+            if (error_code != 0) {
+                (void)snprintf(
+                    context->error_message,
+                    sizeof(context->error_message),
+                    "failed to accumulate runtime packet metrics: %s",
+                    strerror(error_code)
+                );
+
+                context->active_capture = NULL;
+                flow_table_cleanup(&flow_table);
+                capture_close(&capture);
+                return error_code;
+            }
+        }
 
         print_preview = previewed_packet_count < APP_CAPTURE_PREVIEW_LIMIT;
 
@@ -1440,6 +1811,26 @@ static int app_run_capture_analysis(app_context_t *context)
             }
 
             total_expired_flow_count += expired_flow_count;
+
+            error_code =
+                runtime_metrics_totals_add_expired_flows(
+                    &runtime_metrics_totals,
+                    (uint64_t)expired_flow_count
+                );
+
+            if (error_code != 0) {
+                (void)snprintf(
+                    context->error_message,
+                    sizeof(context->error_message),
+                    "failed to accumulate expired flow metrics: %s",
+                    strerror(error_code)
+                );
+
+                context->active_capture = NULL;
+                flow_table_cleanup(&flow_table);
+                capture_close(&capture);
+                return error_code;
+            }
         }
     }
 
@@ -1472,6 +1863,33 @@ static int app_run_capture_analysis(app_context_t *context)
 
         if (print_preview) {
             previewed_packet_count += 1U;
+        }
+
+        if (live_capture) {
+            /*
+             * 当前包已经完成解析、聚合和过期处理。
+             *
+             * 此时输出的active_flows反映处理完当前包后的流表状态。
+             */
+            error_code = app_maybe_print_runtime_metrics(
+                &runtime_metrics_schedule,
+                &runtime_metrics_totals,
+                &flow_table
+            );
+
+            if (error_code != 0) {
+                (void)snprintf(
+                    context->error_message,
+                    sizeof(context->error_message),
+                    "failed to update runtime metrics: %s",
+                    strerror(error_code)
+                );
+
+                context->active_capture = NULL;
+                flow_table_cleanup(&flow_table);
+                capture_close(&capture);
+                return error_code;
+            }
         }
     }
 
