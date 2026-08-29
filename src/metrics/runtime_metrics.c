@@ -65,12 +65,14 @@ static bool runtime_metrics_totals_are_monotonic(
     const runtime_metrics_totals_t *previous)
 {
     return current->packet_count >= previous->packet_count &&
-           current->captured_byte_count >=
-               previous->captured_byte_count &&
-           current->wire_byte_count >=
-               previous->wire_byte_count &&
-           current->expired_flow_count >=
-               previous->expired_flow_count;
+        current->complete_packet_count >= previous->complete_packet_count &&
+        current->truncated_packet_count >= previous->truncated_packet_count &&
+        current->malformed_packet_count >= previous->malformed_packet_count &&
+        current->unsupported_packet_count >= previous->unsupported_packet_count &&
+        current->flow_rejected_packet_count >= previous->flow_rejected_packet_count &&
+        current->captured_byte_count >= previous->captured_byte_count &&
+        current->wire_byte_count >= previous->wire_byte_count &&
+        current->expired_flow_count >= previous->expired_flow_count;
 }
 
 /**
@@ -145,6 +147,61 @@ int runtime_metrics_totals_add_packet(
     updated_totals.captured_byte_count += (uint64_t)captured_length;
     updated_totals.wire_byte_count += (uint64_t)wire_length;
 
+    *totals = updated_totals;
+
+    return 0;
+}
+
+int runtime_metrics_totals_add_packet_result(
+    runtime_metrics_totals_t *totals,
+    runtime_metrics_packet_result_t result)
+{
+    runtime_metrics_totals_t updated_totals;
+    uint64_t *target_count;
+
+    if (totals == NULL) {
+        return EINVAL;
+    }
+
+    /*
+     * 先修改局部副本，确保失败时不留下部分更新。
+     */
+    updated_totals = *totals;
+
+    switch (result) {
+    case RUNTIME_METRICS_PACKET_RESULT_COMPLETE:
+        target_count = &updated_totals.complete_packet_count;
+        break;
+
+    case RUNTIME_METRICS_PACKET_RESULT_TRUNCATED:
+        target_count = &updated_totals.truncated_packet_count;
+        break;
+
+    case RUNTIME_METRICS_PACKET_RESULT_MALFORMED:
+        target_count = &updated_totals.malformed_packet_count;
+        break;
+
+    case RUNTIME_METRICS_PACKET_RESULT_UNSUPPORTED:
+        target_count = &updated_totals.unsupported_packet_count;
+        break;
+
+    case RUNTIME_METRICS_PACKET_RESULT_FLOW_REJECTED:
+        target_count = &updated_totals.flow_rejected_packet_count;
+        break;
+
+    default:
+        return EINVAL;
+    }
+
+    if (*target_count == UINT64_MAX) {
+        return EOVERFLOW;
+    }
+
+    *target_count += UINT64_C(1);
+
+    /*
+     * 完整更新成功后才发布新累计量。
+     */
     *totals = updated_totals;
 
     return 0;
@@ -290,6 +347,26 @@ int runtime_metrics_schedule_observe(
     result_report.interval_packet_count =
         current_totals->packet_count -
         schedule->last_report_totals.packet_count;
+
+    result_report.interval_complete_packet_count =
+        current_totals->complete_packet_count -
+        schedule->last_report_totals.complete_packet_count;
+
+    result_report.interval_truncated_packet_count =
+        current_totals->truncated_packet_count -
+        schedule->last_report_totals.truncated_packet_count;
+
+    result_report.interval_malformed_packet_count =
+        current_totals->malformed_packet_count -
+        schedule->last_report_totals.malformed_packet_count;
+
+    result_report.interval_unsupported_packet_count =
+        current_totals->unsupported_packet_count -
+        schedule->last_report_totals.unsupported_packet_count;
+
+    result_report.interval_flow_rejected_packet_count =
+        current_totals->flow_rejected_packet_count -
+        schedule->last_report_totals.flow_rejected_packet_count;
 
     result_report.interval_captured_byte_count =
         current_totals->captured_byte_count -

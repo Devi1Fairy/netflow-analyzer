@@ -23,8 +23,8 @@ cmake -E chdir build ctest --output-on-failure
 
 - 当前分支：`main`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前已提交基线：`5224f93 feat(metrics): add periodic traffic rate calculations`；
-- 当前工作区继续把实时采集改为非阻塞加`poll()`等待，并把周期指标接入应用主循环；完成提交后以实际`git log`哈希为准；
+- 当前已提交基线：`5e407ad feat(metrics): report periodic live capture metrics`；
+- 当前工作区为`runtime_metrics`增加完整、截断、畸形、不支持和流表拒绝五种处理结果的累计及区间差分；应用主循环尚未产生这些分类；完成提交后以实际`git log`哈希为准；
 - 当前正式版本宏为`0.2.0`；
 - 已有标签：`v0.0.1`、`v0.1.0`、`v0.2.0`；
 - 完成本轮提交和推送后，预期`main`、`origin/main`一致；用户本地`.vscode/settings.json`改动不应被加入本功能提交；
@@ -807,7 +807,7 @@ cmake -E chdir build ctest \
 - `--count`只限制成功捕获的包数，不限制等待时间；
 - libpcap读取超时在不同平台和捕获后端上的行为可能不同，不能把它当作严格定时器；
 - `pcap_stats()`字段语义和可用性依赖平台，`ps_recv`不等于应用完成处理的包数，`ps_ifdrop == 0`也可能表示指标不可用；
-- 已有周期PPS、Mbps、流表占用率和过期数量，但没有按协议解析成功、截断、畸形和不支持状态分类的运行计数；
+- 周期指标数据模型已经具备完整、截断、畸形、不支持和流表拒绝计数，但应用主循环尚未向它提交单包分类；
 - 当前混杂模式固定为false，没有CLI选项；
 - 实时CSV尚未开放；
 - `any`接口在Linux通常是cooked capture链路类型，当前只支持Ethernet，可能返回`ENOTSUP`；
@@ -1041,6 +1041,7 @@ feat(cli): expose live capture filter option
 - capture层通过可选择文件描述符和`poll()`提供有界等待，应用每次返回后检查周期任务和停止请求；
 - 没有增加统计线程，避免为当前单线程所有的计数和流表引入锁、一致快照及线程回收复杂度；
 - 静默、突发60个ICMP包、再次静默和Ctrl+C人工验收通过，全部17项CTest通过。
+- 五种互斥的数据包处理结果已经进入累计量、单调性检查和报告区间差分，尚未接入`app_process_packet()`。
 
 已知边界：当前报告周期固定为5秒，等待检查粒度固定为1秒；`poll()`依赖POSIX可选择描述符；尚未在开发板记录空闲及高流量CPU/RSS。
 
@@ -1157,7 +1158,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率以及非阻塞加poll的静默报告已经完成。继续增加应用处理结果分类，并把最新代码同步到开发板完成17项CTest、周期指标和CPU/RSS验收。
+周期PPS、Mbps、流表占用率以及非阻塞加poll的静默报告已经完成，五种应用处理结果的数据模型也已建立。继续让app_process_packet返回最终分类并接入周期与最终输出，再把最新代码同步到开发板验收。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1168,7 +1169,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 - 为什么下一步是应用处理结果分类和开发板单线程性能测量；
 - 本轮不会直接替用户修改C源码。
 
-然后再开始应用处理结果分类的数据模型设计。
+然后从`app_process_packet()`的结果输出参数和状态映射开始接入分类。
 
 ## 21. 本次交接结论
 
@@ -1197,4 +1198,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-当前下一步是增加应用处理结果分类，再把最新17项测试和周期指标同步到开发板，记录空闲及受控流量下的CPU、RSS、PPS和drop数据；根据这些证据决定是否把`labs/thread_pipeline`接入正式程序。开发板侧已经完成原生Debug/Release构建、16项旧基线CTest、确定性PCAP跨平台一致性和物理网卡实时抓包。交叉编译仍有工程价值，但当前项目构建树只有数MB，不需要仅因eMMC容量立即切换。
+当前下一步是让`app_process_packet()`把每包最终处理结果提交给现有分类指标，并在周期及退出汇总中输出；之后把最新17项测试和周期指标同步到开发板，记录空闲及受控流量下的CPU、RSS、PPS和drop数据。开发板侧已经完成原生Debug/Release构建、16项旧基线CTest、确定性PCAP跨平台一致性和物理网卡实时抓包。交叉编译仍有工程价值，但当前项目构建树只有数MB，不需要仅因eMMC容量立即切换。

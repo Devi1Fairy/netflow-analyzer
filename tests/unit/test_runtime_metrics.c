@@ -102,6 +102,118 @@ static int test_totals_accumulation_and_overflow(void)
     return EXIT_SUCCESS;
 }
 
+static int test_packet_result_accumulation_and_overflow(void)
+{
+    runtime_metrics_totals_t totals = {0};
+    runtime_metrics_totals_t previous_totals;
+
+    TEST_CHECK(
+        runtime_metrics_totals_add_packet_result(
+            &totals,
+            RUNTIME_METRICS_PACKET_RESULT_COMPLETE
+        ) == 0
+    );
+
+    TEST_CHECK(
+        runtime_metrics_totals_add_packet_result(
+            &totals,
+            RUNTIME_METRICS_PACKET_RESULT_COMPLETE
+        ) == 0
+    );
+
+    TEST_CHECK(
+        runtime_metrics_totals_add_packet_result(
+            &totals,
+            RUNTIME_METRICS_PACKET_RESULT_TRUNCATED
+        ) == 0
+    );
+
+    TEST_CHECK(
+        runtime_metrics_totals_add_packet_result(
+            &totals,
+            RUNTIME_METRICS_PACKET_RESULT_MALFORMED
+        ) == 0
+    );
+
+    TEST_CHECK(
+        runtime_metrics_totals_add_packet_result(
+            &totals,
+            RUNTIME_METRICS_PACKET_RESULT_UNSUPPORTED
+        ) == 0
+    );
+
+    TEST_CHECK(
+        runtime_metrics_totals_add_packet_result(
+            &totals,
+            RUNTIME_METRICS_PACKET_RESULT_FLOW_REJECTED
+        ) == 0
+    );
+
+    TEST_CHECK(
+        totals.complete_packet_count == UINT64_C(2)
+    );
+    TEST_CHECK(
+        totals.truncated_packet_count == UINT64_C(1)
+    );
+    TEST_CHECK(
+        totals.malformed_packet_count == UINT64_C(1)
+    );
+    TEST_CHECK(
+        totals.unsupported_packet_count == UINT64_C(1)
+    );
+    TEST_CHECK(
+        totals.flow_rejected_packet_count == UINT64_C(1)
+    );
+
+    totals.complete_packet_count = UINT64_MAX;
+    totals.truncated_packet_count = UINT64_C(7);
+    previous_totals = totals;
+
+    TEST_CHECK(
+        runtime_metrics_totals_add_packet_result(
+            &totals,
+            RUNTIME_METRICS_PACKET_RESULT_COMPLETE
+        ) == EOVERFLOW
+    );
+
+    /*
+     * 溢出失败后，目标字段和其他字段都必须保持原值。
+     */
+    TEST_CHECK(
+        totals.complete_packet_count ==
+            previous_totals.complete_packet_count
+    );
+    TEST_CHECK(
+        totals.truncated_packet_count ==
+            previous_totals.truncated_packet_count
+    );
+
+    TEST_CHECK(
+        runtime_metrics_totals_add_packet_result(
+            &totals,
+            (runtime_metrics_packet_result_t)99
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        totals.complete_packet_count ==
+            previous_totals.complete_packet_count
+    );
+    TEST_CHECK(
+        totals.truncated_packet_count ==
+            previous_totals.truncated_packet_count
+    );
+
+    TEST_CHECK(
+        runtime_metrics_totals_add_packet_result(
+            NULL,
+            RUNTIME_METRICS_PACKET_RESULT_COMPLETE
+        ) == EINVAL
+    );
+
+    return EXIT_SUCCESS;
+}
+
 static int test_report_boundary_and_rates(void)
 {
     runtime_metrics_schedule_t schedule;
@@ -126,6 +238,11 @@ static int test_report_boundary_and_rates(void)
 
     totals = (runtime_metrics_totals_t){
         .packet_count = UINT64_C(10),
+        .complete_packet_count = UINT64_C(6),
+        .truncated_packet_count = UINT64_C(1),
+        .malformed_packet_count = UINT64_C(1),
+        .unsupported_packet_count = UINT64_C(1),
+        .flow_rejected_packet_count = UINT64_C(1),
         .captured_byte_count = UINT64_C(1000),
         .wire_byte_count = UINT64_C(1200),
         .expired_flow_count = UINT64_C(2)
@@ -198,6 +315,26 @@ static int test_report_boundary_and_rates(void)
             UINT64_C(10)
     );
     TEST_CHECK(
+        report.interval_complete_packet_count ==
+            UINT64_C(6)
+    );
+    TEST_CHECK(
+        report.interval_truncated_packet_count ==
+            UINT64_C(1)
+    );
+    TEST_CHECK(
+        report.interval_malformed_packet_count ==
+            UINT64_C(1)
+    );
+    TEST_CHECK(
+        report.interval_unsupported_packet_count ==
+            UINT64_C(1)
+    );
+    TEST_CHECK(
+        report.interval_flow_rejected_packet_count ==
+            UINT64_C(1)
+    );
+    TEST_CHECK(
         report.interval_captured_byte_count ==
             UINT64_C(1000)
     );
@@ -242,6 +379,11 @@ static int test_report_boundary_and_rates(void)
      */
     totals = (runtime_metrics_totals_t){
         .packet_count = UINT64_C(25),
+        .complete_packet_count = UINT64_C(16),
+        .truncated_packet_count = UINT64_C(3),
+        .malformed_packet_count = UINT64_C(2),
+        .unsupported_packet_count = UINT64_C(2),
+        .flow_rejected_packet_count = UINT64_C(2),
         .captured_byte_count = UINT64_C(2500),
         .wire_byte_count = UINT64_C(3000),
         .expired_flow_count = UINT64_C(5)
@@ -276,6 +418,26 @@ static int test_report_boundary_and_rates(void)
             UINT64_C(15)
     );
     TEST_CHECK(
+        report.interval_complete_packet_count ==
+            UINT64_C(10)
+    );
+    TEST_CHECK(
+        report.interval_truncated_packet_count ==
+            UINT64_C(2)
+    );
+    TEST_CHECK(
+        report.interval_malformed_packet_count ==
+            UINT64_C(1)
+    );
+    TEST_CHECK(
+        report.interval_unsupported_packet_count ==
+            UINT64_C(1)
+    );
+    TEST_CHECK(
+        report.interval_flow_rejected_packet_count ==
+            UINT64_C(1)
+    );
+    TEST_CHECK(
         test_double_close(
             report.packets_per_second,
             2.0
@@ -300,6 +462,11 @@ static int test_invalid_state_preserves_outputs(void)
     runtime_metrics_schedule_t schedule;
     runtime_metrics_totals_t totals = {
         .packet_count = UINT64_C(10),
+        .complete_packet_count = UINT64_C(8),
+        .truncated_packet_count = UINT64_C(1),
+        .malformed_packet_count = UINT64_C(0),
+        .unsupported_packet_count = UINT64_C(1),
+        .flow_rejected_packet_count = UINT64_C(0),
         .captured_byte_count = UINT64_C(100),
         .wire_byte_count = UINT64_C(120),
         .expired_flow_count = UINT64_C(1)
@@ -368,6 +535,26 @@ static int test_invalid_state_preserves_outputs(void)
     );
 
     /*
+     * 即使总包数没有倒退，任一分类累计值倒退也必须拒绝。
+     */
+    totals.packet_count = UINT64_C(10);
+    totals.complete_packet_count = UINT64_C(7);
+
+    TEST_CHECK(
+        runtime_metrics_schedule_observe(
+            &schedule,
+            &timestamp,
+            &totals,
+            1U,
+            256U,
+            &report_due,
+            &report
+        ) == ERANGE
+    );
+
+    totals.complete_packet_count = UINT64_C(8);
+
+    /*
      * 活动流数量不能超过流表容量。
      */
     totals.packet_count = UINT64_C(10);
@@ -418,6 +605,13 @@ int main(void)
     }
 
     printf("[PASS] runtime metric validation\n");
+
+    if (test_packet_result_accumulation_and_overflow() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] runtime metric packet results\n");
 
     return EXIT_SUCCESS;
 }

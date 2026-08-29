@@ -253,7 +253,7 @@ Wireshark是成熟分析工具，但项目目标是开发可嵌入业务程序�
 
 - `PCAP_NETMASK_UNKNOWN`不适合依赖真实IPv4网络掩码的广播过滤表达式；
 - CLI尚未开放离线PCAP过滤，出现明确需求后可以复用现有采集接口放宽限制；
-- libpcap运行统计已经接入；下一阶段继续增加协议层分类计数、周期速率和流表容量指标。
+- libpcap运行统计、周期速率和流表容量指标已经接入；数据模型已经建立五种应用处理结果，下一阶段把分类结果接入单包处理控制流和周期输出。
 
 参考：[pcap_compile手册](https://www.tcpdump.org/manpages/pcap_compile.3pcap.html)、[pcap_setfilter手册](https://www.tcpdump.org/manpages/pcap_setfilter.3pcap.html)、[pcap_freecode手册](https://www.tcpdump.org/manpages/pcap_freecode.3pcap.html)。
 

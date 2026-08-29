@@ -20,6 +20,40 @@ typedef struct {
 } runtime_metrics_timestamp_t;
 
 /**
+ * @brief 表示一个数据包经过应用处理后的最终结果。
+ *
+ * 这些结果互斥：一个数据包最终只能计入其中一种。
+ *
+ * NOT_STARTED不属于可报告结果，因为它只是解析过程中的中间状态。
+ */
+typedef enum {
+    /**
+     * 当前支持的协议已经完整解析，并成功进入流表。
+     */
+    RUNTIME_METRICS_PACKET_RESULT_COMPLETE = 0,
+
+    /**
+     * 捕获数据不足，无法读取必要协议字段。
+     */
+    RUNTIME_METRICS_PACKET_RESULT_TRUNCATED,
+
+    /**
+     * 数据长度足够，但协议字段组合不符合规范。
+     */
+    RUNTIME_METRICS_PACKET_RESULT_MALFORMED,
+
+    /**
+     * 数据包格式合法，但协议或封装暂未得到支持。
+     */
+    RUNTIME_METRICS_PACKET_RESULT_UNSUPPORTED,
+
+    /**
+     * 协议解析成功，但流表因为容量或策略拒绝该数据包。
+     */
+    RUNTIME_METRICS_PACKET_RESULT_FLOW_REJECTED
+} runtime_metrics_packet_result_t;
+
+/**
  * @brief 保存从程序启动以来持续累加的运行总量。
  *
  * 这些字段只能保持不变或增加，不能在报告周期之间减小。
@@ -29,6 +63,31 @@ typedef struct {
      * 应用成功从采集层取得的数据包总数。
      */
     uint64_t packet_count;
+
+    /**
+     * 完整解析并成功进入流表的数据包数量。
+     */
+    uint64_t complete_packet_count;
+
+    /**
+     * 因必要字段没有完整捕获而无法继续解析的数据包数量。
+     */
+    uint64_t truncated_packet_count;
+
+    /**
+     * 因协议字段组合非法而无法继续处理的数据包数量。
+     */
+    uint64_t malformed_packet_count;
+
+    /**
+     * 使用当前项目尚未支持的协议或封装的数据包数量。
+     */
+    uint64_t unsupported_packet_count;
+
+    /**
+     * 解析成功但未能进入流表的数据包数量。
+     */
+    uint64_t flow_rejected_packet_count;
 
     /**
      * 应用实际取得并可访问的字节总数，对应caplen累计值。
@@ -56,6 +115,11 @@ typedef struct {
     double elapsed_seconds;
 
     uint64_t interval_packet_count;
+    uint64_t interval_complete_packet_count;
+    uint64_t interval_truncated_packet_count;
+    uint64_t interval_malformed_packet_count;
+    uint64_t interval_unsupported_packet_count;
+    uint64_t interval_flow_rejected_packet_count;
     uint64_t interval_captured_byte_count;
     uint64_t interval_wire_byte_count;
     uint64_t interval_expired_flow_count;
@@ -96,6 +160,22 @@ int runtime_metrics_totals_add_packet(
     runtime_metrics_totals_t *totals,
     uint32_t captured_length,
     uint32_t wire_length);
+
+/**
+ * @brief 把一个数据包的最终处理结果加入累计指标。
+ *
+ * 本函数只增加对应的分类计数，不增加packet_count和字节数。
+ * packet_count及字节数仍由runtime_metrics_totals_add_packet()维护。
+ *
+ * 更新失败时totals保持原值。
+ *
+ * @return 成功时返回0；
+ *         totals为空或result无效时返回EINVAL；
+ *         对应分类计数已经达到UINT64_MAX时返回EOVERFLOW。
+ */
+int runtime_metrics_totals_add_packet_result(
+    runtime_metrics_totals_t *totals,
+    runtime_metrics_packet_result_t result);
 
 /**
  * @brief 把本次扫描删除的过期流数量加入累计指标。
