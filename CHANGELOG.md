@@ -32,6 +32,8 @@
 - 在LubanCat-2N上完成两条ARM64交叉部署链：官方Buildroot GCC 9.3加隔离libpcap overlay，以及Ubuntu GCC 13加板端完整sysroot和GCC `-B`启动文件前缀；两种产物均只要求`GLIBC_2.17`并通过板端动态加载和实时ICMP抓包。
 - 新增交叉编译手册，详细记录Shell环境变量、sysroot导出、`pkg-config`定向、CMake参数、ELF/GLIBC检查、`scp`部署及真实故障处理。
 - Python离线验收将Python 3.9才支持的内置泛型注解改为`typing.List`和`typing.Tuple`，兼容LubanCat随系统提供的Python 3.8.10；x86_64与ARM64原生Debug构建的17项CTest均全部通过。
+- 完成LubanCat-2N第一组Release性能基线：从空闲到约9 Kpps均保持零应用拒绝和零捕获丢包；20万包场景进程平均CPU约4.25%、每包CPU成本约6.95微秒、最大RSS约1.64 MiB，因此正式链路继续保持单线程。
+- 新增板端性能基线文档，记录外部ICMP发生器、GNU `time`、`timeout`、`tee`、`stdbuf`命令语义、四档结果、周期抖动和测量边界。
 
 ## [0.2.0] - 2026-08-26
 

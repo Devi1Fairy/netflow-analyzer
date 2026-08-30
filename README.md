@@ -70,7 +70,7 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 - 流过期的事件时间只随实际收到的数据包推进，接口完全静默时要等下一包到来才判断旧流；周期运行指标使用单调时钟，因此静默时仍会按时输出；
 - 尚未解析DNS、HTTP等应用层协议；
 - 尚未实现规则异常检测、机器学习、Qt界面或云端展示；
-- ARM Linux开发板已完成原生Debug/Release构建、当前17项CTest、离线跨平台一致性、两种交叉产物和首次物理网卡抓包；周期指标的板端受控流量验证及CPU/RSS仍待性能验收。
+- ARM Linux开发板已完成原生Debug/Release构建、当前17项CTest、离线跨平台一致性、两种交叉产物、物理网卡抓包和第一组单流性能基线；约9 Kpps时20万包全部完成且零drop，整机软中断、多流和长时间性能仍待验证。
 
 ## 项目目录
 
@@ -328,17 +328,17 @@ LubanCat-2N已经完成ARM64原生Debug/Release构建、当前17项板端CTest�
 
 开发电脑已经完成两条ARM64交叉编译和板端运行链：一条使用鲁班猫官方Buildroot GCC 9.3及隔离的板端libpcap overlay，另一条使用Ubuntu GCC 13、从板端导出的完整sysroot和GCC `-B`启动文件前缀。两种产物均为AArch64 ELF、只要求`GLIBC_2.17`，并在板端通过`ldd`、`--help`和实时ICMP抓包。完整Shell环境变量、CMake参数、ABI检查与故障记录见[交叉编译手册](docs/cross_compilation.md)。
 
-开发板上的CTest为3.16.3，低于`--test-dir`参数所需的3.20，因此测试时应先进入构建目录再运行`ctest`。同一确定性6包PCAP已经在x86_64与ARM64原生构建上得到一致标准输出和退出状态；当前17项测试也已在两侧全部通过。下一步是完成周期分类指标、CPU、RSS和持续抓包性能验收。
+开发板上的CTest为3.16.3，低于`--test-dir`参数所需的3.20，因此测试时应先进入构建目录再运行`ctest`。同一确定性6包PCAP已经在x86_64与ARM64原生构建上得到一致标准输出和退出状态；当前17项测试也已在两侧全部通过。第一组Release性能基线覆盖空闲、约92 PPS、约1.8 Kpps和约9 Kpps四档负载：最高档处理20万包时进程平均CPU约4.25%、每包CPU成本约6.95微秒、最大RSS约1.64 MiB，应用分类与两个drop字段均无丢失。完整方法和边界见[板端性能基线](docs/performance_baseline.md)。
 
 ## 后续迭代
 
 建议按以下顺序推进：
 
-1. 在开发板完成周期分类指标、CPU、RSS和持续抓包性能验收；
+1. 补充开发板整机CPU/软中断、长时间运行和多流负载测量；
 2. 使用性能、占用率和`flow_rejected`数据决定是否增加流表满载驱逐、重建或动态扩容；
-3. 根据单线程测量结果决定是否把实验中的阻塞队列和线程流水线接入正式分析链；
+3. 当前继续保持单线程；只有后续测量证明单线程成为瓶颈，才复审实验中的阻塞队列和线程流水线；
 4. 增加TCP状态跟踪、流重组与DNS、HTTP等应用层解析；
 5. 实现规则异常检测，再准备机器学习特征与模型；
 6. 在稳定的数据接口之上实现Qt上位机，并按需要扩展云端展示。
 
-版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)，技术、环境和硬件选型见[docs/technical_decisions.md](docs/technical_decisions.md)，两种ARM64构建方式见[docs/cross_compilation.md](docs/cross_compilation.md)。
+版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)，技术、环境和硬件选型见[docs/technical_decisions.md](docs/technical_decisions.md)，两种ARM64构建方式见[docs/cross_compilation.md](docs/cross_compilation.md)，首轮板端测量见[docs/performance_baseline.md](docs/performance_baseline.md)。

@@ -23,8 +23,8 @@ cmake -E chdir build ctest --output-on-failure
 
 - 当前分支：`main`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前已提交基线：`964f682 test: support Python 3.8 acceptance runs`，并与`origin/main`一致；
-- 当前工作区在本轮日志更新前应为空；如有其他改动，必须先确认来源并保留；
+- 当前已提交基线：`b070f09 docs(board): record ARM64 17-test baseline`，并与`origin/main`一致；
+- 当前工作区包含本轮LubanCat单流性能基线文档；提交前必须保留并检查这些改动；
 - 当前正式版本宏为`0.2.0`；
 - 已有标签：`v0.0.1`、`v0.1.0`、`v0.2.0`；
 - Debug构建目录：`/home/zcb/workspace/netflow-analyzer/build`；
@@ -189,7 +189,7 @@ Release主程序位于`build-release/bin/netflow-analyzer`。
 - 官方Buildroot GCC 9.3、SDK内置glibc 2.29 sysroot和隔离的板端libpcap overlay；
 - Ubuntu `aarch64-linux-gnu-gcc` 13、板端完整sysroot和GCC `-B`启动文件前缀。
 
-两种产物均为AArch64 ELF，动态加载器为`/lib/ld-linux-aarch64.so.1`，最终只要求`GLIBC_2.17`。交叉配置使用`BUILD_TESTING=OFF`；逻辑回归由x86_64的17项CTest负责，目标加载和真实采集由板端`ldd`、`--help`和ICMP测试负责。
+两种产物均为AArch64 ELF，动态加载器为`/lib/ld-linux-aarch64.so.1`，最终只要求`GLIBC_2.17`。交叉配置使用`BUILD_TESTING=OFF`；逻辑回归由x86_64与ARM64板端原生构建的17项CTest负责，交叉产物加载和真实采集由板端`ldd`、`--help`和ICMP测试负责。
 
 完整目录、环境变量、CMake命令和故障处理见[`docs/cross_compilation.md`](cross_compilation.md)。
 
@@ -1062,9 +1062,9 @@ feat(cli): expose live capture filter option
 - 静默、突发60个ICMP包、再次静默和Ctrl+C人工验收通过，全部17项CTest通过。
 - 五种互斥的数据包处理结果已经接入`app_process_packet()`、累计量、周期报告和退出汇总；流表满载的新流包计入拒绝后继续运行。
 
-已知边界：当前报告周期固定为5秒，等待检查粒度固定为1秒；`poll()`依赖POSIX可选择描述符；尚未在开发板记录空闲及高流量CPU/RSS。
+已知边界：当前报告周期固定为5秒，等待检查粒度固定为1秒；`poll()`依赖POSIX可选择描述符；单流板端性能已经测量，但严格周期边界、整机软中断、多流和长时间运行仍待验证。
 
-### 18.5 性能测量后再接线程流水线
+### 18.5 依据性能测量暂缓接入线程流水线
 
 候选正式结构：
 
@@ -1077,6 +1077,14 @@ output线程（CSV/Qt/告警）
 ```
 
 但是原始`packet.data`由libpcap拥有，只到下一次读取有效。capture线程如果把包交给其他线程，必须复制`captured_length`字节到拥有明确生命周期的堆对象，不能直接把libpcap内部指针推入队列。这是正式接入线程时最重要的所有权变化之一。
+
+首轮LubanCat ARM64原生Release实测：
+
+- 空闲进程平均CPU约0.045%，最大RSS约1.72 MiB；
+- 约8.8～9.1 Kpps时处理20万包，进程平均CPU约4.25%，整体成本约6.95微秒/包；
+- 应用拒绝、捕获drop和接口drop均为0，RSS保持约1.60～1.72 MiB。
+
+因此当前不把实验流水线接入正式程序。完整命令、计算和边界见[`docs/performance_baseline.md`](performance_baseline.md)。
 
 ### 18.6 应用层与DPI
 
@@ -1143,9 +1151,10 @@ output线程（CSV/Qt/告警）
 - 官方Buildroot GCC 9.3、glibc 2.29 sysroot和隔离libpcap overlay已经完成ARM64 Release交叉构建；
 - Ubuntu GCC 13、板端完整sysroot和GCC `-B`启动文件前缀也已经完成ARM64 Release交叉构建；
 - 两种交叉产物均只要求`GLIBC_2.17`，并在板端通过`ldd`、`--help`和真实ICMP抓包；
-- 完整命令见`docs/cross_compilation.md`，详细排查过程见`docs/problem_log.md`第5.1至5.10节。
+- 完整交叉命令见`docs/cross_compilation.md`，详细排查过程见`docs/problem_log.md`第5.1至5.11节；
+- 第一组单流Release性能基线已完成：最高约9 Kpps、20万包、进程平均CPU约4.25%、最大RSS约1.64 MiB且零drop，详见`docs/performance_baseline.md`。
 
-不要宣称完整开发板验证已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、当前17项板端CTest、确定性PCAP跨平台输出对比、两种交叉编译和跨设备ICMP实时抓包；尚未完成双向直连网络验证、非root权限方案和性能验收。当前仓库提供环境检查脚本：
+不要宣称完整开发板验证已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、当前17项板端CTest、确定性PCAP跨平台输出对比、两种交叉编译、跨设备ICMP实时抓包和单流性能基线；尚未完成双向直连网络验证、非root权限方案、整机软中断、多流及长时间性能验收。当前仓库提供环境检查脚本：
 
 ```bash
 sh scripts/check_target_env.sh
@@ -1161,7 +1170,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 5. 拷贝同一个离线PCAP，在PC和板上对比输出；
 6. 再验证实时网卡和权限；
 7. 原生流程稳定后选择官方SDK或通用GCC加板端sysroot进行交叉构建，并检查ELF ABI；
-8. 记录CPU、内存、包速率和丢包。
+8. 单流CPU、内存、包速率和丢包已经记录；继续补充整机软中断、多流和长时间数据。
 
 板上网络环境需要记录：
 
@@ -1181,7 +1190,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率、静默报告和五种应用处理结果已经完成，并通过260包流表满载压力PCAP。x86_64与LubanCat ARM64原生Debug构建的17项CTest均全部通过，两种ARM64交叉产物也通过板端运行验证。继续测量开发板在空闲及受控流量下的CPU、RSS、PPS和drop。
+周期PPS、Mbps、流表占用率、静默报告和五种应用处理结果已经完成。x86_64与LubanCat ARM64原生Debug构建的17项CTest均全部通过，两种ARM64交叉产物也通过板端运行验证。第一组板端Release单流性能基线达到约9 Kpps、20万包零drop和约4.25%进程CPU；继续补充整机软中断、多流和长时间测量。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1189,10 +1198,10 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 
 - 当前HEAD和测试状态；
 - 当前实时命令；
-- 为什么下一步是开发板单线程性能与容量测量；
+- 为什么当前不接线程流水线，以及下一步为何补整机与多流测量；
 - 本轮不会直接替用户修改C源码。
 
-然后从本轮日志提交检查和可重复的开发板资源测量命令开始；需要复现交叉构建时，按照`docs/cross_compilation.md`执行。
+然后从本轮性能日志提交检查和整机CPU/软中断测量开始；性能方法见`docs/performance_baseline.md`，交叉构建方法见`docs/cross_compilation.md`。
 
 ## 21. 本次交接结论
 
@@ -1221,4 +1230,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-应用处理结果分类和满载继续运行策略已经完成。官方LubanCat SDK链路与通用GCC加板端sysroot链路也都已经完成交叉构建，并通过板端实际运行验证；完整命令、环境变量、CMake选项、ABI检查和故障排查记录在`docs/cross_compilation.md`。Python验收脚本已经兼容板端Python 3.8.10，x86_64与LubanCat ARM64原生Debug构建的17项CTest均全部通过。当前下一步是记录空闲及受控流量下的CPU、RSS、PPS、流表占用率和drop数据；根据这些证据决定流表容量/驱逐策略以及是否把`labs/thread_pipeline`接入正式程序。
+应用处理结果分类和满载继续运行策略已经完成。两种ARM64交叉构建通过板端实际运行，Python验收脚本兼容板端Python 3.8.10，x86_64与LubanCat ARM64原生Debug构建的17项CTest均全部通过。第一组单流性能基线覆盖空闲到约9 Kpps：20万包零应用拒绝和零drop，进程平均CPU约4.25%，最大RSS约1.64 MiB；当前不接入`labs/thread_pipeline`。下一步是补充整机CPU/软中断、多流和长时间测量，再决定流表容量、驱逐策略和后续并发复审条件。

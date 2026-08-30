@@ -882,3 +882,50 @@ List[Tuple[int, int, bytes]]
 - LubanCat上的`offline_flow_acceptance`通过；
 - LubanCat ARM64原生Debug全量17项CTest通过；
 - 修改只涉及Python验收脚本，没有修改C业务代码。
+
+### 5.11 性能测量缺少GNU time且管道输出暂时不可见
+
+第一个现象：
+
+开发板执行：
+
+```bash
+/usr/bin/time --version
+```
+
+返回：
+
+```text
+bash: /usr/bin/time: No such file or directory
+```
+
+Bash自身的`time`关键字通常只能显示`real`、`user`和`sys`，不能直接提供最大RSS等详细字段。安装`time`软件包后取得GNU `/usr/bin/time -v`；它只作为开发测量工具，不是正式程序运行依赖。
+
+第二个现象：
+
+把程序输出接入：
+
+```bash
+2>&1 | tee 结果文件
+```
+
+后，终端暂时没有显示周期报告。人工按Ctrl+C后，结果文件为空。
+
+原因：
+
+- `stdout`直接连接终端时通常按行缓冲；
+- 连接管道后，C标准库可能改用块缓冲；
+- 没有立即显示不表示抓包循环卡死；
+- Ctrl+C会作用于整个前台管道，分析器、`timeout`、`time`和`tee`可能同时退出，缓冲数据来不及保存。
+
+处理：
+
+```bash
+stdbuf -oL -eL netflow-analyzer ... 2>&1 | tee 结果文件
+```
+
+`-oL`和`-eL`分别让标准输出和标准错误按行刷新。之后终端能够实时显示周期报告，日志也完整保留。
+
+验证结果：
+
+- 空闲22.04秒：应用0包、进程CPU时间0.01秒、最大RSS 1764 KiB、drop为0；
