@@ -945,3 +945,36 @@ softirqs-10m-after.txt
 测试结束后再读取`/proc/softirqs`不能无条件当作终值，因为累计计数会继续包含SSH和其他网络活动。没有为了补一个累计次数重跑540万包，原因是同一窗口内的`mpstat -P ALL 5 120`已经连续记录软中断CPU占用：整机平均`%soft=1.69`，CPU0为8.00%，整机仍空闲90.97%。
 
 其余长稳证据完整：540万包全部分类为`complete`，后端接收同为540万，两个drop为0；`pidstat`首尾RSS均为564 KiB，严重缺页为0；尾部PPS仍约9 K。缺失的累计快照作为测量边界记录，不解释为程序故障。
+
+### 5.13 多行`printf`格式字符串之间误加逗号
+
+为实时退出汇总增加`Expired flows`和`Evicted flows`两行时，构建出现：
+
+```text
+warning: format '%zu' expects argument of type 'size_t', but argument 2 has type 'char *'
+warning: too many arguments for format
+```
+
+错误代码把两个字符串写成了两个函数实参：
+
+```c
+printf(
+    "Expired flows: %zu\n",
+    "Evicted flows: %zu\n",
+    total_expired_flow_count,
+    total_evicted_flow_count);
+```
+
+因此第一个字符串是唯一的格式字符串，第二个字符串成为第一个`%zu`对应的`char *`参数，后面的两个`size_t`又成为多余实参。
+
+C会在编译期自动拼接相邻字符串字面量。删除两个字符串之间的逗号后，它们构成同一个包含两个`%zu`的格式字符串：
+
+```c
+printf(
+    "Expired flows: %zu\n"
+    "Evicted flows: %zu\n",
+    total_expired_flow_count,
+    total_evicted_flow_count);
+```
+
+修正后严格格式警告消失，本地17项CTest全部通过，300个不同UDP五元组的实时淘汰验收也成功完成。该问题说明多行`printf`修改后必须核对格式说明符数量、类型与实参顺序，不能只根据终端排版判断逗号位置。
