@@ -630,11 +630,20 @@ libc.so.6
 scp /home/zcb/build/netflow-analyzer-lubancat-sdk-release-v2/bin/netflow-analyzer cat@192.168.1.102:/home/cat/bin/netflow-analyzer-cross-sdk
 ```
 
-本次验证时的SHA-256：
+此前探测统计版本验证时的SHA-256：
 
 ```text
 12bfa1b5a1735390529b7685168c632a074d00a0384d878fde3c5ffad2ffc9cd
 ```
+
+提交`183617c`包含实时最旧流淘汰策略的最新官方SDK产物：
+
+```text
+文件：/home/cat/bin/netflow-analyzer-cross-sdk-evict
+SHA-256：02da53505b1f1230a9a04c60af8a618d85b734ed89a7c19176f5d59a7d4a3604
+```
+
+该产物继续只要求`GLIBC_2.17`，动态依赖为`libpcap.so.0.8`和`libc.so.6`。LubanCat物理网卡300流验收得到300个`complete`、44个`evicted_flows`、256条最终流和两个drop字段为0。
 
 ### 8.2 通用GCC产物
 

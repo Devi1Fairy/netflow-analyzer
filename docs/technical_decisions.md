@@ -718,6 +718,8 @@ FNV-1a不是加密算法，也不抵抗恶意碰撞。如果程序以后直接�
 - `evict-oldest`得到`complete=300`、`flow_rejected=0`、`Evicted flows: 44`和最终`Flow summary: 256 flow(s)`；
 - 捕获drop和接口drop均为0；
 - 探测统计为`operations=344`、`inspected_slots=25055`、`average=72.83`和`maximum=256`，其中344次操作等于300次首次处理加44次淘汰后重试；
+- 官方SDK ARM64 Release产物在LubanCat-2N物理网卡使用300个不同UDP五元组复测，得到`complete=300`、`flow_rejected=0`、`Evicted flows: 44`、最终256条流、后端接收300包和两个drop字段为0；
+- 板端探测统计为`operations=344`、`inspected_slots=25505`、`average=74.14`和`maximum=256`。检查槽位数与虚拟机不同，来自源地址、端口和哈希分布差异；操作数、淘汰数和容量结果保持一致；
 - 本地17项CTest全部通过，`git diff --check`通过。
 
 代价与后续优化条件：

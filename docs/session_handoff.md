@@ -23,8 +23,8 @@ cmake -E chdir build ctest --output-on-failure
 
 - 当前分支：`main`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 本轮功能开发前的已提交基线：`dd5221e feat(flow): report hash probe statistics`，并与`origin/main`一致；实际接手时仍须以`git log`为准；
-- 当前工作区包含实时满表`reject|evict-oldest`策略、最旧流值副本、淘汰运行指标、自动化测试和文档，尚未提交；接手时必须保留并检查这些改动；
+- 当前已提交基线：`183617c docs(flow): record eviction policy validation`，前一提交`be08b7e`实现实时满表策略，并与`origin/main`一致；实际接手时仍须以`git log`为准；
+- 当前工作区只包含本轮LubanCat淘汰策略复测的文档补充，尚未提交；接手时必须保留并检查这些改动；
 - 当前正式版本宏为`0.2.0`；
 - 已有标签：`v0.0.1`、`v0.1.0`、`v0.2.0`；
 - Debug构建目录：`/home/zcb/workspace/netflow-analyzer/build`；
@@ -1127,6 +1127,7 @@ LubanCat官方SDK交叉产物实测：
 - 单元测试覆盖最旧选择、刷新后保留、`DELETED`复用、值副本、探测统计隔离、空表、无效参数、内部计数不一致和最后一条流；
 - CLI测试覆盖默认值、重新解析复位、合法值、缺失、空、未知、重复、离线组合、无来源以及绕过解析的非法上下文；
 - Ubuntu `lo`用300个不同UDP五元组完成真实验收：`complete=300`、`flow_rejected=0`、`Evicted flows: 44`、最终256条流且两个drop字段为0；本地17项CTest全部通过。
+- 最新官方SDK ARM64 Release产物已部署到LubanCat-2N，物理网卡300流复测得到`operations=344`、`inspected_slots=25505`、`average=74.14`、`maximum=256`、44次淘汰、256条最终流、后端接收300包和两个drop字段为0。
 
 当前实现为保证职责边界，组合首次满表探测、最旧流扫描和淘汰后的通用插入重试。实测`operations=344`、`inspected_slots=25055`、`average=72.83`、`maximum=256`；探测统计不包含最旧流扫描，因此满载持续换入时的实际槽位访问成本更高。后续可在流表模块内把满表探测、最旧候选选择和原位替换合并为一次扫描，但不能把内部槽位指针交给应用层直接修改。
 
@@ -1199,6 +1200,7 @@ LubanCat官方SDK交叉产物实测：
 - 单流Release性能基线已完成：最高约9 Kpps、20万包、每包CPU约6.95微秒、最大RSS约1.64 MiB且零drop，详见`docs/performance_baseline.md`；
 - 多流与长稳基线已完成：300流得到256个完整流和44个满载拒绝；128流、约9 Kpps、540万包持续10分钟时每包CPU约6.24微秒、RSS采样恒定且零drop，整机平均空闲90.97%，详见`docs/multiflow_longrun_baseline.md`。
 - 流表探测统计版官方SDK交叉产物已完成板端复测：128流、20万包时平均和最大探测长度均为1；300流满载时11928次槽位检查中有11264次来自44个拒绝包的完整扫描，两个场景均零drop。
+- 最旧流淘汰版官方SDK交叉产物只要求`GLIBC_2.17`，SHA-256为`02da53505b1f1230a9a04c60af8a618d85b734ed89a7c19176f5d59a7d4a3604`；板端300流得到300个完整包、44次淘汰、256条最终流和零drop。
 
 不要宣称完整开发板验证已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、当前17项板端CTest、确定性PCAP跨平台输出对比、两种交叉编译、跨设备ICMP实时抓包、单流/多流性能、满载边界、流表探测成本、整机软中断和10分钟长稳；尚未完成双向直连网络验证、非root权限方案和生产级数小时/数天浸泡测试。当前仓库提供环境检查脚本：
 
@@ -1236,7 +1238,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计和实时`reject|evict-oldest`满表策略已经完成。本机17项CTest与300个不同UDP五元组的最旧流淘汰验收通过；LubanCat ARM64仍需对本轮新产物补做交叉部署复测。下一步先提交当前完整功能，再选择合并满载扫描优化、TCP状态跟踪或非root服务化部署。
+周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计和实时`reject|evict-oldest`满表策略已经完成。本机17项CTest、Ubuntu `lo`和LubanCat ARM64官方SDK产物的300流最旧流淘汰验收均通过。下一步先提交板端复测文档，再选择合并满载扫描优化、TCP状态跟踪或非root服务化部署。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1277,4 +1279,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-应用处理结果分类、默认满载拒绝、显式最旧流淘汰和线性探测可观测性已经完成。两种既有ARM64交叉构建通过板端实际运行，Python验收脚本兼容板端Python 3.8.10；本轮新代码在x86_64通过17项CTest和300个不同UDP五元组实时验收，但尚未把新产物部署到LubanCat复测。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳；新淘汰测试进一步量化了通用接口组合的重复扫描成本。当前不接入`labs/thread_pipeline`，下一步可先提交本轮功能，再单独以相同负载优化满表扫描，或转向TCP状态跟踪与非root服务化部署。
+应用处理结果分类、默认满载拒绝、显式最旧流淘汰和线性探测可观测性已经完成。两种既有ARM64交叉构建和最新最旧流淘汰版官方SDK产物均通过板端实际运行，Python验收脚本兼容板端Python 3.8.10；x86_64的17项CTest、Ubuntu `lo`及LubanCat物理网卡300流验收全部通过。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳；新淘汰测试进一步量化了通用接口组合的重复扫描成本。当前不接入`labs/thread_pipeline`，下一步可单独以相同负载优化满表扫描，或转向TCP状态跟踪与非root服务化部署。
