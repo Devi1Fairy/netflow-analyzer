@@ -152,7 +152,8 @@ static int app_print_runtime_metrics(
             "wire_mbps=%.6f "
             "active_flows=%zu/%zu "
             "flow_table_usage=%.2f%% "
-            "expired_flows=%" PRIu64 "\n\n",
+            "expired_flows=%" PRIu64 " "
+            "evicted_flows=%" PRIu64 "\n\n",
             report->elapsed_seconds,
             report->interval_packet_count,
             report->interval_complete_packet_count,
@@ -168,7 +169,8 @@ static int app_print_runtime_metrics(
             report->active_flow_count,
             report->flow_table_capacity,
             report->flow_table_usage_percent,
-            report->interval_expired_flow_count) < 0) {
+            report->interval_expired_flow_count,
+            report->interval_evicted_flow_count) < 0) {
         return EIO;
     }
 
@@ -301,7 +303,9 @@ static int app_print_help(const char *program_name)
     if (printf(
             "Usage: %s [OPTION]\n"
             "       %s --read <PCAP_FILE> [--csv <CSV_FILE>]\n"
-            "       %s --interface <INTERFACE> --count <PACKETS> [--filter <BPF_EXPRESSION>]\n"
+            "       %s --interface <INTERFACE> --count <PACKETS> "
+            "[--filter <BPF_EXPRESSION>] "
+            "[--flow-full-policy <reject|evict-oldest>]\n"
             "\n"
             "Linux network traffic analyzer.\n"
             "\n"
@@ -312,6 +316,7 @@ static int app_print_help(const char *program_name)
             "  -i, --interface NAME  Analyze a live capture interface.\n"
             "  -c, --count PACKETS   Stop after capturing PACKETS packets.\n"
             "      --filter EXPRESSION  Apply a BPF filter to live capture.\n"
+            "      --flow-full-policy POLICY Handle a full live flow table: reject or evict-oldest.\n"
             "      --csv FILE   Export flow records to a new CSV file.\n",
             display_name,
             display_name,
@@ -777,24 +782,30 @@ static int app_export_flow_table_csv(
  * @param packet_number 当前数据包在整个PCAP中的序号。
  * @param packet 指向libpcap返回的只读数据包视图。
  * @param print_preview true表示输出逐包信息。
- * @param flow_table 指向当前离线分析使用的流表。
- * @param packet_result 接收当前数据包的最终处理分类。函数返回0时一定写入packet_result。函数返回非0时，packet_result内容未定义，调用者不能使用。
+ * @param flow_full_policy 流表满载时使用的处理策略。
+ * @param flow_table 指向当前分析使用的流表。
+ * @param packet_result 接收当前数据包的最终处理分类。
+ * @param evicted_flow 接收被淘汰流的值副本，仅在flow_evicted为true时有效。
+ * @param flow_evicted 接收当前数据包是否触发了一次流淘汰。
  *
- * @return 成功处理时返回0；
- *         参数或程序内部状态错误时返回对应错误码；
- *         新流因流表容量耗尽而被拒绝时返回0，并通过packet_result报告FLOW_REJECTED；
- *         终端输出失败时返回EIO。
+ * @return 函数返回0时一定写入packet_result和flow_evicted。
+ *         flow_evicted为true时，evicted_flow包含独立于流表槽位的值副本。
+ *         函数返回非0时，三个输出参数的内容均未定义。
  */
 static int app_process_packet(
     size_t packet_number,
     const capture_packet_view_t *packet,
     bool print_preview,
+    app_flow_full_policy_t flow_full_policy,
     flow_table_t *flow_table,
-    runtime_metrics_packet_result_t *packet_result)
+    runtime_metrics_packet_result_t *packet_result,
+    flow_record_t *evicted_flow,
+    bool *flow_evicted)
 {
     packet_info_t packet_info;
     const flow_record_t *updated_flow;
     runtime_metrics_packet_result_t result = RUNTIME_METRICS_PACKET_RESULT_COMPLETE;
+    flow_record_t evicted_flow_result = {0};
     bool flow_created;
 
     char source_mac[ETHERNET_MAC_STRING_SIZE];
@@ -806,11 +817,22 @@ static int app_process_packet(
     int error_code;
 
     if (packet == NULL ||
+        (flow_full_policy != APP_FLOW_FULL_POLICY_REJECT &&
+         flow_full_policy != APP_FLOW_FULL_POLICY_EVICT_OLDEST) ||
         flow_table == NULL ||
         !flow_table->initialized ||
-        packet_result == NULL) {
+        packet_result == NULL ||
+        evicted_flow == NULL ||
+        flow_evicted == NULL) {
         return EINVAL;
     }
+
+    /*
+     * 每个数据包开始处理时默认没有发生流淘汰。
+     * evicted_flow只有在该标志最终变为true时才能读取。
+     */
+    *flow_evicted = false;
+
     /*
      * packet_info_init只复制时间戳、caplen和wirelen。
      *
@@ -1086,20 +1108,68 @@ static int app_process_packet(
             &flow_created
         );
 
-        if (error_code == ENOSPC) {
+        if (error_code == ENOSPC &&
+            flow_full_policy == APP_FLOW_FULL_POLICY_REJECT) {
             /*
-             * 流表已满时，当前包已经成功解析，只是无法加入新流。
-             *
-             * flow_table_process_packet保证ENOSPC不会留下部分更新，
-             * 因此可以记录拒绝并继续分析后续数据包。
+             * reject策略保持原有行为：
+             * 当前包解析成功，但新流不能进入已经满载的流表。
              */
             result =
                 RUNTIME_METRICS_PACKET_RESULT_FLOW_REJECTED;
+            error_code = 0;
+        } else if (
+            error_code == ENOSPC &&
+            flow_full_policy ==
+                APP_FLOW_FULL_POLICY_EVICT_OLDEST
+        ) {
+            /*
+             * 第一次插入已经确认：
+             *
+             * 1. 当前数据包能够生成合法流键；
+             * 2. 它不属于现有流；
+             * 3. 流表没有可用于插入的槽位。
+             *
+             * 先按值复制并删除last_seen最早的流，再重新处理当前包。
+             */
+            error_code = flow_table_evict_oldest(
+                flow_table,
+                &evicted_flow_result
+            );
+
+            if (error_code != 0) {
+                return error_code;
+            }
 
             /*
-             * 后续逐包输出仍应显示已经成功解析的协议字段。
+             * 淘汰后流表至少释放了一个位置。
+             *
+             * 这次调用属于真实的数据包哈希操作，因此会再次进入
+             * flow_table的探测统计。淘汰扫描本身不计入哈希探测。
              */
-            error_code = 0;
+            error_code = flow_table_process_packet(
+                flow_table,
+                &packet_info,
+                &updated_flow,
+                &flow_created
+            );
+
+            if (error_code != 0) {
+                /*
+                 * 按当前流表不变量，重试应当能够创建新流。
+                 * 如果仍然失败，说明内部状态不一致，不能把当前包
+                 * 降级成普通flow_rejected继续运行。
+                 */
+                return error_code;
+            }
+
+            /*
+             * 只有淘汰和重试全部成功后，才向调用者发布淘汰事件。
+             */
+            *evicted_flow = evicted_flow_result;
+            *flow_evicted = true;
+
+            result =
+                RUNTIME_METRICS_PACKET_RESULT_COMPLETE;
         } else if (error_code != 0) {
             return error_code;
         } else {
@@ -1323,6 +1393,11 @@ static int app_run_capture_analysis(app_context_t *context)
     flow_record_t expired_flow_records[APP_FLOW_TABLE_CAPACITY];
 
     /*
+     * 一个数据包最多触发一次容量淘汰，因此只需要一个值副本。
+     */
+    flow_record_t evicted_flow_record = {0};
+
+    /*
     * 调度器只保存时间和策略，不拥有动态资源。
     */
     flow_expiration_schedule_t expiration_schedule = {0};
@@ -1357,6 +1432,8 @@ static int app_run_capture_analysis(app_context_t *context)
     size_t expired_flow_count = 0U;
     size_t total_expired_flow_count = 0U;
 
+    size_t total_evicted_flow_count = 0U;
+
     bool live_capture;
     bool print_preview;
     /*
@@ -1366,6 +1443,8 @@ static int app_run_capture_analysis(app_context_t *context)
     bool capture_statistics_available = false;
 
     bool expiration_scan_due = false;
+
+    bool flow_evicted = false;
 
     int error_code;
     int statistics_error_code = 0;
@@ -1621,6 +1700,7 @@ static int app_run_capture_analysis(app_context_t *context)
             "Capture interface: %s\n"
             "Packet limit: %zu\n"
             "BPF filter: %s\n"
+            "Flow full policy: %s\n"
             "Link type: Ethernet\n"
             "Flow idle timeout: %" PRId64 " second(s)\n"
             "Flow expiration scan interval: %" PRId64 " second(s)\n"
@@ -1630,6 +1710,9 @@ static int app_run_capture_analysis(app_context_t *context)
             context->filter_expression != NULL
                 ? context->filter_expression
                 : "(none)",
+            context->flow_full_policy == APP_FLOW_FULL_POLICY_REJECT
+                ? "reject"
+                : "evict-oldest",
             APP_FLOW_IDLE_TIMEOUT_SECONDS,
             APP_FLOW_EXPIRATION_SCAN_INTERVAL_SECONDS,
             APP_RUNTIME_METRICS_INTERVAL_SECONDS
@@ -1986,8 +2069,11 @@ static int app_run_capture_analysis(app_context_t *context)
             total_packet_count,
             &packet,
             print_preview,
+            context->flow_full_policy,
             &flow_table,
-            &packet_result
+            &packet_result,
+            &evicted_flow_record,
+            &flow_evicted
         );
 
         if (error_code != 0) {
@@ -2003,6 +2089,52 @@ static int app_run_capture_analysis(app_context_t *context)
             flow_table_cleanup(&flow_table);
             capture_close(&capture);
             return error_code;
+        }
+
+        if (flow_evicted) {
+            error_code = app_print_flow_record(
+                "Evicted flow",
+                total_evicted_flow_count + 1U,
+                &evicted_flow_record
+            );
+
+            if (error_code != 0) {
+                (void)snprintf(
+                    context->error_message,
+                    sizeof(context->error_message),
+                    "failed to write evicted flow output "
+                    "for packet %zu: %s",
+                    total_packet_count,
+                    strerror(error_code)
+                );
+
+                context->active_capture = NULL;
+                flow_table_cleanup(&flow_table);
+                capture_close(&capture);
+                return error_code;
+            }
+
+            total_evicted_flow_count += 1U;
+
+            error_code =
+                runtime_metrics_totals_add_evicted_flows(
+                    &runtime_metrics_totals,
+                    UINT64_C(1)
+                );
+
+            if (error_code != 0) {
+                (void)snprintf(
+                    context->error_message,
+                    sizeof(context->error_message),
+                    "failed to accumulate evicted flow metrics: %s",
+                    strerror(error_code)
+                );
+
+                context->active_capture = NULL;
+                flow_table_cleanup(&flow_table);
+                capture_close(&capture);
+                return error_code;
+            }
         }
 
         error_code = runtime_metrics_totals_add_packet_result(
@@ -2152,16 +2284,18 @@ static int app_run_capture_analysis(app_context_t *context)
     }
 
     /*
-    * 离线模式没有启用周期过期，因此只在实时模式输出该指标。
+    * 离线模式没有启用周期过期或满表淘汰策略，因此只在实时模式输出该指标。
     */
     if (live_capture &&
         printf(
-            "Expired flows: %zu\n",
-            total_expired_flow_count) < 0) {
+            "Expired flows: %zu\n"
+            "Evicted flows: %zu\n",
+            total_expired_flow_count,
+            total_evicted_flow_count) < 0) {
         (void)snprintf(
             context->error_message,
             sizeof(context->error_message),
-            "failed to write expired flow count"
+            "failed to write flow lifecycle counts"
         );
 
         flow_table_cleanup(&flow_table);
@@ -2276,6 +2410,7 @@ int app_context_init(app_context_t *context)
         .capture_path = NULL,
         .interface_name = NULL,
         .filter_expression = NULL,
+        .flow_full_policy = APP_FLOW_FULL_POLICY_REJECT,
         .packet_limit = 0U,
         .csv_output_path = NULL,
         .active_capture = NULL,
@@ -2295,6 +2430,8 @@ int app_parse_arguments(app_context_t *context,
     const char *parsed_interface_name;
     const char *parsed_filter_expression;
     const char *parsed_csv_output_path;
+    app_flow_full_policy_t parsed_flow_full_policy;
+    bool parsed_flow_full_policy_provided;
     size_t parsed_packet_limit;
 
     int argument_index;
@@ -2317,6 +2454,7 @@ int app_parse_arguments(app_context_t *context,
     context->interface_name = NULL;
     context->filter_expression = NULL;
     context->packet_limit = 0U;
+    context->flow_full_policy = APP_FLOW_FULL_POLICY_REJECT;
     context->csv_output_path = NULL;
     context->error_message[0] = '\0';
 
@@ -2349,6 +2487,8 @@ int app_parse_arguments(app_context_t *context,
     parsed_capture_path = NULL;
     parsed_interface_name = NULL;
     parsed_filter_expression = NULL;
+    parsed_flow_full_policy = APP_FLOW_FULL_POLICY_REJECT;
+    parsed_flow_full_policy_provided = false;
     parsed_csv_output_path = NULL;
     parsed_packet_limit = 0U;
 
@@ -2427,6 +2567,29 @@ int app_parse_arguments(app_context_t *context,
              * 检查内容是否为空。
              */
             parsed_filter_expression = option_value;
+        } else if (strcmp(option, "--flow-full-policy") == 0) {
+            /*
+             * 即使两次提供相同值也拒绝，避免命令来源不明确。
+             */
+            if (parsed_flow_full_policy_provided) {
+                return EINVAL;
+            }
+
+            if (strcmp(option_value, "reject") == 0) {
+                parsed_flow_full_policy =
+                    APP_FLOW_FULL_POLICY_REJECT;
+            } else if (
+                strcmp(
+                    option_value,
+                    "evict-oldest"
+                ) == 0) {
+                parsed_flow_full_policy =
+                    APP_FLOW_FULL_POLICY_EVICT_OLDEST;
+            } else {
+                return EINVAL;
+            }
+
+            parsed_flow_full_policy_provided = true;
         } else if (strcmp(option, "--csv") == 0){
             if (parsed_csv_output_path != NULL) {
                 return EINVAL;
@@ -2499,6 +2662,17 @@ int app_parse_arguments(app_context_t *context,
     }
 
     /*
+     * 满表策略第一版只属于实时监控。
+     *
+     * 离线分析仍保持完整文件聚合和现有容量拒绝语义，
+     * 不应为了容纳后续新流而静默删除前面的流记录。
+     */
+    if (parsed_capture_path != NULL &&
+        parsed_flow_full_policy_provided) {
+        return EINVAL;
+    }
+
+    /*
      * 全部参数验证完成后才发布解析结果，避免留下半解析状态。
      */
     context->capture_path = parsed_capture_path;
@@ -2506,6 +2680,7 @@ int app_parse_arguments(app_context_t *context,
     context->filter_expression = parsed_filter_expression;
     context->csv_output_path = parsed_csv_output_path;
     context->packet_limit = parsed_packet_limit;
+    context->flow_full_policy = parsed_flow_full_policy;
 
     if (parsed_capture_path != NULL) {
         context->command = APP_COMMAND_READ_CAPTURE;
@@ -2603,6 +2778,18 @@ int app_run(app_context_t *context)
             return EINVAL;
         }
 
+        if (context->flow_full_policy !=
+            APP_FLOW_FULL_POLICY_REJECT) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "flow full policy is only supported "
+                "for live capture"
+            );
+
+            return EINVAL;
+        }
+
         return app_run_capture_analysis(context);
 
         case APP_COMMAND_CAPTURE_INTERFACE:
@@ -2636,6 +2823,17 @@ int app_run(app_context_t *context)
                 context->error_message,
                 sizeof(context->error_message),
                 "BPF filter expression is empty"
+            );
+
+            return EINVAL;
+        }
+
+            if (context->flow_full_policy != APP_FLOW_FULL_POLICY_REJECT &&
+                context->flow_full_policy != APP_FLOW_FULL_POLICY_EVICT_OLDEST) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "invalid flow full policy"
             );
 
             return EINVAL;

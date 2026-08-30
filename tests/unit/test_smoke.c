@@ -43,6 +43,7 @@ static int test_context_lifecycle(void)
     TEST_CHECK(context.active_capture == NULL);
     TEST_CHECK(context.packet_limit == 0U);
     TEST_CHECK(context.error_message[0] == '\0');
+    TEST_CHECK(context.flow_full_policy == APP_FLOW_FULL_POLICY_REJECT);
 
     TEST_CHECK(app_request_stop(&context) == 0);
 
@@ -65,6 +66,7 @@ static int test_context_lifecycle(void)
     TEST_CHECK(context.filter_expression == NULL);
     TEST_CHECK(context.active_capture == NULL);
     TEST_CHECK(context.packet_limit == 0U);
+    TEST_CHECK(context.flow_full_policy == APP_FLOW_FULL_POLICY_REJECT);
 
     return EXIT_SUCCESS;
 }
@@ -751,6 +753,339 @@ static int test_filter_run_validation(void)
 }
 
 /**
+ * @brief 验证实时满表策略解析和重新解析时恢复默认值。
+ */
+static int test_live_flow_full_policy_command(void)
+{
+    app_context_t context;
+
+    char *live_arguments[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        "--count",
+        "4",
+        "--flow-full-policy",
+        "evict-oldest",
+        NULL
+    };
+
+    char *offline_arguments[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        NULL
+    };
+
+    char *default_arguments[] = {
+        "netflow-analyzer",
+        NULL
+    };
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            7,
+            live_arguments
+        ) == 0
+    );
+
+    TEST_CHECK(
+        context.command ==
+            APP_COMMAND_CAPTURE_INTERFACE
+    );
+
+    TEST_CHECK(
+        context.flow_full_policy ==
+            APP_FLOW_FULL_POLICY_EVICT_OLDEST
+    );
+
+    /*
+     * 无参数命令会提前返回帮助模式。
+     * 即使如此，也必须在返回前清除旧策略。
+     */
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            1,
+            default_arguments
+        ) == 0
+    );
+
+    TEST_CHECK(
+        context.command ==
+            APP_COMMAND_HELP
+    );
+
+    TEST_CHECK(
+        context.flow_full_policy ==
+            APP_FLOW_FULL_POLICY_REJECT
+    );
+
+    /*
+     * 再次设置EVICT_OLDEST，用于验证后面的离线重新解析。
+     */
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            7,
+            live_arguments
+        ) == 0
+    );
+
+    TEST_CHECK(
+        context.flow_full_policy ==
+            APP_FLOW_FULL_POLICY_EVICT_OLDEST
+    );
+
+    /*
+     * 第二次命令没有策略参数，必须恢复默认REJECT。
+     */
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            3,
+            offline_arguments
+        ) == 0
+    );
+
+    TEST_CHECK(
+        context.command ==
+            APP_COMMAND_READ_CAPTURE
+    );
+
+    TEST_CHECK(
+        context.flow_full_policy ==
+            APP_FLOW_FULL_POLICY_REJECT
+    );
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证满表策略的缺失、未知、重复和错误组合。
+ */
+static int test_invalid_flow_full_policy_arguments(void)
+{
+    app_context_t context;
+
+    char *missing_value[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        "--count",
+        "4",
+        "--flow-full-policy",
+        NULL
+    };
+
+    char *empty_value[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        "--count",
+        "4",
+        "--flow-full-policy",
+        "",
+        NULL
+    };
+
+    char *unknown_value[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        "--count",
+        "4",
+        "--flow-full-policy",
+        "random",
+        NULL
+    };
+
+    char *duplicate_policy[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        "--count",
+        "4",
+        "--flow-full-policy",
+        "reject",
+        "--flow-full-policy",
+        "evict-oldest",
+        NULL
+    };
+
+    char *offline_policy[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        "--flow-full-policy",
+        "evict-oldest",
+        NULL
+    };
+
+    char *policy_without_source[] = {
+        "netflow-analyzer",
+        "--flow-full-policy",
+        "evict-oldest",
+        NULL
+    };
+
+    char *valid_eviction_policy[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        "--count",
+        "4",
+        "--flow-full-policy",
+        "evict-oldest",
+        NULL
+    };
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    /*
+     * 先保存非默认策略，再触发解析失败，
+     * 才能真正验证失败路径是否清除旧状态。
+     */
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            7,
+            valid_eviction_policy
+        ) == 0
+    );
+
+    TEST_CHECK(
+        context.flow_full_policy ==
+            APP_FLOW_FULL_POLICY_EVICT_OLDEST
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            6,
+            missing_value
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        context.flow_full_policy ==
+            APP_FLOW_FULL_POLICY_REJECT
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            7,
+            empty_value
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            7,
+            unknown_value
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            9,
+            duplicate_policy
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            5,
+            offline_policy
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            3,
+            policy_without_source
+        ) == EINVAL
+    );
+
+    /*
+     * 失败解析不能向context发布局部策略。
+     */
+    TEST_CHECK(
+        context.flow_full_policy ==
+            APP_FLOW_FULL_POLICY_REJECT
+    );
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证app_run拒绝手工构造的非法满表策略状态。
+ */
+static int test_flow_full_policy_run_validation(void)
+{
+    app_context_t context;
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    /*
+     * 离线模式不能启用驱逐策略。
+     */
+    context.command = APP_COMMAND_READ_CAPTURE;
+    context.capture_path = "sample.pcap";
+    context.flow_full_policy =
+        APP_FLOW_FULL_POLICY_EVICT_OLDEST;
+
+    TEST_CHECK(app_run(&context) == EINVAL);
+
+    TEST_CHECK(
+        strstr(
+            context.error_message,
+            "only supported for live capture"
+        ) != NULL
+    );
+
+    app_cleanup(&context);
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    /*
+     * 非法枚举值必须在尝试打开网卡之前被拒绝。
+     */
+    context.command =
+        APP_COMMAND_CAPTURE_INTERFACE;
+
+    context.interface_name = "lo";
+    context.packet_limit = 1U;
+    context.flow_full_policy =
+        (app_flow_full_policy_t)99;
+
+    TEST_CHECK(app_run(&context) == EINVAL);
+
+    TEST_CHECK(
+        strstr(
+            context.error_message,
+            "invalid flow full policy"
+        ) != NULL
+    );
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 阶段0冒烟测试入口。
  */
 int main(void)
@@ -839,6 +1174,27 @@ int main(void)
     }
 
     printf("[PASS] invalid live arguments\n");
+
+    if (test_live_flow_full_policy_command() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] live flow full policy command\n");
+
+    if (test_invalid_flow_full_policy_arguments() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] invalid flow full policy arguments\n");
+
+    if (test_flow_full_policy_run_validation() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] flow full policy run validation\n");
 
     return EXIT_SUCCESS;
 }

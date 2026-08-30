@@ -102,6 +102,26 @@ static bool flow_timestamp_at_or_before(
 }
 
 /**
+ * @brief 判断left是否严格早于right。
+ *
+ * 调用前必须保证两个时间戳的微秒字段均有效。
+ */
+static bool flow_timestamp_before(
+    const flow_timestamp_t *left,
+    const flow_timestamp_t *right)
+{
+    if (left->seconds < right->seconds) {
+        return true;
+    }
+
+    if (left->seconds > right->seconds) {
+        return false;
+    }
+
+    return left->microseconds < right->microseconds;
+}
+
+/**
  * @brief 根据流键寻找已有记录或可用于插入的槽位。
  *
  * 该函数同时服务于查找和插入：
@@ -414,6 +434,109 @@ int flow_table_process_packet(
      */
     *record = result_record;
     *created = result_created;
+
+    return 0;
+}
+
+int flow_table_evict_oldest(
+    flow_table_t *table,
+    flow_record_t *evicted_record)
+{
+    flow_table_slot_t *oldest_slot;
+    flow_record_t result_record;
+
+    size_t slot_index;
+    size_t oldest_slot_index = 0U;
+    size_t observed_count = 0U;
+
+    bool oldest_found = false;
+
+    if (!flow_table_has_valid_shape(table) ||
+        evicted_record == NULL) {
+        return EINVAL;
+    }
+
+    /*
+     * 第一遍只验证槽位并选择候选记录。
+     *
+     * 在完成全部验证前不能修改流表或输出对象，
+     * 保证失败不修改语义。
+     */
+    for (slot_index = 0U;
+         slot_index < table->capacity;
+         slot_index += 1U) {
+        const flow_table_slot_t *slot =
+            &table->slots[slot_index];
+
+        switch (slot->state) {
+        case FLOW_TABLE_SLOT_EMPTY:
+        case FLOW_TABLE_SLOT_DELETED:
+            break;
+
+        case FLOW_TABLE_SLOT_OCCUPIED:
+            if (!slot->record.initialized ||
+                slot->record.last_seen.microseconds <
+                    INT32_C(0) ||
+                slot->record.last_seen.microseconds >
+                    INT32_C(999999)) {
+                return EINVAL;
+            }
+
+            observed_count += 1U;
+
+            if (!oldest_found ||
+                flow_timestamp_before(
+                    &slot->record.last_seen,
+                    &result_record.last_seen)) {
+                result_record = slot->record;
+                oldest_slot_index = slot_index;
+                oldest_found = true;
+            }
+
+            break;
+
+        default:
+            return EINVAL;
+        }
+    }
+
+    /*
+     * table->count必须与实际OCCUPIED槽位数量一致。
+     */
+    if (observed_count != table->count) {
+        return EINVAL;
+    }
+
+    if (!oldest_found) {
+        return ENOENT;
+    }
+
+    oldest_slot = &table->slots[oldest_slot_index];
+
+    /*
+     * result_record已经保存独立值副本，
+     * 现在可以安全清除原槽位。
+     */
+    oldest_slot->record = (flow_record_t){0};
+    oldest_slot->state = FLOW_TABLE_SLOT_DELETED;
+    table->count -= 1U;
+
+    /*
+     * 表完全为空后不再需要保留任何DELETED探测链。
+     */
+    if (table->count == 0U) {
+        for (slot_index = 0U;
+             slot_index < table->capacity;
+             slot_index += 1U) {
+            table->slots[slot_index] =
+                (flow_table_slot_t){0};
+        }
+    }
+
+    /*
+     * 所有内部修改成功后，最后发布输出副本。
+     */
+    *evicted_record = result_record;
 
     return 0;
 }

@@ -72,7 +72,8 @@ static bool runtime_metrics_totals_are_monotonic(
         current->flow_rejected_packet_count >= previous->flow_rejected_packet_count &&
         current->captured_byte_count >= previous->captured_byte_count &&
         current->wire_byte_count >= previous->wire_byte_count &&
-        current->expired_flow_count >= previous->expired_flow_count;
+        current->expired_flow_count >= previous->expired_flow_count &&
+        current->evicted_flow_count >= previous->evicted_flow_count;
 }
 
 /**
@@ -221,6 +222,28 @@ int runtime_metrics_totals_add_expired_flows(
     }
 
     totals->expired_flow_count += expired_flow_count;
+
+    return 0;
+}
+
+int runtime_metrics_totals_add_evicted_flows(
+    runtime_metrics_totals_t *totals,
+    uint64_t evicted_flow_count)
+{
+    if (totals == NULL) {
+        return EINVAL;
+    }
+
+    /*
+     * 在执行无符号加法前检查剩余空间，
+     * 防止累计值越过UINT64_MAX后回绕到较小数值。
+     */
+    if (totals->evicted_flow_count >
+        UINT64_MAX - evicted_flow_count) {
+        return EOVERFLOW;
+    }
+
+    totals->evicted_flow_count += evicted_flow_count;
 
     return 0;
 }
@@ -379,6 +402,10 @@ int runtime_metrics_schedule_observe(
     result_report.interval_expired_flow_count =
         current_totals->expired_flow_count -
         schedule->last_report_totals.expired_flow_count;
+
+    result_report.interval_evicted_flow_count =
+        current_totals->evicted_flow_count -
+        schedule->last_report_totals.evicted_flow_count;
 
     result_report.packets_per_second =
         (double)result_report.interval_packet_count / elapsed_seconds;

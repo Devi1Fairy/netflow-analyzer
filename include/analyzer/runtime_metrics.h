@@ -103,6 +103,14 @@ typedef struct {
      * 实时运行期间累计过期并移除的流数量。
      */
     uint64_t expired_flow_count;
+
+    /**
+     * 实时运行期间因为流表满载策略而主动淘汰的流数量。
+     *
+     * 该值表示流生命周期事件，不表示数据包处理失败。
+     * 使用evict-oldest策略后，触发淘汰的当前数据包仍可能完整进入流表。
+     */
+    uint64_t evicted_flow_count;
 } runtime_metrics_totals_t;
 
 /**
@@ -123,6 +131,7 @@ typedef struct {
     uint64_t interval_captured_byte_count;
     uint64_t interval_wire_byte_count;
     uint64_t interval_expired_flow_count;
+    uint64_t interval_evicted_flow_count;
 
     double packets_per_second;
     double captured_megabits_per_second;
@@ -187,6 +196,20 @@ int runtime_metrics_totals_add_packet_result(
 int runtime_metrics_totals_add_expired_flows(
     runtime_metrics_totals_t *totals,
     uint64_t expired_flow_count);
+
+/**
+ * @brief 把本次容量处理主动淘汰的流数量加入累计指标。
+ *
+ * 本函数只更新流淘汰事件计数，不修改数据包处理结果。
+ * totals由调用者拥有，本函数只在调用期间借用该指针。
+ *
+ * @return 成功时返回0；
+ *         totals为空时返回EINVAL；
+ *         累加可能溢出时返回EOVERFLOW。
+ */
+int runtime_metrics_totals_add_evicted_flows(
+    runtime_metrics_totals_t *totals,
+    uint64_t evicted_flow_count);
 
 /**
  * @brief 初始化周期指标调度器。

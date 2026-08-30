@@ -177,6 +177,34 @@ int flow_table_process_packet(
     bool *created);
 
 /**
+ * @brief 移除最后活动时间最早的一条流，并返回其值副本。
+ *
+ * “最旧”由最小的record->last_seen决定。
+ * 多条流拥有相同last_seen时，调用者不能依赖具体选择哪一条。
+ *
+ * 删除前把记录按值复制到evicted_record。
+ * flow_record_t不拥有动态内存，因此原槽位删除或复用后，
+ * 该副本仍然有效。
+ *
+ * 删除后的槽位标记为DELETED，保证已有哈希探测链不中断。
+ * 如果删除后流表完全为空，则把全部槽位恢复为EMPTY。
+ *
+ * 本操作不属于数据包哈希探测，不修改probe_statistics。
+ *
+ * 函数失败时不修改流表和evicted_record。
+ *
+ * @param table 指向已经初始化且至少包含一条流的流表。
+ * @param evicted_record 指向独立于流表槽位的输出对象。
+ *
+ * @return 成功时返回0；
+ *         参数或流表内部状态无效时返回EINVAL；
+ *         流表为空时返回ENOENT。
+ */
+int flow_table_evict_oldest(
+    flow_table_t *table,
+    flow_record_t *evicted_record);
+
+/**
  * @brief 删除最后活动时间不晚于cutoff的流记录，并返回其值副本。
  *
  * 满足以下条件的记录会被删除：

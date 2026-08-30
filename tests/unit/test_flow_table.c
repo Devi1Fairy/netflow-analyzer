@@ -1530,6 +1530,447 @@ static int test_probe_statistics_saturation_and_validation(void)
 }
 
 /**
+ * @brief 验证按last_seen驱逐最旧流并复用释放容量。
+ */
+static int test_evict_oldest_and_reuse_capacity(void)
+{
+    flow_table_slot_t storage[3];
+    flow_table_t table;
+
+    packet_info_t first_packet;
+    packet_info_t second_packet;
+    packet_info_t third_packet;
+    packet_info_t first_refresh_packet;
+    packet_info_t replacement_packet;
+
+    flow_key_t first_key;
+    flow_key_t second_key;
+    flow_key_t third_key;
+    flow_direction_t direction;
+
+    flow_record_t evicted_record;
+
+    flow_table_probe_statistics_t statistics_before;
+    flow_table_probe_statistics_t statistics_after;
+
+    const flow_record_t *record;
+    const flow_record_t *found_record;
+
+    bool created;
+
+    TEST_CHECK(
+        flow_table_init(
+            &table,
+            storage,
+            sizeof(storage) / sizeof(storage[0])
+        ) == 0
+    );
+
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &first_packet,
+            INT64_C(100),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(2000)
+        ) == 0
+    );
+
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &second_packet,
+            INT64_C(200),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(3000)
+        ) == 0
+    );
+
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &third_packet,
+            INT64_C(300),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(4000)
+        ) == 0
+    );
+
+    /*
+     * 第一条流虽然最早创建，但在400秒再次活动。
+     * 驱逐选择必须依据last_seen，而不是first_seen。
+     */
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &first_refresh_packet,
+            INT64_C(400),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(2000)
+        ) == 0
+    );
+
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &replacement_packet,
+            INT64_C(500),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(5000)
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_key_from_packet(
+            &first_packet,
+            &first_key,
+            &direction
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_key_from_packet(
+            &second_packet,
+            &second_key,
+            &direction
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_key_from_packet(
+            &third_packet,
+            &third_key,
+            &direction
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &first_packet,
+            &record,
+            &created
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &second_packet,
+            &record,
+            &created
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &third_packet,
+            &record,
+            &created
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &first_refresh_packet,
+            &record,
+            &created
+        ) == 0
+    );
+
+    TEST_CHECK(!created);
+    TEST_CHECK(flow_table_count(&table) == 3U);
+
+    TEST_CHECK(
+        flow_table_get_probe_statistics(
+            &table,
+            &statistics_before
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_table_evict_oldest(
+            &table,
+            &evicted_record
+        ) == 0
+    );
+
+    TEST_CHECK(evicted_record.initialized);
+    TEST_CHECK(
+        flow_key_equal(
+            &evicted_record.key,
+            &second_key
+        )
+    );
+
+    TEST_CHECK(
+        evicted_record.last_seen.seconds ==
+            INT64_C(200)
+    );
+
+    TEST_CHECK(flow_table_count(&table) == 2U);
+
+    /*
+     * 第二条流最旧，应被移除。
+     */
+    TEST_CHECK(
+        flow_table_find(
+            &table,
+            &second_key,
+            &found_record
+        ) == ENOENT
+    );
+
+    /*
+     * 第一条流已经刷新到400秒，不能被错误驱逐。
+     */
+    TEST_CHECK(
+        flow_table_find(
+            &table,
+            &first_key,
+            &found_record
+        ) == 0
+    );
+
+    TEST_CHECK(
+        found_record->last_seen.seconds ==
+            INT64_C(400)
+    );
+
+    TEST_CHECK(
+        flow_table_find(
+            &table,
+            &third_key,
+            &found_record
+        ) == 0
+    );
+
+    /*
+     * 管理性驱逐不属于数据包哈希探测，
+     * 因此不能改变探测统计。
+     */
+    TEST_CHECK(
+        flow_table_get_probe_statistics(
+            &table,
+            &statistics_after
+        ) == 0
+    );
+
+    TEST_CHECK(
+        statistics_after.packet_operation_count ==
+            statistics_before.packet_operation_count
+    );
+
+    TEST_CHECK(
+        statistics_after.total_inspected_slot_count ==
+            statistics_before.total_inspected_slot_count
+    );
+
+    TEST_CHECK(
+        statistics_after.maximum_probe_length ==
+            statistics_before.maximum_probe_length
+    );
+
+    TEST_CHECK(
+        statistics_after.counters_saturated ==
+            statistics_before.counters_saturated
+    );
+
+    /*
+     * 新流必须通过正常哈希探测复用DELETED容量。
+     */
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &replacement_packet,
+            &record,
+            &created
+        ) == 0
+    );
+
+    TEST_CHECK(created);
+    TEST_CHECK(flow_table_count(&table) == 3U);
+
+    /*
+     * 输出是值副本，原槽位复用后仍保持完整。
+     */
+    TEST_CHECK(
+        flow_key_equal(
+            &evicted_record.key,
+            &second_key
+        )
+    );
+
+    TEST_CHECK(
+        evicted_record.last_seen.seconds ==
+            INT64_C(200)
+    );
+
+    flow_table_cleanup(&table);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证空表、无效参数、内部不一致和最后一条流驱逐。
+ */
+static int test_evict_oldest_validation(void)
+{
+    flow_table_slot_t storage[1];
+    flow_table_t table;
+
+    packet_info_t packet;
+    const flow_record_t *record;
+
+    flow_record_t evicted_record;
+
+    const flow_record_t sentinel_record = {
+        .last_seen = {
+            .seconds = INT64_C(777),
+            .microseconds = INT32_C(123456)
+        },
+        .initialized = true
+    };
+
+    bool created;
+
+    TEST_CHECK(
+        flow_table_init(
+            &table,
+            storage,
+            sizeof(storage) / sizeof(storage[0])
+        ) == 0
+    );
+
+    /*
+     * 空表返回ENOENT，并保持输出哨兵不变。
+     */
+    evicted_record = sentinel_record;
+
+    TEST_CHECK(
+        flow_table_evict_oldest(
+            &table,
+            &evicted_record
+        ) == ENOENT
+    );
+
+    TEST_CHECK(evicted_record.initialized);
+    TEST_CHECK(
+        evicted_record.last_seen.seconds ==
+            INT64_C(777)
+    );
+
+    TEST_CHECK(
+        flow_table_evict_oldest(
+            NULL,
+            &evicted_record
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        flow_table_evict_oldest(
+            &table,
+            NULL
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &packet,
+            INT64_C(100),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(2000)
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &packet,
+            &record,
+            &created
+        ) == 0
+    );
+
+    /*
+     * 制造count与OCCUPIED槽数量不一致。
+     * 驱逐必须先发现错误，不能部分删除。
+     */
+    table.count = 0U;
+    evicted_record = sentinel_record;
+
+    TEST_CHECK(
+        flow_table_evict_oldest(
+            &table,
+            &evicted_record
+        ) == EINVAL
+    );
+
+    TEST_CHECK(evicted_record.initialized);
+    TEST_CHECK(
+        evicted_record.last_seen.seconds ==
+            INT64_C(777)
+    );
+
+    table.count = 1U;
+
+    /*
+     * 驱逐最后一条流后，全部槽位应恢复为EMPTY。
+     */
+    TEST_CHECK(
+        flow_table_evict_oldest(
+            &table,
+            &evicted_record
+        ) == 0
+    );
+
+    TEST_CHECK(flow_table_count(&table) == 0U);
+    TEST_CHECK(
+        storage[0].state ==
+            FLOW_TABLE_SLOT_EMPTY
+    );
+
+    flow_table_cleanup(&table);
+
+    evicted_record = sentinel_record;
+
+    TEST_CHECK(
+        flow_table_evict_oldest(
+            &table,
+            &evicted_record
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        evicted_record.last_seen.seconds ==
+            INT64_C(777)
+    );
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 固定容量流表单元测试入口。
  */
 int main(void)
@@ -1592,6 +2033,20 @@ int main(void)
     printf(
         "[PASS] probe statistics saturation and validation\n"
     );
+
+    if (test_evict_oldest_and_reuse_capacity() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] evict oldest flow and reuse capacity\n");
+
+    if (test_evict_oldest_validation() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] evict oldest flow validation\n");
 
     return EXIT_SUCCESS;
 }

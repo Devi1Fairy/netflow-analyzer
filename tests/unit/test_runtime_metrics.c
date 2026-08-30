@@ -37,6 +37,7 @@ static bool test_double_close(
 static int test_totals_accumulation_and_overflow(void)
 {
     runtime_metrics_totals_t totals = {0};
+    runtime_metrics_totals_t previous_totals;
 
     TEST_CHECK(
         runtime_metrics_totals_add_packet(
@@ -65,11 +66,23 @@ static int test_totals_accumulation_and_overflow(void)
         totals.expired_flow_count == UINT64_C(3)
     );
 
+    TEST_CHECK(
+        runtime_metrics_totals_add_evicted_flows(
+            &totals,
+            UINT64_C(2)
+        ) == 0
+    );
+
+    TEST_CHECK(
+        totals.evicted_flow_count == UINT64_C(2)
+    );
+
     totals = (runtime_metrics_totals_t){
         .packet_count = UINT64_MAX,
         .captured_byte_count = UINT64_C(100),
         .wire_byte_count = UINT64_C(200),
-        .expired_flow_count = UINT64_C(3)
+        .expired_flow_count = UINT64_C(3),
+        .evicted_flow_count = UINT64_C(2)
     };
 
     TEST_CHECK(
@@ -96,6 +109,35 @@ static int test_totals_accumulation_and_overflow(void)
             NULL,
             UINT32_C(1),
             UINT32_C(1)
+        ) == EINVAL
+    );
+
+    totals.evicted_flow_count = UINT64_MAX;
+    previous_totals = totals;
+
+    TEST_CHECK(
+        runtime_metrics_totals_add_evicted_flows(
+            &totals,
+            UINT64_C(1)
+        ) == EOVERFLOW
+    );
+
+    /*
+     * 溢出失败后，累计对象必须保持原值。
+     */
+    TEST_CHECK(
+        totals.evicted_flow_count ==
+            previous_totals.evicted_flow_count
+    );
+    TEST_CHECK(
+        totals.expired_flow_count ==
+            previous_totals.expired_flow_count
+    );
+
+    TEST_CHECK(
+        runtime_metrics_totals_add_evicted_flows(
+            NULL,
+            UINT64_C(1)
         ) == EINVAL
     );
 
@@ -245,7 +287,8 @@ static int test_report_boundary_and_rates(void)
         .flow_rejected_packet_count = UINT64_C(1),
         .captured_byte_count = UINT64_C(1000),
         .wire_byte_count = UINT64_C(1200),
-        .expired_flow_count = UINT64_C(2)
+        .expired_flow_count = UINT64_C(2),
+        .evicted_flow_count = UINT64_C(3)
     };
 
     /*
@@ -347,6 +390,10 @@ static int test_report_boundary_and_rates(void)
             UINT64_C(2)
     );
     TEST_CHECK(
+        report.interval_evicted_flow_count ==
+            UINT64_C(3)
+    );
+    TEST_CHECK(
         test_double_close(
             report.packets_per_second,
             2.0
@@ -386,7 +433,8 @@ static int test_report_boundary_and_rates(void)
         .flow_rejected_packet_count = UINT64_C(2),
         .captured_byte_count = UINT64_C(2500),
         .wire_byte_count = UINT64_C(3000),
-        .expired_flow_count = UINT64_C(5)
+        .expired_flow_count = UINT64_C(5),
+        .evicted_flow_count = UINT64_C(7)
     };
 
     timestamp = (runtime_metrics_timestamp_t){
@@ -448,6 +496,10 @@ static int test_report_boundary_and_rates(void)
             UINT64_C(3)
     );
     TEST_CHECK(
+        report.interval_evicted_flow_count ==
+            UINT64_C(4)
+    );
+    TEST_CHECK(
         test_double_close(
             report.flow_table_usage_percent,
             50.0
@@ -469,7 +521,8 @@ static int test_invalid_state_preserves_outputs(void)
         .flow_rejected_packet_count = UINT64_C(0),
         .captured_byte_count = UINT64_C(100),
         .wire_byte_count = UINT64_C(120),
-        .expired_flow_count = UINT64_C(1)
+        .expired_flow_count = UINT64_C(1),
+        .evicted_flow_count = UINT64_C(1)
     };
 
     runtime_metrics_timestamp_t timestamp = {
@@ -552,7 +605,29 @@ static int test_invalid_state_preserves_outputs(void)
         ) == ERANGE
     );
 
+    /*
+     * 恢复分类累计量，确保下一个测试只有淘汰计数发生倒退。
+     */
     totals.complete_packet_count = UINT64_C(8);
+
+    /*
+     * 流淘汰累计量同样只能保持不变或增加。
+     */
+    totals.evicted_flow_count = UINT64_C(0);
+
+    TEST_CHECK(
+        runtime_metrics_schedule_observe(
+            &schedule,
+            &timestamp,
+            &totals,
+            1U,
+            256U,
+            &report_due,
+            &report
+        ) == ERANGE
+    );
+
+    totals.evicted_flow_count = UINT64_C(1);
 
     /*
      * 活动流数量不能超过流表容量。

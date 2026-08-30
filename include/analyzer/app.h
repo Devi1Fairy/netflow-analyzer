@@ -36,6 +36,24 @@ typedef enum {
 } app_command_t;
 
 /**
+ * @brief 表示流表容量耗尽时采用的应用层策略。
+ *
+ * 该策略属于应用编排，不改变flow_table_process_packet本身的
+ * ENOSPC语义。
+ */
+typedef enum {
+    /**
+     * 保持现有行为：拒绝无法创建的新流数据包并继续运行。
+     */
+    APP_FLOW_FULL_POLICY_REJECT = 0,
+
+    /**
+     * 驱逐last_seen最早的流，然后重新尝试处理当前数据包。
+     */
+    APP_FLOW_FULL_POLICY_EVICT_OLDEST
+} app_flow_full_policy_t;
+
+/**
  * @brief 保存应用程序运行期间共享的顶层状态。
  *
  * 线程、抓包句柄、输出模块等资源以后都会逐步加入这个上下文。
@@ -80,6 +98,14 @@ typedef struct {
      * APP_COMMAND_CAPTURE_INTERFACE组合。
      */
     const char *filter_expression;
+
+    /**
+     * 实时流表容量耗尽时采用的策略。
+     *
+     * 默认值为APP_FLOW_FULL_POLICY_REJECT。
+     * 第一版只允许实时抓包命令显式设置该策略。
+     */
+    app_flow_full_policy_t flow_full_policy;
 
     /**
      * 实时抓包最多处理的数据包数量。
@@ -157,7 +183,7 @@ int app_context_init(app_context_t *context);
  * - --version或-V。
  * - --read FILE或-r FILE
  * - --read FILE --csv CSV_FILE
- * - --interface NAME --count PACKETS [--filter EXPRESSION]
+ * - --interface NAME --count PACKETS [--filter EXPRESSION] [--flow-full-policy reject|evict-oldest]
  *
  * @param context 指向已经初始化的应用上下文。
  * @param argc main函数收到的参数数量。
