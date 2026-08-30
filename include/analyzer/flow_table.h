@@ -7,6 +7,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /**
  * @brief 表示哈希表槽位当前所处的状态。
@@ -37,6 +38,54 @@ typedef struct {
     flow_table_slot_state_t state;
     flow_record_t record;
 } flow_table_slot_t;
+
+/**
+ * @brief 表示数据包处理路径中的累计哈希探测统计。
+ *
+ * 一次探测是flow_table_process_packet为了查找或插入一条流，
+ * 从哈希起始槽位开始执行的一次线性扫描。
+ *
+ * 起始槽位本身也算一次槽位检查，因此正常无冲突操作的
+ * probe length为1，而不是0。
+ *
+ * flow_table_find等管理和测试查询不计入这些统计，
+ * 避免输出、验收或诊断查询污染真实数据包路径的成本。
+ */
+typedef struct {
+    /**
+     * 已经进入哈希探测的数据包处理操作数量。
+     *
+     * 找到已有流、创建新流和最终返回ENOSPC的操作都应计入。
+     */
+    uint64_t packet_operation_count;
+
+    /**
+     * 所有数据包处理操作实际检查的槽位数量总和。
+     *
+     * 后续可以通过：
+     *
+     * total_inspected_slot_count / packet_operation_count
+     *
+     * 计算平均探测长度。
+     */
+    uint64_t total_inspected_slot_count;
+
+    /**
+     * 单次数据包处理观察到的最大探测长度。
+     *
+     * 该数值范围应为0到流表capacity。
+     * 尚未处理数据包时为0。
+     */
+    size_t maximum_probe_length;
+
+    /**
+     * true表示至少一个累计计数已经达到类型上限。
+     *
+     * 统计计数达到上限后应饱和，而不是回绕为0。
+     * 观测能力不能因为整数溢出破坏程序处理主链。
+     */
+    bool counters_saturated;
+} flow_table_probe_statistics_t;
 
 /**
  * @brief 表示使用开放寻址法实现的固定容量哈希流表。
@@ -70,6 +119,13 @@ typedef struct {
      * DELETED槽位不计入count。
      */
     size_t count;
+
+    /**
+     * 数据包处理路径从初始化以来的累计探测统计。
+     *
+     * 该字段由流表模块维护，调用方应通过公开查询接口读取快照。
+     */
+    flow_table_probe_statistics_t probe_statistics;
 
     /**
      * true表示流表已经成功初始化。
@@ -201,6 +257,27 @@ int flow_table_get(
  * @return 流表状态有效时返回count，否则返回0。
  */
 size_t flow_table_count(const flow_table_t *table);
+
+/**
+ * @brief 取得数据包处理路径的累计哈希探测统计快照。
+ *
+ * 统计只包含flow_table_process_packet触发的探测，
+ * 不包含flow_table_find和flow_table_get等查询操作。
+ *
+ * 后续实现中，即使数据包因为流表已满而返回ENOSPC，
+ * 已经发生的槽位检查也应进入统计。
+ *
+ * 函数成功后才修改statistics。
+ * 参数或流表状态无效时返回EINVAL，并保持输出对象原值不变。
+ *
+ * @param table 指向已经初始化的流表。
+ * @param statistics 指向用于接收统计快照的对象。
+ *
+ * @return 成功时返回0，参数或流表状态无效时返回EINVAL。
+ */
+int flow_table_get_probe_statistics(
+    const flow_table_t *table,
+    flow_table_probe_statistics_t *statistics);
 
 /**
  * @brief 使流表失效，并解除对外部槽位数组的借用。

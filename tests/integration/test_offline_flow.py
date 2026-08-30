@@ -387,6 +387,17 @@ def run_acceptance_test(
             "unsupported=0 "
             "flow_rejected=0",
         )
+
+        require_text(
+            output,
+            "Flow table probes: "
+            "operations=6 "
+            "inspected_slots=6 "
+            "average=1.00 "
+            "maximum=1 "
+            "saturated=false",
+        )
+
         require_text(output, "Flow summary: 1 flow(s)")
 
         require_text(
@@ -545,6 +556,16 @@ def run_processing_results_test(
             "malformed=1 "
             "unsupported=1 "
             "flow_rejected=1",
+        )
+
+        require_text(
+            output,
+            "Flow table probes: operations=257 ",
+        )
+
+        require_text(
+            output,
+            "maximum=256 saturated=false",
         )
 
         require_text(

@@ -23,15 +23,15 @@ cmake -E chdir build ctest --output-on-failure
 
 - 当前分支：`main`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 本轮文档更新前的已提交基线：`295bf5c docs(board): record single-flow performance baseline`，并与`origin/main`一致；实际接手时仍须以`git log`为准；
-- 当前工作区包含LubanCat多流、满载边界、整机CPU和10分钟长稳文档；提交前必须保留并检查这些改动；
+- 本轮功能开发前的已提交基线：`25d2c06 docs(board): record multiflow and soak baselines`，并与`origin/main`一致；实际接手时仍须以`git log`为准；
+- 当前工作区包含流表线性探测统计、退出报告、确定性测试及LubanCat复测文档，尚未提交；接手时必须保留并检查这些改动；
 - 当前正式版本宏为`0.2.0`；
 - 已有标签：`v0.0.1`、`v0.1.0`、`v0.2.0`；
 - Debug构建目录：`/home/zcb/workspace/netflow-analyzer/build`；
 - 本地主程序：`build/bin/netflow-analyzer`；
 - 官方SDK交叉构建目录：`/home/zcb/build/netflow-analyzer-lubancat-sdk-release-v2`；
 - 通用GCC交叉构建目录：`/home/zcb/build/netflow-analyzer-generic-sysroot-release`；
-- 当前x86_64与LubanCat ARM64原生Debug构建的17项CTest均全部通过；两种ARM64交叉产物也已在LubanCat-2N运行成功。
+- 当前x86_64的17项CTest全部通过；此前LubanCat ARM64原生Debug构建的17项CTest也全部通过，两种ARM64交叉产物均已运行成功，最新官方SDK交叉产物又完成流表探测成本复测。
 
 如果实际状态与上面不同，应先查看用户是否在新会话开始前继续修改了代码，不要覆盖未提交改动。
 
@@ -333,7 +333,7 @@ netflow-analyzer/
 | `ipv4_dispatch` | 按IPv4协议号分发到TCP、UDP或ICMP解析器 |
 | `flow_key` | 生成规范化双向五元组，判断相等，计算FNV-1a 64位哈希 |
 | `flow_record` | 保存一个双向流的两个方向统计、首末时间并更新记录 |
-| `flow_table` | 开放寻址哈希表、线性探测、删除标记、查找、遍历，以及返回值副本的过期删除 |
+| `flow_table` | 开放寻址哈希表、线性探测、删除标记、查找、遍历、返回值副本的过期删除，以及数据包路径探测成本统计 |
 | `flow_expiration` | 维护数据包事件时间高水位、扫描周期和空闲截止时间，处理乱序与整数边界 |
 | `flow_export` | 将流记录写成固定字段顺序的CSV表头和记录 |
 | `runtime_metrics` | 使用单调时钟和累计值差分计算区间PPS、Mbps、流表占用率和过期流数量 |
@@ -512,6 +512,8 @@ int capture_open_live(..., capture_t **capture, ...);
 - 当前不支持动态扩容；
 - 当前没有内部锁，不能被多个线程同时修改。
 
+数据包路径还累计线性探测操作数、检查槽位总数和最大探测长度。起始槽位算1次检查；命中、插入和满载`ENOSPC`都计入，`flow_table_find()`等管理查询不计入。两个`uint64_t`累计值达到上限后饱和而不回绕；应用退出时输出平均、最大和饱和状态。
+
 `DELETED`不能直接变回`EMPTY`，否则会提前截断发生哈希冲突后的探测链。流表完全为空时可以统一清除删除标记。
 
 ### 8.7 流表存储所有权
@@ -684,8 +686,8 @@ sudo ./build/bin/netflow-analyzer \
 | 10 | `ipv4_dispatch_tests` | 协议号分发、未知协议和分片处理 |
 | 11 | `flow_key_tests` | 双向规范化、方向、字段比较和稳定FNV-1a哈希 |
 | 12 | `flow_record_tests` | 两个方向统计、首末时间、错误和溢出保护 |
-| 13 | `flow_table_tests` | 哈希冲突、线性探测、回绕、删除标记、复用、遍历和过期 |
-| 14 | `offline_flow_acceptance` | 6包PCAP验证聚合、预览和CSV；260包PCAP验证四类异常/拒绝、256槽满载和继续运行 |
+| 13 | `flow_table_tests` | 哈希冲突、线性探测、回绕、删除标记、复用、遍历、过期、探测统计、查询隔离和饱和保护 |
+| 14 | `offline_flow_acceptance` | 6包PCAP验证聚合、预览、CSV和无冲突探测；260包PCAP验证四类异常/拒绝、256槽满载、完整扫描和继续运行 |
 | 15 | `flow_export_tests` | CSV表头、记录字段顺序、格式化和无效参数 |
 | 16 | `flow_expiration_tests` | 事件时间高水位、扫描边界、乱序时间戳、参数验证和截止时间下溢 |
 | 17 | `runtime_metrics_tests` | 累计值差分、PPS/Mbps、流表占用率、零流量、时间边界和溢出保护 |
@@ -847,9 +849,10 @@ cmake -E chdir build ctest \
 
 - 固定256槽；
 - 达到容量返回`ENOSPC`；
+- 已输出数据包路径累计操作数、检查槽位总数、平均和最大探测长度；
 - 实时主循环已经按事件时间定期调用过期API；接口完全静默时仍要等下一包推进事件时间；
 - 过期记录删除前没有输出到下游；
-- 没有负载因子、重建或动态扩容；
+- 没有自动重建、动态扩容或满载驱逐；
 - 没有并发保护。
 
 ### 16.4 工程质量
@@ -1033,7 +1036,7 @@ feat(cli): expose live capture filter option
 
 `capture_statistics_t`和`capture_get_statistics()`已经封装`pcap_stats()`，实时退出时分别输出捕获后端累计接收、抓包缓冲区丢包、接口丢包和应用实际取得的总包数。平台原生`struct pcap_stat`没有暴露给上层，离线句柄明确返回`ENOTSUP`。
 
-后续可观测性仍包括：协议解析结果分类、流表拒绝、满载驱逐、CPU和RSS；周期PPS、Mbps、流表占用率和累计过期数量已经完成。
+协议解析结果分类、流表拒绝、CPU、RSS以及线性探测成本均已可观察；满载驱逐仍未选择策略。周期PPS、Mbps、流表占用率和累计过期数量已经完成。
 
 ### 18.3 实时流过期（已完成第一版）
 
@@ -1086,7 +1089,27 @@ output线程（CSV/Qt/告警）
 
 因此当前不把实验流水线接入正式程序。完整命令、计算和边界见[`docs/performance_baseline.md`](performance_baseline.md)。
 
-### 18.6 应用层与DPI
+### 18.6 流表线性探测可观测性（已完成）
+
+当前已经完成：
+
+- `flow_table_process_packet()`累计数据包操作数、检查槽位总数和单次最大探测长度；
+- 起始槽位计为1，命中、插入和满载`ENOSPC`扫描均进入统计；
+- `flow_table_find()`等管理查询不污染数据包路径统计；
+- `uint64_t`累计值使用饱和保护，饱和后退出报告不再显示误导性的平均值；
+- 单元测试覆盖确定性1、2、3槽冲突链、查询隔离、满表扫描、失败输出不变和饱和不回绕；
+- 离线端到端验收覆盖6包无冲突平均值1，以及260包满表最大值256；
+- 全部17项本地CTest通过。
+
+LubanCat官方SDK交叉产物实测：
+
+- 128流、20万包、50%占用率：`operations=200000`、`inspected_slots=200000`、`average=1.00`、`maximum=1`，零拒绝和零drop；
+- 300流满载：`operations=300`、`inspected_slots=11928`、`average=39.76`、`maximum=256`；44次拒绝贡献11264次完整扫描，前256次成功建流平均检查约2.59个槽；
+- 探测统计版20万包进程CPU成本约6.95微秒/包、最大RSS 1724 KiB，与此前基线处于同一量级。
+
+结论：当前受控50%占用工作负载没有哈希查找退化，无需为了探测性能立即更换哈希或动态扩容；固定256条活跃流仍是独立的业务容量边界。下一步若处理容量问题，应先明确内存上限、驱逐偏差和被驱逐流的输出所有权。
+
+### 18.7 应用层与DPI
 
 推荐顺序：
 
@@ -1100,7 +1123,7 @@ output线程（CSV/Qt/告警）
 
 没有TCP重组时，不能可靠地假设一个应用层消息完整存在于一个TCP包中。
 
-### 18.7 异常检测
+### 18.8 异常检测
 
 先实现可解释规则，再做机器学习：
 
@@ -1113,7 +1136,7 @@ output线程（CSV/Qt/告警）
 
 规则输出应使用稳定事件模型，后续Qt和云平台都消费同一数据，不应让检测逻辑直接依赖GUI。
 
-### 18.8 可视化
+### 18.9 可视化
 
 当前建议：
 
@@ -1154,8 +1177,9 @@ output线程（CSV/Qt/告警）
 - 完整交叉命令见`docs/cross_compilation.md`，详细排查过程见`docs/problem_log.md`第5.1至5.12节；
 - 单流Release性能基线已完成：最高约9 Kpps、20万包、每包CPU约6.95微秒、最大RSS约1.64 MiB且零drop，详见`docs/performance_baseline.md`；
 - 多流与长稳基线已完成：300流得到256个完整流和44个满载拒绝；128流、约9 Kpps、540万包持续10分钟时每包CPU约6.24微秒、RSS采样恒定且零drop，整机平均空闲90.97%，详见`docs/multiflow_longrun_baseline.md`。
+- 流表探测统计版官方SDK交叉产物已完成板端复测：128流、20万包时平均和最大探测长度均为1；300流满载时11928次槽位检查中有11264次来自44个拒绝包的完整扫描，两个场景均零drop。
 
-不要宣称完整开发板验证已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、当前17项板端CTest、确定性PCAP跨平台输出对比、两种交叉编译、跨设备ICMP实时抓包、单流/多流性能、满载边界、整机软中断和10分钟长稳；尚未完成双向直连网络验证、非root权限方案和生产级数小时/数天浸泡测试。当前仓库提供环境检查脚本：
+不要宣称完整开发板验证已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、当前17项板端CTest、确定性PCAP跨平台输出对比、两种交叉编译、跨设备ICMP实时抓包、单流/多流性能、满载边界、流表探测成本、整机软中断和10分钟长稳；尚未完成双向直连网络验证、非root权限方案和生产级数小时/数天浸泡测试。当前仓库提供环境检查脚本：
 
 ```bash
 sh scripts/check_target_env.sh
@@ -1191,7 +1215,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率、静默报告和五种应用处理结果已经完成。x86_64与LubanCat ARM64原生Debug构建的17项CTest均全部通过，两种ARM64交叉产物也通过板端运行验证。板端Release已经完成单流、多流、满载边界、整机软中断和10分钟540万包长稳基线；下一步根据产品方向选择流表可观测性/驱逐策略、TCP状态跟踪或非root服务化部署。
+周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果和流表线性探测统计已经完成。x86_64与LubanCat ARM64原生Debug构建的17项CTest均全部通过，两种ARM64交叉产物也通过板端运行验证。板端Release已经完成单流、多流、满载边界、探测成本、整机软中断和10分钟540万包长稳基线；下一步根据产品方向选择明确的固定容量/驱逐策略、TCP状态跟踪或非root服务化部署。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1215,6 +1239,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 → Ethernet/IPv4/TCP/UDP/ICMP解析
 → 双向五元组
 → FNV-1a开放寻址哈希流表
+→ 数据包路径平均/最大线性探测统计
 → 事件时间调度、过期值副本与实时清理
 → 双向包数、字节数和时间统计
 → 周期PPS、Mbps、流表占用率和过期数量
@@ -1231,4 +1256,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-应用处理结果分类和满载继续运行策略已经完成。两种ARM64交叉构建通过板端实际运行，Python验收脚本兼容板端Python 3.8.10，x86_64与LubanCat ARM64原生Debug构建的17项CTest均全部通过。性能基线已经覆盖空闲、单流、多流、满载边界、整机软中断和10分钟长稳：128流、约9 Kpps、540万包全部完成且零drop，RSS采样恒定，每包进程CPU约6.24微秒，整机平均空闲90.97%；当前不接入`labs/thread_pipeline`。下一步应根据产品方向选择流表可观测性/驱逐策略、TCP状态跟踪与流重组，或非root服务化部署。
+应用处理结果分类、满载继续运行策略和线性探测可观测性已经完成。两种ARM64交叉构建通过板端实际运行，Python验收脚本兼容板端Python 3.8.10，x86_64与LubanCat ARM64原生Debug构建的17项CTest均全部通过。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳：128流、约9 Kpps、540万包全部完成且零drop，RSS采样恒定，每包进程CPU约6.24微秒，整机平均空闲90.97%；探测统计复测又确认128流、50%占用率下平均和最大探测长度均为1，当前不接入`labs/thread_pipeline`，也不因正常查找成本立即动态扩容。下一步应选择有明确内存与偏差语义的容量/驱逐策略、TCP状态跟踪与流重组，或非root服务化部署。

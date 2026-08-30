@@ -46,6 +46,35 @@ Exit status: 0
 
 这证明流表满载后程序不会因`ENOSPC`退出，已经存在的256条流继续保留，后续新流被归入`flow_rejected`。后端接收比应用计数多4没有伴随分类缺口或drop，继续按libpcap后端与应用交付边界解释。
 
+接入线性探测统计后，官方SDK交叉产物再次执行同一容量场景，得到：
+
+```text
+Total packets: 300
+Processing results: complete=256 truncated=0 malformed=0 unsupported=0 flow_rejected=44
+Flow table probes: operations=300 inspected_slots=11928 average=39.76 maximum=256 saturated=false
+Capture received packets: 300
+Capture dropped packets: 0
+Interface dropped packets: 0
+Flow summary: 256 flow(s)
+Maximum RSS: 1668 KiB
+Exit status: 0
+```
+
+44个满载拒绝操作各自检查全部256个槽，因此拒绝部分贡献：
+
+```text
+44 × 256 = 11264次槽位检查
+```
+
+扣除拒绝成本后，前256个成功建流操作共检查：
+
+```text
+11928 - 11264 = 664个槽
+664 / 256 ≈ 2.59个槽/成功建流操作
+```
+
+所以总体`average=39.76`主要反映满表后拒绝新流的必然扫描，不表示正常负载下每个包都需要检查约40个槽。`maximum=256`则直接证明满载拒绝路径完整扫描了固定容量流表。
+
 ## 3. 128流、20万包短时性能
 
 选择128条流使流表占用率保持50%，既能覆盖多键查找，又不触发容量拒绝。发生器按轮询方式把20万包分给128个socket，并以约9000 PPS发送。
@@ -83,6 +112,32 @@ expired_flows=0
 ```
 
 它与单流ICMP基线的约6.95微秒/包接近。由于UDP和ICMP解析路径、帧长不同，不能把差异解释为多流更快；可以得出的结论是，在128流和50%占用率下没有测出明显的哈希查找退化。
+
+接入探测统计后的官方SDK交叉产物复测得到：
+
+```text
+Total packets: 200000
+Processing results: complete=200000 truncated=0 malformed=0 unsupported=0 flow_rejected=0
+Flow table probes: operations=200000 inspected_slots=200000 average=1.00 maximum=1 saturated=false
+Capture received packets: 200002
+Capture dropped packets: 0
+Interface dropped packets: 0
+Flow summary: 128 flow(s)
+User time: 1.28 s
+System time: 0.11 s
+Elapsed time: 27.19 s
+Maximum RSS: 1724 KiB
+Exit status: 0
+```
+
+这200000次数据包路径操作每次都在哈希起始槽位命中，没有发生额外线性扫描。进程CPU成本为：
+
+```text
+(1.28 + 0.11)秒 / 200000包
+= 6.95微秒/包
+```
+
+结果仍处于此前约6.70微秒/包和单流约6.95微秒/包的同一量级。`Capture received packets`比应用包数多2仍属于捕获后端与应用交付统计层级差异，两个专用drop字段均为0。
 
 每个捕获帧为60字节：14字节Ethernet头、20字节IPv4头、8字节UDP头、12字节发生器载荷和6字节最小帧填充。libpcap报告的长度不包含物理层前导码、帧间隙，通常也不包含4字节FCS，因此不能把该Mbps直接当作完整链路占用。
 
@@ -186,7 +241,8 @@ NET_RX=3003872
 当前证据支持：
 
 - 固定256槽流表满载后的行为明确且可恢复：新流被拒绝，主循环继续；
-- 128条活跃流、50%占用率没有造成可见的每包CPU退化；
+- 128条活跃流、50%占用率下20万次操作的平均和最大探测长度均为1，没有发生额外线性扫描，也没有造成可见的每包CPU退化；
+- 300流场景的总体平均探测长度39.76主要由44次完整256槽拒绝扫描贡献；成功建立前256条流时平均检查约2.59个槽；
 - 540万包全部完成，应用分类、后端接收和两个drop字段完全闭合；
 - 10分钟内RSS固定、无严重缺页、PPS稳定、流数量稳定；
 - 目标进程和整机CPU均有较大余量，CPU0软中断尚未接近饱和；
@@ -194,7 +250,7 @@ NET_RX=3003872
 
 下一阶段不应继续重复同一种ICMP或UDP压测。应根据产品方向在以下工作中选择：
 
-1. 为固定流表增加可观测的探测长度、负载因子或驱逐策略；
+1. 根据已经可观测的探测成本，为固定流表选择明确的容量或驱逐策略；
 2. 增加TCP状态跟踪和流重组，为DNS/HTTP等应用层解析建立基础；
 3. 完成非root抓包权限和更接近部署环境的服务化运行；
 4. 在需求提高到更高PPS时再测IRQ亲和性、RPS和更高性能捕获后端。

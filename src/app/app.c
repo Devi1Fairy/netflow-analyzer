@@ -571,6 +571,92 @@ static int app_print_flow_summary(const flow_table_t *table)
 }
 
 /**
+ * @brief 输出数据包处理路径的累计流表探测统计。
+ *
+ * 平均探测长度只在累计计数未饱和时计算。
+ * 一旦计数饱和，累计值已经不再精确，继续输出平均值会产生误导，
+ * 因此使用average=unavailable明确表示不可用。
+ *
+ * @param table 指向仍然有效的流表。
+ *
+ * @return 成功时返回0；
+ *         流表或统计状态无效时返回对应错误码；
+ *         终端输出失败时返回EIO。
+ */
+static int app_print_flow_table_probe_statistics(
+    const flow_table_t *table)
+{
+    flow_table_probe_statistics_t statistics;
+    double average_probe_length;
+    int error_code;
+
+    /*
+     * statistics是调用栈上的值副本。
+     *
+     * 查询函数不会返回内部指针，因此这里没有内存所有权转移，
+     * 也不需要执行free。
+     */
+    error_code = flow_table_get_probe_statistics(
+        table,
+        &statistics
+    );
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    /*
+     * 计数饱和后，真实分子或分母可能已经大于UINT64_MAX。
+     * 此时用两个截断后的数值相除没有可靠意义。
+     */
+    if (statistics.counters_saturated) {
+        if (printf(
+                "Flow table probes: "
+                "operations=%" PRIu64 " "
+                "inspected_slots=%" PRIu64 " "
+                "average=unavailable "
+                "maximum=%zu "
+                "saturated=true\n",
+                statistics.packet_operation_count,
+                statistics.total_inspected_slot_count,
+                statistics.maximum_probe_length) < 0) {
+            return EIO;
+        }
+
+        return 0;
+    }
+
+    /*
+     * 尚未处理可进入流表的数据包时，平均探测长度定义为0。
+     *
+     * 两个操作数先转换为double，避免执行整数除法。
+     */
+    if (statistics.packet_operation_count == UINT64_C(0)) {
+        average_probe_length = 0.0;
+    } else {
+        average_probe_length =
+            (double)statistics.total_inspected_slot_count /
+            (double)statistics.packet_operation_count;
+    }
+
+    if (printf(
+            "Flow table probes: "
+            "operations=%" PRIu64 " "
+            "inspected_slots=%" PRIu64 " "
+            "average=%.2f "
+            "maximum=%zu "
+            "saturated=false\n",
+            statistics.packet_operation_count,
+            statistics.total_inspected_slot_count,
+            average_probe_length,
+            statistics.maximum_probe_length) < 0) {
+        return EIO;
+    }
+
+    return 0;
+}
+
+/**
  * @brief 把流表中的全部记录导出到一个新CSV文件。
  *
  * 本函数拥有局部FILE对象的完整生命周期：
@@ -2047,6 +2133,22 @@ static int app_run_capture_analysis(app_context_t *context)
 
         flow_table_cleanup(&flow_table);
         return EIO;
+    }
+
+    error_code = app_print_flow_table_probe_statistics(
+        &flow_table
+    );
+
+    if (error_code != 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "failed to report flow table probe statistics: %s",
+            strerror(error_code)
+        );
+
+        flow_table_cleanup(&flow_table);
+        return error_code;
     }
 
     /*

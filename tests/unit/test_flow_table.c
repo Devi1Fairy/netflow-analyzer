@@ -296,6 +296,7 @@ static int test_capacity_protection(void)
 
     packet_info_t first_packet;
     packet_info_t second_packet;
+    flow_table_probe_statistics_t probe_statistics;
 
     const flow_record_t *record;
     bool created;
@@ -345,6 +346,29 @@ static int test_capacity_protection(void)
 
     TEST_CHECK(flow_table_count(&table) == 1U);
 
+    TEST_CHECK(
+    flow_table_get_probe_statistics(
+        &table,
+        &probe_statistics
+    ) == 0
+    );
+
+    TEST_CHECK(
+        probe_statistics.packet_operation_count ==
+            UINT64_C(1)
+    );
+
+    TEST_CHECK(
+        probe_statistics.total_inspected_slot_count ==
+            UINT64_C(1)
+    );
+
+    TEST_CHECK(
+        probe_statistics.maximum_probe_length == 1U
+    );
+
+    TEST_CHECK(!probe_statistics.counters_saturated);
+
     /*
      * 设置哨兵值，用于验证失败时输出参数不被修改。
      */
@@ -363,6 +387,29 @@ static int test_capacity_protection(void)
     TEST_CHECK(flow_table_count(&table) == 1U);
     TEST_CHECK(record == NULL);
     TEST_CHECK(created);
+
+    TEST_CHECK(
+    flow_table_get_probe_statistics(
+        &table,
+        &probe_statistics
+    ) == 0
+    );
+
+    TEST_CHECK(
+        probe_statistics.packet_operation_count ==
+            UINT64_C(2)
+    );
+
+    TEST_CHECK(
+        probe_statistics.total_inspected_slot_count ==
+            UINT64_C(2)
+    );
+
+    TEST_CHECK(
+        probe_statistics.maximum_probe_length == 1U
+    );
+
+    TEST_CHECK(!probe_statistics.counters_saturated);
 
     flow_table_cleanup(&table);
 
@@ -884,6 +931,8 @@ static int test_collision_wraparound_and_deleted_slot(void)
 
     flow_timestamp_t cutoff;
 
+    flow_table_probe_statistics_t probe_statistics;
+
     uint64_t first_hash;
     uint64_t second_hash;
     uint64_t third_hash;
@@ -901,6 +950,29 @@ static int test_collision_wraparound_and_deleted_slot(void)
             sizeof(storage) / sizeof(storage[0])
         ) == 0
     );
+
+    TEST_CHECK(
+    flow_table_get_probe_statistics(
+        &table,
+        &probe_statistics
+        ) == 0
+    );
+
+    TEST_CHECK(
+        probe_statistics.packet_operation_count ==
+            UINT64_C(0)
+    );
+
+    TEST_CHECK(
+        probe_statistics.total_inspected_slot_count ==
+            UINT64_C(0)
+    );
+
+    TEST_CHECK(
+        probe_statistics.maximum_probe_length == 0U
+    );
+
+    TEST_CHECK(!probe_statistics.counters_saturated);
 
     /*
      * 2002、2006和2010在容量为4时会产生相同哈希起点。
@@ -1024,6 +1096,27 @@ static int test_collision_wraparound_and_deleted_slot(void)
     );
 
     TEST_CHECK(
+    flow_table_get_probe_statistics(
+        &table,
+        &probe_statistics
+        ) == 0
+    );
+
+    TEST_CHECK(
+        probe_statistics.packet_operation_count ==
+            UINT64_C(1)
+    );
+
+    TEST_CHECK(
+        probe_statistics.total_inspected_slot_count ==
+            UINT64_C(1)
+    );
+
+    TEST_CHECK(
+        probe_statistics.maximum_probe_length == 1U
+    );
+
+    TEST_CHECK(
         flow_table_process_packet(
             &table,
             &second_packet,
@@ -1037,6 +1130,27 @@ static int test_collision_wraparound_and_deleted_slot(void)
     );
 
     second_record = record;
+
+    TEST_CHECK(
+    flow_table_get_probe_statistics(
+        &table,
+        &probe_statistics
+        ) == 0
+    );
+
+    TEST_CHECK(
+        probe_statistics.packet_operation_count ==
+            UINT64_C(2)
+    );
+
+    TEST_CHECK(
+        probe_statistics.total_inspected_slot_count ==
+            UINT64_C(3)
+    );
+
+    TEST_CHECK(
+        probe_statistics.maximum_probe_length == 2U
+    );
 
     /*
      * 删除第一条流，使哈希起点变成DELETED。
@@ -1077,6 +1191,27 @@ static int test_collision_wraparound_and_deleted_slot(void)
 
     TEST_CHECK(found_record == second_record);
 
+    TEST_CHECK(
+    flow_table_get_probe_statistics(
+        &table,
+        &probe_statistics
+        ) == 0
+    );
+
+    TEST_CHECK(
+        probe_statistics.packet_operation_count ==
+            UINT64_C(2)
+    );
+
+    TEST_CHECK(
+        probe_statistics.total_inspected_slot_count ==
+            UINT64_C(3)
+    );
+
+    TEST_CHECK(
+        probe_statistics.maximum_probe_length == 2U
+    );
+
     /*
      * 第三条冲突流应优先复用前面的DELETED槽位。
      */
@@ -1099,7 +1234,297 @@ static int test_collision_wraparound_and_deleted_slot(void)
         FLOW_TABLE_SLOT_OCCUPIED
     );
 
+    TEST_CHECK(
+    flow_table_get_probe_statistics(
+        &table,
+        &probe_statistics
+        ) == 0
+    );
+
+    TEST_CHECK(
+        probe_statistics.packet_operation_count ==
+            UINT64_C(3)
+    );
+
+    TEST_CHECK(
+        probe_statistics.total_inspected_slot_count ==
+            UINT64_C(6)
+    );
+
+    TEST_CHECK(
+        probe_statistics.maximum_probe_length == 3U
+    );
+
+    TEST_CHECK(!probe_statistics.counters_saturated);
+
     flow_table_cleanup(&table);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证探测统计查询、饱和保护和失败输出不变语义。
+ */
+static int test_probe_statistics_saturation_and_validation(void)
+{
+    flow_table_slot_t storage[1];
+    flow_table_t table;
+
+    packet_info_t packet;
+    const flow_record_t *record;
+
+    flow_table_probe_statistics_t statistics;
+
+    const flow_table_probe_statistics_t sentinel_statistics = {
+        .packet_operation_count = UINT64_C(11),
+        .total_inspected_slot_count = UINT64_C(22),
+        .maximum_probe_length = 7U,
+        .counters_saturated = true
+    };
+
+    bool created;
+
+    TEST_CHECK(
+        flow_table_init(
+            &table,
+            storage,
+            sizeof(storage) / sizeof(storage[0])
+        ) == 0
+    );
+
+    /*
+     * 新初始化流表的统计必须全部为0。
+     */
+    TEST_CHECK(
+        flow_table_get_probe_statistics(
+            &table,
+            &statistics
+        ) == 0
+    );
+
+    TEST_CHECK(
+        statistics.packet_operation_count ==
+            UINT64_C(0)
+    );
+
+    TEST_CHECK(
+        statistics.total_inspected_slot_count ==
+            UINT64_C(0)
+    );
+
+    TEST_CHECK(statistics.maximum_probe_length == 0U);
+    TEST_CHECK(!statistics.counters_saturated);
+
+    /*
+     * 参数错误不能修改调用者原有输出。
+     */
+    statistics = sentinel_statistics;
+
+    TEST_CHECK(
+        flow_table_get_probe_statistics(
+            NULL,
+            &statistics
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        statistics.packet_operation_count ==
+            sentinel_statistics.packet_operation_count
+    );
+
+    TEST_CHECK(
+        statistics.total_inspected_slot_count ==
+            sentinel_statistics.total_inspected_slot_count
+    );
+
+    TEST_CHECK(
+        statistics.maximum_probe_length ==
+            sentinel_statistics.maximum_probe_length
+    );
+
+    TEST_CHECK(
+        statistics.counters_saturated ==
+            sentinel_statistics.counters_saturated
+    );
+
+    TEST_CHECK(
+        flow_table_get_probe_statistics(
+            &table,
+            NULL
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &packet,
+            INT64_C(100),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(2000)
+        ) == 0
+    );
+
+    /*
+     * 测试无法真的执行UINT64_MAX次操作，因此直接把内部累计值
+     * 放到上限前一位，再通过公开数据包接口触发真实累计逻辑。
+     */
+    table.probe_statistics = (flow_table_probe_statistics_t){
+        .packet_operation_count =
+            UINT64_MAX - UINT64_C(1),
+
+        .total_inspected_slot_count =
+            UINT64_MAX - UINT64_C(1),
+
+        .maximum_probe_length = 0U,
+        .counters_saturated = false
+    };
+
+    /*
+     * 第一次操作使两个累计值正好达到UINT64_MAX。
+     */
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &packet,
+            &record,
+            &created
+        ) == 0
+    );
+
+    TEST_CHECK(created);
+
+    TEST_CHECK(
+        flow_table_get_probe_statistics(
+            &table,
+            &statistics
+        ) == 0
+    );
+
+    TEST_CHECK(
+        statistics.packet_operation_count ==
+            UINT64_MAX
+    );
+
+    TEST_CHECK(
+        statistics.total_inspected_slot_count ==
+            UINT64_MAX
+    );
+
+    TEST_CHECK(statistics.maximum_probe_length == 1U);
+    TEST_CHECK(statistics.counters_saturated);
+
+    /*
+     * 再处理同一条流。业务记录仍应更新，但统计不能回绕。
+     */
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &packet,
+            &record,
+            &created
+        ) == 0
+    );
+
+    TEST_CHECK(!created);
+    TEST_CHECK(record != NULL);
+
+    TEST_CHECK(
+        record->a_to_b.packet_count ==
+            UINT64_C(2)
+    );
+
+    TEST_CHECK(
+        flow_table_get_probe_statistics(
+            &table,
+            &statistics
+        ) == 0
+    );
+
+    TEST_CHECK(
+        statistics.packet_operation_count ==
+            UINT64_MAX
+    );
+
+    TEST_CHECK(
+        statistics.total_inspected_slot_count ==
+            UINT64_MAX
+    );
+
+    TEST_CHECK(statistics.maximum_probe_length == 1U);
+    TEST_CHECK(statistics.counters_saturated);
+
+    /*
+     * 最大探测长度超过capacity代表内部状态损坏。
+     * 查询必须失败并保持输出哨兵值。
+     */
+    table.probe_statistics.maximum_probe_length =
+        table.capacity + 1U;
+
+    statistics = sentinel_statistics;
+
+    TEST_CHECK(
+        flow_table_get_probe_statistics(
+            &table,
+            &statistics
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        statistics.packet_operation_count ==
+            sentinel_statistics.packet_operation_count
+    );
+
+    TEST_CHECK(
+        statistics.total_inspected_slot_count ==
+            sentinel_statistics.total_inspected_slot_count
+    );
+
+    TEST_CHECK(
+        statistics.maximum_probe_length ==
+            sentinel_statistics.maximum_probe_length
+    );
+
+    TEST_CHECK(
+        statistics.counters_saturated ==
+            sentinel_statistics.counters_saturated
+    );
+
+    flow_table_cleanup(&table);
+
+    /*
+     * cleanup后的流表已经失效，查询仍不能修改输出。
+     */
+    statistics = sentinel_statistics;
+
+    TEST_CHECK(
+        flow_table_get_probe_statistics(
+            &table,
+            &statistics
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        statistics.packet_operation_count ==
+            sentinel_statistics.packet_operation_count
+    );
+
+    TEST_CHECK(
+        statistics.total_inspected_slot_count ==
+            sentinel_statistics.total_inspected_slot_count
+    );
+
+    TEST_CHECK(
+        statistics.maximum_probe_length ==
+            sentinel_statistics.maximum_probe_length
+    );
+
+    TEST_CHECK(
+        statistics.counters_saturated ==
+            sentinel_statistics.counters_saturated
+    );
 
     return EXIT_SUCCESS;
 }
@@ -1157,6 +1582,15 @@ int main(void)
 
     printf(
         "[PASS] hash collision, wraparound and deleted slot\n"
+    );
+
+    if (test_probe_statistics_saturation_and_validation() !=
+    EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf(
+        "[PASS] probe statistics saturation and validation\n"
     );
 
     return EXIT_SUCCESS;

@@ -18,6 +18,67 @@ static bool flow_table_has_valid_shape(const flow_table_t *table)
 }
 
 /**
+ * @brief 累计一次数据包处理产生的哈希探测成本。
+ *
+ * 调用前必须保证：
+ *
+ * - table已经初始化且结构有效；
+ * - inspected_slot_count位于1到table->capacity之间。
+ *
+ * 计数达到UINT64_MAX后保持饱和，不能回绕为0。
+ * 本函数只更新观测数据，不修改任何流记录或槽位状态。
+ */
+static void flow_table_record_probe_statistics(
+    flow_table_t *table,
+    size_t inspected_slot_count)
+{
+    flow_table_probe_statistics_t updated_statistics;
+    uint64_t inspected_slot_count_u64;
+
+    updated_statistics = table->probe_statistics;
+    inspected_slot_count_u64 = (uint64_t)inspected_slot_count;
+
+    /*
+     * 每次进入数据包探测路径都增加一次操作计数。
+     */
+    if (updated_statistics.packet_operation_count == UINT64_MAX) {
+        updated_statistics.counters_saturated = true;
+    } else {
+        updated_statistics.packet_operation_count += UINT64_C(1);
+
+        if (updated_statistics.packet_operation_count == UINT64_MAX) {
+            updated_statistics.counters_saturated = true;
+        }
+    }
+
+    /*
+     * 累加实际检查的槽位数量。
+     *
+     * 先用减法判断是否会溢出，不能先执行可能溢出的加法。
+     */
+    if (UINT64_MAX - updated_statistics.total_inspected_slot_count < inspected_slot_count_u64) {
+        updated_statistics.total_inspected_slot_count = UINT64_MAX;
+        updated_statistics.counters_saturated = true;
+    } else {
+
+        updated_statistics.total_inspected_slot_count += inspected_slot_count_u64;
+
+        if (updated_statistics.total_inspected_slot_count == UINT64_MAX) {
+            updated_statistics.counters_saturated = true;
+        }
+    }
+
+    if (inspected_slot_count > updated_statistics.maximum_probe_length) {
+        updated_statistics.maximum_probe_length = inspected_slot_count;
+    }
+
+    /*
+     * 完整计算后再一次性发布新统计快照。
+     */
+    table->probe_statistics = updated_statistics;
+}
+
+/**
  * @brief 判断timestamp是否早于或等于cutoff。
  *
  * 调用前必须保证两个时间戳的微秒字段均有效。
@@ -52,12 +113,15 @@ static bool flow_timestamp_at_or_before(
  * 线性探测过程中会记住遇到的第一个DELETED槽位。
  * 如果最后确认流键不存在，插入操作应优先复用这个槽位。
  *
- * 函数失败时不修改found和slot_index。
+ * 成功时修改found、slot_index和inspected_slot_count。
+ * 返回ENOSPC时只修改inspected_slot_count，其值为capacity。
+ * 其他失败不修改任何输出参数。
  */
 static int flow_table_probe(const flow_table_t *table,
                             const flow_key_t *key,
                             bool *found,
-                            size_t *slot_index)
+                            size_t *slot_index,
+                            size_t *inspected_slot_count)
 {
     uint64_t hash_value;
 
@@ -71,7 +135,8 @@ static int flow_table_probe(const flow_table_t *table,
     if (!flow_table_has_valid_shape(table) ||
         key == NULL ||
         found == NULL ||
-        slot_index == NULL) {
+        slot_index == NULL ||
+        inspected_slot_count == NULL) {
         return EINVAL;
     }
 
@@ -114,6 +179,8 @@ static int flow_table_probe(const flow_table_t *table,
                 *slot_index = current_index;
             }
 
+            *inspected_slot_count = probe_count + 1U;
+
             return 0;
 
         case FLOW_TABLE_SLOT_OCCUPIED:
@@ -127,6 +194,7 @@ static int flow_table_probe(const flow_table_t *table,
             if (flow_key_equal(&current_slot->record.key, key)) {
                 *found = true;
                 *slot_index = current_index;
+                *inspected_slot_count = probe_count + 1U;
                 return 0;
             }
 
@@ -173,9 +241,11 @@ static int flow_table_probe(const flow_table_t *table,
     if (has_deleted_slot) {
         *found = false;
         *slot_index = first_deleted_index;
+        *inspected_slot_count = table->capacity;
         return 0;
     }
 
+    *inspected_slot_count = table->capacity;
     return ENOSPC;
 }
 
@@ -207,6 +277,7 @@ int flow_table_init(flow_table_t *table,
         .slots = storage,
         .capacity = capacity,
         .count = 0U,
+        .probe_statistics = {0},
         .initialized = true
     };
 
@@ -231,6 +302,7 @@ int flow_table_process_packet(
     flow_table_slot_t *target_slot;
 
     const flow_record_t *result_record;
+    size_t inspected_slot_count;
     bool result_created;
     bool found;
 
@@ -267,8 +339,23 @@ int flow_table_process_packet(
         table,
         &packet_key,
         &found,
-        &slot_index
+        &slot_index,
+        &inspected_slot_count
     );
+
+    /*
+    * 正常命中、正常插入和流表满载拒绝都实际执行了探测，
+    * 因此都应进入观测统计。
+    *
+    * EINVAL等内部错误没有可靠的完整探测结果，不累计。
+    */
+    if (error_code == 0 ||
+        error_code == ENOSPC) {
+        flow_table_record_probe_statistics(
+            table,
+            inspected_slot_count
+        );
+    }
 
     if (error_code != 0) {
         return error_code;
@@ -454,6 +541,7 @@ int flow_table_find(const flow_table_t *table,
 {
     bool found;
     size_t slot_index;
+    size_t inspected_slot_count;
     int error_code;
 
     if (!flow_table_has_valid_shape(table) ||
@@ -462,7 +550,7 @@ int flow_table_find(const flow_table_t *table,
         return EINVAL;
     }
 
-    error_code = flow_table_probe(table, key, &found, &slot_index);
+    error_code = flow_table_probe(table, key, &found, &slot_index, &inspected_slot_count);
 
     /*
      * 表中所有槽位都被占用，但没有匹配项时，
@@ -542,6 +630,31 @@ size_t flow_table_count(const flow_table_t *table)
     }
 
     return table->count;
+}
+
+int flow_table_get_probe_statistics(
+    const flow_table_t *table,
+    flow_table_probe_statistics_t *statistics)
+{
+    flow_table_probe_statistics_t result_statistics;
+
+    if (!flow_table_has_valid_shape(table) ||
+        statistics == NULL) {
+        return EINVAL;
+    }
+
+    if (table->probe_statistics.maximum_probe_length >
+        table->capacity) {
+        return EINVAL;
+    }
+
+    /*
+     * 先取得完整快照，成功后再发布给调用方。
+     */
+    result_statistics = table->probe_statistics;
+    *statistics = result_statistics;
+
+    return 0;
 }
 
 void flow_table_cleanup(flow_table_t *table)
