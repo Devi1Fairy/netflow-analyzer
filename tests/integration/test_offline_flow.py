@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import List, Tuple
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -106,7 +107,7 @@ def build_icmp_frame(
 
 def write_pcap(
     pcap_path: Path,
-    packets: list[tuple[int, int, bytes]],
+    packets: List[Tuple[int, int, bytes]],
 ) -> None:
     """
     把给定数据包记录写成小端、微秒时间戳的Ethernet PCAP。
@@ -156,7 +157,7 @@ def write_test_pcap(pcap_path: Path) -> None:
     endpoint_a_mac = bytes.fromhex("001122334455")
     endpoint_b_mac = bytes.fromhex("66778899aabb")
 
-    packets: list[tuple[int, int, bytes]] = []
+    packets: List[Tuple[int, int, bytes]] = []
 
     base_timestamp = 1_700_000_000
 
@@ -217,7 +218,7 @@ def write_processing_results_pcap(
     source_mac = bytes.fromhex("001122334455")
     destination_mac = bytes.fromhex("66778899aabb")
 
-    packets: list[tuple[int, int, bytes]] = []
+    packets: List[Tuple[int, int, bytes]] = []
     base_timestamp = 1_700_001_000
 
     # 只有10字节，连14字节Ethernet头都不完整。
