@@ -657,3 +657,180 @@ Runtime metrics: interval=20.999 packets=1 ...
 - 事件循环需要同时照顾数据就绪、周期任务和停止请求，`poll()`提供的是有界等待，真正的报告时钟仍由单调时钟负责；
 - 设置非阻塞不会让libpcap“自己唤醒”，而是让读取在无包时立即返回；真正避免忙轮询并让程序定期获得控制权的是`poll()`；
 - 功能验收已经通过，但CPU占用仍应在开发板空闲和高流量场景中单独量化。
+
+### 5.6 使用rsync导出板端sysroot时的远端工具、目录和符号链接问题
+
+目标：
+
+为了在没有官方SDK的情况下交叉编译，需要从LubanCat-2N导出目标头文件、启动文件、libc、libpcap和`pkg-config`元数据，形成只用于编译和链接的sysroot快照。
+
+第一次错误：
+
+虚拟机执行`rsync`后出现：
+
+```text
+bash: rsync: command not found
+rsync: connection unexpectedly closed
+rsync error: error in rsync protocol data stream (code 12)
+```
+
+原因是`rsync`通过SSH工作时需要两端都安装程序。虚拟机的Receiver为3.2.7，但远端LubanCat没有`rsync`命令。板端安装`rsync`后恢复。
+
+第二次错误：
+
+```text
+mkdir ".../usr/lib/aarch64-linux-gnu" failed: No such file or directory
+rsync error: error in file IO (code 11)
+```
+
+`[Receiver]`表明故障发生在虚拟机接收端。此前只创建了sysroot的`usr/`，没有递归创建`usr/lib/`中间目录。使用`mkdir -p`创建完整目标路径后恢复。
+
+第三次错误：
+
+对完整`/usr/lib/aarch64-linux-gnu/`使用`rsync -aL`时，`-L`要求追踪每一条符号链接，最终复制约2GB，并在板端原本就失效的Qt链接处出现：
+
+```text
+symlink has no referent:
+"/usr/lib/aarch64-linux-gnu/qt-default/qtchooser/default.conf"
+rsync error: some files/attrs were not transferred (code 23)
+```
+
+该Qt文件与项目无关，libpcap、启动文件和其他关键内容已经传输，但这说明对整个系统库树追踪符号链接不是合适的sysroot策略。重新使用`rsync -a`保留符号链接，只对明确的`/lib/ld-linux-aarch64.so.1`单文件使用`-aL`。
+
+经验：
+
+- sysroot是目标系统供编译器使用的头文件和库视图，不是完整、可启动的系统副本；
+- `rsync`错误中的Sender／Receiver有助于判断问题位于远端还是本地；
+- `mkdir -p`需要覆盖完整目标父目录；
+- 对完整系统目录应保留符号链接，对经过确认的单文件才按需解引用；
+- sysroot体积大且与目标镜像版本绑定，不应提交Git。
+
+### 5.7 通用Ubuntu交叉GCC生成ARM64程序，但板端缺少GLIBC_2.34
+
+现象：
+
+Ubuntu 24.04的`aarch64-linux-gnu-gcc` 13成功生成了ARM64 ELF，上传LubanCat后却在进入程序之前失败：
+
+```text
+/home/cat/bin/netflow-analyzer-cross:
+/lib/aarch64-linux-gnu/libc.so.6:
+version `GLIBC_2.34' not found
+```
+
+ABI检查显示：
+
+```text
+程序需要：GLIBC_2.17、GLIBC_2.34
+板端sysroot libc最高：GLIBC_2.30
+触发符号：__libc_start_main@GLIBC_2.34
+```
+
+CMake缓存已经把libpcap定向到板端sysroot，但GCC查询启动文件仍返回：
+
+```text
+/usr/aarch64-linux-gnu/lib/crt1.o
+```
+
+根因：
+
+`CMAKE_SYSROOT`控制了目标头文件和许多库搜索，但Ubuntu交叉GCC驱动仍有自己的启动文件前缀。链接过程混用了板端libpcap和Ubuntu 24.04的glibc启动文件，后者让`__libc_start_main`要求`GLIBC_2.34`。因此“ELF是AArch64”只能证明指令集正确，不能证明目标ABI兼容。
+
+解决办法：
+
+在通用GCC方法中同时设置：
+
+```text
+--sysroot=/home/zcb/sysroots/lubancat2n
+-B/home/zcb/sysroots/lubancat2n/usr/lib/aarch64-linux-gnu/
+```
+
+`--sysroot`提供板端目标文件系统视图；GCC `-B`把板端启动文件目录放到搜索顺序最前面。探测确认`Scrt1.o`、`crti.o`、`crtn.o`和`libc.so`均来自板端sysroot。
+
+验证结果：
+
+- Ubuntu GCC 13完成Release交叉构建；
+- 产物为AArch64 PIE；
+- 动态加载器为`/lib/ld-linux-aarch64.so.1`；
+- 最终只要求`GLIBC_2.17`；
+- 板端`ldd`、`--help`和真实ICMP抓包成功。
+
+禁止的错误修复：
+
+不能把Ubuntu的ARM64 `libc.so.6`复制到开发板，也不能手工替换或伪造板端libc链接。glibc是整个用户空间的基础依赖，强行升级可能使系统命令和服务整体无法启动。
+
+### 5.8 官方SDK工具链在Ubuntu 24.04上缺少libisl.so.15
+
+现象：
+
+官方离线SDK通过`repo sync -l`只检出Buildroot GCC 9.3后，CMake编译器探测失败：
+
+```text
+The C compiler identification is unknown
+cc1: error while loading shared libraries:
+libisl.so.15: cannot open shared object file
+```
+
+`ldd cc1`还显示`libmpfr.so.4`未找到。
+
+根因：
+
+交叉编译器包含两类程序：
+
+- GCC驱动、`cc1`等运行在x86_64虚拟机上的主机程序；
+- 它们生成和链接的AArch64目标文件。
+
+SDK中的旧版x86_64 `cc1`依赖Ubuntu 24.04不再默认提供的旧SONAME。SDK自身已经携带`libisl.so.15`、`libmpfr.so.4`、`libmpc.so.3`和`libgmp.so.10`，只是主机动态加载器没有搜索SDK的`lib/`。
+
+解决办法：
+
+```bash
+export LD_LIBRARY_PATH="$LUBANCAT_TOOLCHAIN/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+```
+
+设置后`ldd cc1`的全部依赖均可解析，CMake识别GCC 9.3并完成构建。没有把旧库安装或复制到主机`/usr/lib`，避免污染Ubuntu系统环境。
+
+相关Shell错误：
+
+新开终端后，`NFA_SDK_BUILD`等变量消失，CMake曾报告：
+
+```text
+CMake Error: No build directory specified for -B
+```
+
+`-B "$NFA_SDK_BUILD"`在变量为空时没有有效目录参数。通过`printf '<%s>\n' "$NFA_SDK_BUILD"`检查，并在当前Shell重新执行`export`后解决。
+
+验证结果：
+
+- 官方GCC内置sysroot使用glibc 2.29，低于板端glibc 2.30；
+- SDK没有libpcap，因此从板端提取pcap头文件、共享库和`libpcap.pc`到独立overlay；
+- 最终产物只要求`GLIBC_2.17`；
+- 板端动态加载和实时ICMP抓包成功。
+
+### 5.9 官方GCC 9报告局部处理结果可能未初始化
+
+现象：
+
+官方GCC 9 Release交叉构建完成，但对`app_process_packet()`中的局部`result`给出：
+
+```text
+warning: ‘result’ may be used uninitialized in this function
+[-Wmaybe-uninitialized]
+```
+
+控制流检查结果：
+
+- 调用者的`packet_result`已经初始化；
+- 协议分发错误的三类可继续结果都会给`result`赋值；
+- 分发成功后，流表成功和`ENOSPC`拒绝路径也都会赋值；
+- 其他错误直接返回，不会继续读取`result`。
+
+因此现有控制流没有发现实际未初始化读取，告警来自GCC 9在Release优化下无法证明所有分支覆盖。为了让正常成功语义显式，并避免未来控制流变化引入风险，局部结果使用`RUNTIME_METRICS_PACKET_RESULT_COMPLETE`初始化。
+
+验证结果：
+
+- x86_64 Debug构建完成；
+- 17项CTest全部通过；
+- 官方SDK和通用GCC两种ARM64 Release构建均成功；
+- 两种交叉产物在LubanCat-2N运行成功。
+
+两条交叉编译方法的完整命令、变量和CMake参数见[`docs/cross_compilation.md`](cross_compilation.md)。

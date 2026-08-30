@@ -708,7 +708,7 @@ static int app_process_packet(
 {
     packet_info_t packet_info;
     const flow_record_t *updated_flow;
-    runtime_metrics_packet_result_t result;
+    runtime_metrics_packet_result_t result = RUNTIME_METRICS_PACKET_RESULT_COMPLETE;
     bool flow_created;
 
     char source_mac[ETHERNET_MAC_STRING_SIZE];

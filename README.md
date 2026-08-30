@@ -324,9 +324,11 @@ sh scripts/check_target_env.sh
 sh scripts/check_target_env.sh --expect-arm --with-tests
 ```
 
-LubanCat-2N已经完成ARM64原生Debug/Release构建、16项CTest、确定性离线PCAP端到端验收，以及来自VMware NAT虚拟机的物理网卡ICMP实时抓包。板载系统位于容量8GB的eMMC，系统安装后空间有限；当前源码保留在SD卡，正在使用的构建树临时放在eMMC的Linux原生文件系统，避免VFAT缺少执行位和符号链接等Unix语义。不要在eMMC上长期积累源码和多个构建树。后续可以在备份后为SD卡规划ext4工作分区，或者在开发电脑交叉编译并只向板端部署Release程序；PCAP、CSV和交换数据继续优先放在SD卡。
+LubanCat-2N已经完成ARM64原生Debug/Release构建、16项板端旧基线CTest、确定性离线PCAP端到端验收，以及来自VMware NAT虚拟机的物理网卡ICMP实时抓包。板载系统位于容量8GB的eMMC，系统安装后空间有限；当前源码保留在SD卡，正在使用的构建树临时放在eMMC的Linux原生文件系统，避免VFAT缺少执行位和符号链接等Unix语义。不要在eMMC上长期积累源码和多个构建树；PCAP、CSV和交换数据继续优先放在SD卡。
 
-开发板上的CTest为3.16.3，低于`--test-dir`参数所需的3.20，因此测试时应先进入构建目录再运行`ctest`。同一确定性6包PCAP已经在x86_64与ARM64上得到一致标准输出和退出状态；下一次板端同步后应重新运行新增的第17项测试、周期指标实时验收和CPU/RSS测量，再评估交叉编译工具链。
+开发电脑已经完成两条ARM64交叉编译和板端运行链：一条使用鲁班猫官方Buildroot GCC 9.3及隔离的板端libpcap overlay，另一条使用Ubuntu GCC 13、从板端导出的完整sysroot和GCC `-B`启动文件前缀。两种产物均为AArch64 ELF、只要求`GLIBC_2.17`，并在板端通过`ldd`、`--help`和实时ICMP抓包。完整Shell环境变量、CMake参数、ABI检查与故障记录见[交叉编译手册](docs/cross_compilation.md)。
+
+开发板上的CTest为3.16.3，低于`--test-dir`参数所需的3.20，因此测试时应先进入构建目录再运行`ctest`。同一确定性6包PCAP已经在x86_64与ARM64原生构建上得到一致标准输出和退出状态；下一次板端源码同步后仍应运行新增的第17项测试，并完成周期指标、CPU/RSS和持续抓包性能验收。
 
 ## 后续迭代
 
@@ -339,4 +341,4 @@ LubanCat-2N已经完成ARM64原生Debug/Release构建、16项CTest、确定性�
 5. 实现规则异常检测，再准备机器学习特征与模型；
 6. 在稳定的数据接口之上实现Qt上位机，并按需要扩展云端展示。
 
-版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)，技术、环境和硬件选型见[docs/technical_decisions.md](docs/technical_decisions.md)。
+版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)，技术、环境和硬件选型见[docs/technical_decisions.md](docs/technical_decisions.md)，两种ARM64构建方式见[docs/cross_compilation.md](docs/cross_compilation.md)。

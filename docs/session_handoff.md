@@ -1,6 +1,6 @@
 # Netflow Analyzer会话交接文档
 
-最后更新：2026-08-29（Asia/Shanghai）
+最后更新：2026-08-30（Asia/Shanghai）
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
@@ -23,14 +23,16 @@ cmake -E chdir build ctest --output-on-failure
 
 - 当前分支：`main`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前已提交基线：`d1ef086 feat(metrics): model packet processing results`；
-- 当前工作区把五种处理结果接入单包控制流、周期报告和退出汇总，并增加260包流表满载压力验收；完成提交后以实际`git log`哈希为准；
+- 当前已提交基线：`eb114f3 feat(metrics): report packet processing results`，并与`origin/main`一致；
+- 当前工作区包含用户输入的GCC 9兼容性初始化，以及本轮交叉编译文档更新；提交前必须保留并检查这些改动；
 - 当前正式版本宏为`0.2.0`；
 - 已有标签：`v0.0.1`、`v0.1.0`、`v0.2.0`；
-- 完成本轮提交和推送后，预期`main`、`origin/main`一致；用户本地`.vscode/settings.json`改动不应被加入本功能提交；
 - Debug构建目录：`/home/zcb/workspace/netflow-analyzer/build`；
-- 主程序：`build/bin/netflow-analyzer`；
-- 当前17项CTest应全部通过。
+- 本地主程序：`build/bin/netflow-analyzer`；
+- 官方SDK交叉构建目录：`/home/zcb/build/netflow-analyzer-lubancat-sdk-release-v2`；
+- 通用GCC交叉构建目录：`/home/zcb/build/netflow-analyzer-generic-sysroot-release`；
+- 当前x86_64的17项CTest应全部通过；两种ARM64交叉产物已在LubanCat-2N运行成功；
+- 完成本轮文档检查、提交和推送后，预期`main`、`origin/main`再次一致。
 
 如果实际状态与上面不同，应先查看用户是否在新会话开始前继续修改了代码，不要覆盖未提交改动。
 
@@ -181,7 +183,18 @@ cmake --build build-release
 
 Release主程序位于`build-release/bin/netflow-analyzer`。
 
-### 4.4 VS Code与CMake历史问题
+### 4.4 ARM64交叉构建
+
+当前有两条已经在LubanCat-2N运行成功的Release交叉构建路径：
+
+- 官方Buildroot GCC 9.3、SDK内置glibc 2.29 sysroot和隔离的板端libpcap overlay；
+- Ubuntu `aarch64-linux-gnu-gcc` 13、板端完整sysroot和GCC `-B`启动文件前缀。
+
+两种产物均为AArch64 ELF，动态加载器为`/lib/ld-linux-aarch64.so.1`，最终只要求`GLIBC_2.17`。交叉配置使用`BUILD_TESTING=OFF`；逻辑回归由x86_64的17项CTest负责，目标加载和真实采集由板端`ldd`、`--help`和ICMP测试负责。
+
+完整目录、环境变量、CMake命令和故障处理见[`docs/cross_compilation.md`](cross_compilation.md)。
+
+### 4.5 VS Code与CMake历史问题
 
 曾经出现VS Code能够由CMake编译，但编辑器找不到头文件和不能补全的问题。关键点：
 
@@ -207,7 +220,8 @@ origin git@github.com:Devi1Fairy/netflow-analyzer.git
 当前重要提交，从新到旧：
 
 ```text
-（当前工作区，待提交）feat(metrics): report packet processing results
+（当前工作区，待提交）GCC 9结果初始化兼容性修正和交叉编译文档
+eb114f3 feat(metrics): report packet processing results
 d1ef086 feat(metrics): model packet processing results
 5e407ad feat(metrics): report periodic live capture metrics
 5224f93 feat(metrics): add periodic traffic rate calculations
@@ -1125,10 +1139,13 @@ output线程（CSV/Qt/告警）
 - VMware NAT虚拟机`192.168.78.130`能够`ping`开发板`192.168.1.102`，开发板不能反向`ping`虚拟机；这是NAT与路由边界，不是程序故障；
 - Release程序已在开发板物理网卡完成来自虚拟机的ICMP实时抓包和双向流聚合；开发板实际观察到NAT后对端`192.168.1.100`；
 - 受控测试中应用处理4个Echo包，后端报告接收6包且两个drop字段为0；多出的2包未进入应用，现有汇总统计无法还原其具体内容；
-- 同一确定性6包PCAP已经核对SHA-256，并在x86_64与ARM64上得到相同标准输出和退出状态；
-- 详细排查过程记录在`docs/problem_log.md`第5.1至5.5节。
+- 同一确定性6包PCAP已经核对SHA-256，并在x86_64与ARM64原生构建上得到相同标准输出和退出状态；
+- 官方Buildroot GCC 9.3、glibc 2.29 sysroot和隔离libpcap overlay已经完成ARM64 Release交叉构建；
+- Ubuntu GCC 13、板端完整sysroot和GCC `-B`启动文件前缀也已经完成ARM64 Release交叉构建；
+- 两种交叉产物均只要求`GLIBC_2.17`，并在板端通过`ldd`、`--help`和真实ICMP抓包；
+- 完整命令见`docs/cross_compilation.md`，详细排查过程见`docs/problem_log.md`第5.1至5.9节。
 
-不要宣称完整开发板部署已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、CTest、确定性PCAP跨平台输出对比和首次跨设备ICMP实时抓包，尚未完成新增第17项测试的板端回归、双向直连网络验证和性能验收。当前仓库提供环境检查脚本：
+不要宣称完整开发板验证已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、16项板端旧基线CTest、确定性PCAP跨平台输出对比、两种交叉编译和跨设备ICMP实时抓包；尚未完成新增第17项测试的板端回归、双向直连网络验证、非root权限方案和性能验收。当前仓库提供环境检查脚本：
 
 ```bash
 sh scripts/check_target_env.sh
@@ -1143,8 +1160,8 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 4. 运行帮助和版本；
 5. 拷贝同一个离线PCAP，在PC和板上对比输出；
 6. 再验证实时网卡和权限；
-7. 记录CPU、内存、包速率和丢包；
-8. 原生流程稳定后再评估交叉编译。
+7. 原生流程稳定后选择官方SDK或通用GCC加板端sysroot进行交叉构建，并检查ELF ABI；
+8. 记录CPU、内存、包速率和丢包。
 
 板上网络环境需要记录：
 
@@ -1164,7 +1181,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率、静默报告和五种应用处理结果已经完成，并通过260包流表满载压力PCAP。继续把最新代码同步到开发板，运行17项CTest并测量空闲及受控流量下的CPU、RSS、PPS和drop。
+周期PPS、Mbps、流表占用率、静默报告和五种应用处理结果已经完成，并通过260包流表满载压力PCAP。官方LubanCat SDK链路和通用GCC加板端sysroot链路均已交叉构建成功，两个产物也都通过板端加载、帮助信息和实时ICMP抓包验证。继续把最新源码同步到开发板，补跑当前17项CTest，并测量空闲及受控流量下的CPU、RSS、PPS和drop。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1175,7 +1192,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 - 为什么下一步是开发板单线程性能与容量测量；
 - 本轮不会直接替用户修改C源码。
 
-然后从开发板Release同步、17项CTest和可重复的资源测量命令开始。
+然后从本轮改动的提交检查、开发板17项CTest和可重复的资源测量命令开始；需要复现交叉构建时，按照`docs/cross_compilation.md`执行。
 
 ## 21. 本次交接结论
 
@@ -1204,4 +1221,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-应用处理结果分类和满载继续运行策略已经完成。当前下一步是把最新代码同步到开发板，运行17项CTest，并记录空闲及受控流量下的CPU、RSS、PPS、流表占用率和drop数据；根据这些证据决定流表容量/驱逐策略以及是否把`labs/thread_pipeline`接入正式程序。开发板侧已经完成原生Debug/Release构建、16项旧基线CTest、确定性PCAP跨平台一致性和物理网卡实时抓包。交叉编译仍有工程价值，但当前项目构建树只有数MB，不需要仅因eMMC容量立即切换。
+应用处理结果分类和满载继续运行策略已经完成。官方LubanCat SDK链路与通用GCC加板端sysroot链路也都已经完成交叉构建，并通过板端实际运行验证；完整命令、环境变量、CMake选项、ABI检查和故障排查记录在`docs/cross_compilation.md`。当前下一步是先提交本轮GCC 9兼容性修正与文档，再把最新源码同步到开发板，补跑当前17项CTest，并记录空闲及受控流量下的CPU、RSS、PPS、流表占用率和drop数据；根据这些证据决定流表容量/驱逐策略以及是否把`labs/thread_pipeline`接入正式程序。开发板侧此前已经完成原生Debug/Release构建、16项旧基线CTest、确定性PCAP跨平台一致性、物理网卡实时抓包以及两种交叉产物验证。
