@@ -49,6 +49,7 @@
 | TD-025 | 实时周期任务使用非阻塞采集与`poll()`驱动 | 已采用 |
 | TD-026 | 流表满载时拒绝新流数据包并继续分析 | 已采用 |
 | TD-027 | 保留官方SDK与通用GCC两条ARM64交叉构建路径 | 基础完成 |
+| TD-028 | 测试脚本兼容目标板自带Python 3.8 | 已采用 |
 
 ## 3. 核心语言与运行平台
 
@@ -810,12 +811,13 @@ eMMC容量：待填写
 
 - 系统运行在板载eMMC上；
 - 开发板使用CMake/CTest 3.16.3；
-- ARM64原生Debug构建及16项CTest通过；
+- ARM64原生Debug构建及当前17项CTest通过；
 - ARM64原生Release构建及确定性离线PCAP端到端验收通过；
+- 板端Python 3.8.10兼容性问题已经修复，Python验收项与16个C测试共同通过；
 - VMware NAT虚拟机能够向开发板发起ICMP，Release程序已在开发板物理网卡完成跨设备实时抓包；
 - 官方Buildroot GCC 9.3与隔离libpcap overlay已经生成只要求`GLIBC_2.17`的AArch64程序，并通过板端运行；
 - Ubuntu GCC 13配合板端完整sysroot和GCC `-B`启动文件前缀也已经生成只要求`GLIBC_2.17`的AArch64程序，并通过板端运行；
-- 后续仍需完成非root抓包权限、桥接网络双向连通、板端第17项CTest和性能测量。
+- 后续仍需完成非root抓包权限、桥接网络双向连通和性能测量。
 
 ### TD-024：按文件系统语义和容量分配eMMC与SD卡职责
 
@@ -888,10 +890,39 @@ SD卡项目目录：7.2MB
 - 官方SDK的旧版x86_64 `cc1`需要通过`LD_LIBRARY_PATH`找到SDK自带的`libisl.so.15`和`libmpfr.so.4`；
 - 通用GCC路径依赖从目标板导出的完整sysroot，目标系统升级后必须重新同步并复查；
 - 两条方法当前仍使用绝对路径和手动环境变量，后续需要整理为CMake toolchain文件或Preset；
-- 交叉构建使用`BUILD_TESTING=OFF`，逻辑回归由x86_64的17项CTest承担，目标ABI和真实采集由板端验收承担。
+- 交叉构建使用`BUILD_TESTING=OFF`；逻辑回归由x86_64和ARM64板端原生构建的17项CTest承担，目标ABI和真实采集由交叉产物板端验收承担。
 
 详细命令、变量作用域和故障处理见[`docs/cross_compilation.md`](cross_compilation.md)。
 
+### TD-028：测试脚本兼容目标板自带Python 3.8
+
+状态：已采用。
+
+决定：
+
+- Python端到端验收脚本必须能够在LubanCat系统自带的Python 3.8.10上运行；
+- 数据包列表类型使用`typing.List`和`typing.Tuple`，不使用Python 3.9才支持的`list[...]`和`tuple[...]`内置泛型注解；
+- 不为了运行项目测试替换或升级板端系统Python；
+- Python继续只作为`BUILD_TESTING=ON`时的验收依赖，不进入正式程序运行依赖。
+
+主要理由：
+
+- 测试工具本身必须能在目标系统运行，否则无法区分测试基础设施故障与C程序故障；
+- 板端发行版提供的系统Python可能被系统工具和软件包依赖，单独升级会增加环境破坏和维护风险；
+- 当前脚本只使用标准库，没有必须要求Python 3.9的新功能；
+- `typing.List[typing.Tuple[...]]`保持相同类型信息，并兼容Python 3.8。
+
+验证：
+
+- 最初板端16个C测试通过，Python脚本在加载阶段报告`TypeError: 'type' object is not subscriptable`；
+- 修改后x86_64的目标验收和全量17项CTest通过；
+- 修改后LubanCat ARM64原生Debug构建的目标验收和全量17项CTest通过；
+- 验收脚本能够实际启动分析器并完成确定性PCAP检查。
+
+代价与复审条件：
+
+- `typing.List`和`typing.Tuple`在新Python中属于较旧写法，但当前兼容性收益高于语法新颖性；
+- 如果未来确实使用只存在于较新Python的测试能力，应在CMake和README中显式声明最低版本，并提供隔离环境，而不是让脚本在加载阶段隐式失败。
 ## 10. 版本管理与交付
 
 ### TD-019：Git功能分支、Pull Request和版本标签

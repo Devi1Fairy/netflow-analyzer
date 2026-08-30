@@ -31,6 +31,7 @@
 - 为单包处理函数的局部结果增加明确的`COMPLETE`初值，消除官方GCC 9在Release交叉构建中的保守未初始化告警；本机17项CTest和两种ARM64交叉构建继续通过。
 - 在LubanCat-2N上完成两条ARM64交叉部署链：官方Buildroot GCC 9.3加隔离libpcap overlay，以及Ubuntu GCC 13加板端完整sysroot和GCC `-B`启动文件前缀；两种产物均只要求`GLIBC_2.17`并通过板端动态加载和实时ICMP抓包。
 - 新增交叉编译手册，详细记录Shell环境变量、sysroot导出、`pkg-config`定向、CMake参数、ELF/GLIBC检查、`scp`部署及真实故障处理。
+- Python离线验收将Python 3.9才支持的内置泛型注解改为`typing.List`和`typing.Tuple`，兼容LubanCat随系统提供的Python 3.8.10；x86_64与ARM64原生Debug构建的17项CTest均全部通过。
 
 ## [0.2.0] - 2026-08-26
 

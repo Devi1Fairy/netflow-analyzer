@@ -25,7 +25,7 @@
 | 目标板glibc | 最高导出`GLIBC_2.30` |
 | 目标板libpcap | 1.9.1，SONAME为`libpcap.so.0.8` |
 | 项目构建系统 | CMake 3.28.3、Ninja 1.11.1 |
-| 项目测试基线 | x86_64 Debug构建17项CTest全部通过 |
+| 项目测试基线 | x86_64与LubanCat ARM64原生Debug构建的17项CTest全部通过 |
 | 开发板地址 | `192.168.1.102` |
 | 开发板用户 | `cat` |
 
@@ -701,6 +701,7 @@ BUILD_TESTING=OFF
 | 层次 | 验证内容 |
 |---|---|
 | x86_64 Debug + 17项CTest | 协议解析、流表、指标和端到端逻辑回归 |
+| LubanCat ARM64原生Debug + 17项CTest | 目标架构、板端Python 3.8及完整逻辑回归 |
 | ARM64 Release交叉构建 | 编译器、头文件、链接和架构可移植性 |
 | `file`／`readelf` | ELF架构、加载器、共享库和GLIBC符号版本 |
 | SHA-256 | 传输前后文件完整性 |

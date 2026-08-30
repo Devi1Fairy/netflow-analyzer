@@ -834,3 +834,51 @@ warning: ‘result’ may be used uninitialized in this function
 - 两种交叉产物在LubanCat-2N运行成功。
 
 两条交叉编译方法的完整命令、变量和CMake参数见[`docs/cross_compilation.md`](cross_compilation.md)。
+
+### 5.10 板端Python 3.8无法加载Python 3.9内置泛型注解
+
+现象：
+
+LubanCat原生Debug构建成功。CTest中的16个C测试全部通过，但`offline_flow_acceptance`在加载Python脚本时失败：
+
+```text
+TypeError: 'type' object is not subscriptable
+```
+
+异常位置是：
+
+```python
+packets: list[tuple[int, int, bytes]]
+```
+
+环境检查确认板端解释器为：
+
+```text
+/usr/bin/python3
+Python 3.8.10
+```
+
+原因：
+
+- `list[...]`和`tuple[...]`作为类型注解使用属于Python 3.9引入的内置泛型语法；
+- Python 3.8在定义`write_pcap()`时会计算函数参数注解，内置`list`尚不支持该下标操作；
+- 异常发生在测试脚本加载阶段，尚未创建PCAP，也没有启动`netflow-analyzer`；
+- 因此该结果不能解释为C程序、ARM64架构、libpcap或离线分析逻辑失败。
+
+处理：
+
+没有为了测试脚本升级或替换系统Python，而是从`typing`导入`List`和`Tuple`，把三处数据包列表注解统一改为：
+
+```python
+List[Tuple[int, int, bytes]]
+```
+
+该选择保持类型信息不变，同时兼容目标系统提供的Python 3.8，避免为了测试工具改变板端系统级Python及其包依赖。
+
+验证结果：
+
+- x86_64上的`offline_flow_acceptance`通过；
+- x86_64全量17项CTest通过；
+- LubanCat上的`offline_flow_acceptance`通过；
+- LubanCat ARM64原生Debug全量17项CTest通过；
+- 修改只涉及Python验收脚本，没有修改C业务代码。

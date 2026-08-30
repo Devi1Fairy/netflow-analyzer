@@ -23,16 +23,15 @@ cmake -E chdir build ctest --output-on-failure
 
 - 当前分支：`main`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前已提交基线：`eb114f3 feat(metrics): report packet processing results`，并与`origin/main`一致；
-- 当前工作区包含用户输入的GCC 9兼容性初始化，以及本轮交叉编译文档更新；提交前必须保留并检查这些改动；
+- 当前已提交基线：`964f682 test: support Python 3.8 acceptance runs`，并与`origin/main`一致；
+- 当前工作区在本轮日志更新前应为空；如有其他改动，必须先确认来源并保留；
 - 当前正式版本宏为`0.2.0`；
 - 已有标签：`v0.0.1`、`v0.1.0`、`v0.2.0`；
 - Debug构建目录：`/home/zcb/workspace/netflow-analyzer/build`；
 - 本地主程序：`build/bin/netflow-analyzer`；
 - 官方SDK交叉构建目录：`/home/zcb/build/netflow-analyzer-lubancat-sdk-release-v2`；
 - 通用GCC交叉构建目录：`/home/zcb/build/netflow-analyzer-generic-sysroot-release`；
-- 当前x86_64的17项CTest应全部通过；两种ARM64交叉产物已在LubanCat-2N运行成功；
-- 完成本轮文档检查、提交和推送后，预期`main`、`origin/main`再次一致。
+- 当前x86_64与LubanCat ARM64原生Debug构建的17项CTest均全部通过；两种ARM64交叉产物也已在LubanCat-2N运行成功。
 
 如果实际状态与上面不同，应先查看用户是否在新会话开始前继续修改了代码，不要覆盖未提交改动。
 
@@ -143,7 +142,7 @@ cmake -E chdir build ctest --output-on-failure
 - Ninja；
 - pkg-config；
 - libpcap开发包；
-- Python 3，仅用于端到端验收；
+- Python 3，仅用于端到端验收；LubanCat自带Python 3.8.10已经验证；
 - Git和GitHub；
 - VS Code及CMake Tools/C语言扩展。
 
@@ -1132,7 +1131,8 @@ output线程（CSV/Qt/告警）
 - 项目源码已经位于`/media/usb0/Workspace/netflow-analyzer`；
 - 开发板使用CMake/CTest 3.16.3，不支持3.20才加入的`ctest --test-dir`，测试需要先进入构建目录；
 - VFAT构建树中的ELF文件因执行权限被屏蔽而无法启动，现已把构建树改到`/home/cat/build/netflow-analyzer-debug`；
-- 板上Debug原生构建和16项CTest已经通过；
+- 板上Debug原生构建和当前17项CTest已经通过；
+- 板端Python为3.8.10；验收脚本将Python 3.9内置泛型注解改为`typing.List`和`typing.Tuple`后，`offline_flow_acceptance`与全量测试均通过；
 - 板上Release原生构建和确定性6包PCAP端到端验收已经通过；
 - 系统位于容量8GB的eMMC，安装系统后空间有限；当前源码仍在SD卡，构建树临时位于eMMC，不建议再把完整源码和多个构建树长期迁入eMMC；
 - eMMC根分区实际为7.0GB ext4，已用4.7GB、可用2.1GB；Debug和Release构建目录分别只有2.6MB与456KB，目前无需清理；
@@ -1143,9 +1143,9 @@ output线程（CSV/Qt/告警）
 - 官方Buildroot GCC 9.3、glibc 2.29 sysroot和隔离libpcap overlay已经完成ARM64 Release交叉构建；
 - Ubuntu GCC 13、板端完整sysroot和GCC `-B`启动文件前缀也已经完成ARM64 Release交叉构建；
 - 两种交叉产物均只要求`GLIBC_2.17`，并在板端通过`ldd`、`--help`和真实ICMP抓包；
-- 完整命令见`docs/cross_compilation.md`，详细排查过程见`docs/problem_log.md`第5.1至5.9节。
+- 完整命令见`docs/cross_compilation.md`，详细排查过程见`docs/problem_log.md`第5.1至5.10节。
 
-不要宣称完整开发板验证已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、16项板端旧基线CTest、确定性PCAP跨平台输出对比、两种交叉编译和跨设备ICMP实时抓包；尚未完成新增第17项测试的板端回归、双向直连网络验证、非root权限方案和性能验收。当前仓库提供环境检查脚本：
+不要宣称完整开发板验证已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、当前17项板端CTest、确定性PCAP跨平台输出对比、两种交叉编译和跨设备ICMP实时抓包；尚未完成双向直连网络验证、非root权限方案和性能验收。当前仓库提供环境检查脚本：
 
 ```bash
 sh scripts/check_target_env.sh
@@ -1181,7 +1181,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率、静默报告和五种应用处理结果已经完成，并通过260包流表满载压力PCAP。官方LubanCat SDK链路和通用GCC加板端sysroot链路均已交叉构建成功，两个产物也都通过板端加载、帮助信息和实时ICMP抓包验证。继续把最新源码同步到开发板，补跑当前17项CTest，并测量空闲及受控流量下的CPU、RSS、PPS和drop。
+周期PPS、Mbps、流表占用率、静默报告和五种应用处理结果已经完成，并通过260包流表满载压力PCAP。x86_64与LubanCat ARM64原生Debug构建的17项CTest均全部通过，两种ARM64交叉产物也通过板端运行验证。继续测量开发板在空闲及受控流量下的CPU、RSS、PPS和drop。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1192,7 +1192,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 - 为什么下一步是开发板单线程性能与容量测量；
 - 本轮不会直接替用户修改C源码。
 
-然后从本轮改动的提交检查、开发板17项CTest和可重复的资源测量命令开始；需要复现交叉构建时，按照`docs/cross_compilation.md`执行。
+然后从本轮日志提交检查和可重复的开发板资源测量命令开始；需要复现交叉构建时，按照`docs/cross_compilation.md`执行。
 
 ## 21. 本次交接结论
 
@@ -1221,4 +1221,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-应用处理结果分类和满载继续运行策略已经完成。官方LubanCat SDK链路与通用GCC加板端sysroot链路也都已经完成交叉构建，并通过板端实际运行验证；完整命令、环境变量、CMake选项、ABI检查和故障排查记录在`docs/cross_compilation.md`。当前下一步是先提交本轮GCC 9兼容性修正与文档，再把最新源码同步到开发板，补跑当前17项CTest，并记录空闲及受控流量下的CPU、RSS、PPS、流表占用率和drop数据；根据这些证据决定流表容量/驱逐策略以及是否把`labs/thread_pipeline`接入正式程序。开发板侧此前已经完成原生Debug/Release构建、16项旧基线CTest、确定性PCAP跨平台一致性、物理网卡实时抓包以及两种交叉产物验证。
+应用处理结果分类和满载继续运行策略已经完成。官方LubanCat SDK链路与通用GCC加板端sysroot链路也都已经完成交叉构建，并通过板端实际运行验证；完整命令、环境变量、CMake选项、ABI检查和故障排查记录在`docs/cross_compilation.md`。Python验收脚本已经兼容板端Python 3.8.10，x86_64与LubanCat ARM64原生Debug构建的17项CTest均全部通过。当前下一步是记录空闲及受控流量下的CPU、RSS、PPS、流表占用率和drop数据；根据这些证据决定流表容量/驱逐策略以及是否把`labs/thread_pipeline`接入正式程序。
