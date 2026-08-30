@@ -34,6 +34,7 @@
 - Python离线验收将Python 3.9才支持的内置泛型注解改为`typing.List`和`typing.Tuple`，兼容LubanCat随系统提供的Python 3.8.10；x86_64与ARM64原生Debug构建的17项CTest均全部通过。
 - 完成LubanCat-2N第一组Release性能基线：从空闲到约9 Kpps均保持零应用拒绝和零捕获丢包；20万包场景进程平均CPU约4.25%、每包CPU成本约6.95微秒、最大RSS约1.64 MiB，因此正式链路继续保持单线程。
 - 新增板端性能基线文档，记录外部ICMP发生器、GNU `time`、`timeout`、`tee`、`stdbuf`命令语义、四档结果、周期抖动和测量边界。
+- 完成LubanCat-2N多流与长稳基线：300个UDP五元组得到256个完整流和44个满载拒绝；128流、约9 Kpps持续540万包时零drop、RSS采样恒定、每包CPU约6.24微秒，整机平均空闲90.97%，当前继续保持单线程。
 
 ## [0.2.0] - 2026-08-26
 

@@ -2,7 +2,7 @@
 
 最后更新：2026-08-30（Asia/Shanghai）
 
-本文记录Netflow Analyzer在LubanCat-2N上的第一组可重复性能测量。测试使用ARM64原生Release构建、真实`eth0`、libpcap BPF过滤和来自VMware虚拟机的外部ICMP流量。
+本文记录Netflow Analyzer在LubanCat-2N上的第一组可重复单流性能测量。测试使用ARM64原生Release构建、真实`eth0`、libpcap BPF过滤和来自VMware虚拟机的外部ICMP流量。随后完成的300流容量边界、128流性能、540万包长稳和整机软中断结果见[`multiflow_longrun_baseline.md`](multiflow_longrun_baseline.md)。
 
 本轮结论是：在单条双向ICMP流、约9 Kpps和约7 Mbps的已测范围内，程序处理20万包时零应用拒绝、零捕获丢包，进程CPU成本约6.95微秒/包，最大RSS约1.64 MiB。当前没有证据要求把正式链路改成多线程。
 
@@ -238,6 +238,6 @@ wait
 - 多流、高哈希碰撞或流表满载时的实时性能；
 - TCP/UDP混合负载及应用层解析成本；
 - 长时间运行的内存稳定性；
-- 网卡软中断等未计入目标进程CPU时间的整机成本。
+- 千兆链路高PPS下CPU0软中断集中是否会成为瓶颈。
 
-下一轮性能工作应优先补充整机CPU/软中断采样、长时间运行和多流负载。只有数据证明单线程成为瓶颈后，才重新评估`labs/thread_pipeline`进入正式程序。
+整机CPU/软中断、多流和10分钟长稳补测已经完成。128流、约9 Kpps、540万包场景仍保持零drop和稳定RSS；下一步不再重复同类压测，而应根据功能方向选择流表可观测性/驱逐策略、TCP状态跟踪或非root服务化部署。只有数据证明单线程成为瓶颈后，才重新评估`labs/thread_pipeline`进入正式程序。

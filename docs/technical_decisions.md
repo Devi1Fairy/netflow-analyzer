@@ -950,16 +950,20 @@ SD卡项目目录：7.2MB
 - 空闲22.04秒时进程CPU时间0.01秒，最大RSS 1764 KiB；
 - 4万包、约1.8 Kpps时进程CPU时间0.29秒，整体成本约7.25微秒/包；
 - 20万包、约8.8～9.1 Kpps时进程CPU时间1.39秒，整体成本约6.95微秒/包；
-- 所有已测负载均无应用拒绝、捕获drop和接口drop，RSS保持约1.60～1.72 MiB。
+- 128流、20万包、50%流表占用率时整体成本约6.70微秒/包，零拒绝和零drop；
+- 128流、540万包、约9 Kpps连续10分钟时整体成本约6.24微秒/包，`pidstat`首尾RSS均为564 KiB，最大RSS 1764 KiB；
+- 300个不同UDP五元组精确得到256个`complete`和44个`flow_rejected`，证明满载后继续运行策略有效；
+- 长稳窗口内整机平均空闲90.97%，CPU0软中断8.00%，没有应用单核或软中断饱和证据。
 
 边界：
 
-- GNU `time`记录目标进程及子进程资源，不完整覆盖网卡软中断等整机开销；
+- GNU `time`记录目标进程及子进程资源，不完整覆盖网卡软中断等整机开销；整机补测使用`mpstat`单独观察，不能把两类百分比直接相加；
 - 本轮是单条ICMP双向流，不代表多流哈希、TCP/UDP或应用层解析成本；
 - 短时测量不能替代长时间内存稳定性测试；
 - 达到更高负载、出现drop、输出阻塞或单核接近饱和时重新评估线程数量、队列容量和包数据所有权。
+- 如果更高PPS首先使CPU0软中断饱和，应先评估网卡队列、IRQ亲和性和RPS，避免把内核收包瓶颈误判为应用解析线程不足。
 
-详细方法和原始结果摘要见[`docs/performance_baseline.md`](performance_baseline.md)。
+详细方法和原始结果摘要见[`docs/performance_baseline.md`](performance_baseline.md)与[`docs/multiflow_longrun_baseline.md`](multiflow_longrun_baseline.md)。
 
 
 ### TD-019：Git功能分支、Pull Request和版本标签
