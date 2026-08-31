@@ -18,6 +18,28 @@ static bool flow_table_has_valid_shape(const flow_table_t *table)
 }
 
 /**
+ * @brief 保存一次线性探测产生的内部结果。
+ *
+ * found为true时，slot_index指向已有流。
+ * found为false且探测成功时，slot_index指向可插入槽位。
+ *
+ * oldest_found和oldest_slot_index记录探测期间看到的
+ * last_seen最早的OCCUPIED槽位。只有完整扫描整张表后，
+ * 该候选才代表整个流表的最旧记录。
+ *
+ * 本结构只在flow_table.c内部使用，不能暴露槽位下标给应用层。
+ */
+typedef struct {
+    bool found;
+    size_t slot_index;
+
+    bool oldest_found;
+    size_t oldest_slot_index;
+
+    size_t inspected_slot_count;
+} flow_table_probe_result_t;
+
+/**
  * @brief 累计一次数据包处理产生的哈希探测成本。
  *
  * 调用前必须保证：
@@ -122,41 +144,43 @@ static bool flow_timestamp_before(
 }
 
 /**
- * @brief 根据流键寻找已有记录或可用于插入的槽位。
+ * @brief 根据流键寻找已有记录、可插入槽位和最旧记录候选。
  *
- * 该函数同时服务于查找和插入：
+ * 线性探测过程中会记住：
  *
- * - found为true时，slot_index是已有记录的位置；
- * - found为false时，slot_index是可以插入新记录的位置；
- * - 没有已有记录且没有可用槽位时返回ENOSPC。
+ * - 与key相同的已有流；
+ * - 第一个DELETED槽位；
+ * - 已检查OCCUPIED槽位中last_seen最早的记录。
  *
- * 线性探测过程中会记住遇到的第一个DELETED槽位。
- * 如果最后确认流键不存在，插入操作应优先复用这个槽位。
+ * 如果遇到EMPTY，可以确定key不存在并提前结束。
+ * 此时oldest候选只属于已经检查的探测链，不能代表整个流表。
  *
- * 成功时修改found、slot_index和inspected_slot_count。
- * 返回ENOSPC时只修改inspected_slot_count，其值为capacity。
- * 其他失败不修改任何输出参数。
+ * 如果完整扫描后返回ENOSPC，oldest候选已经覆盖整张满表，
+ * 后续可以在流表模块内部安全地用于原位替换。
+ *
+ * 成功或ENOSPC时发布probe_result。
+ * EINVAL等错误不修改调用者的probe_result。
  */
-static int flow_table_probe(const flow_table_t *table,
-                            const flow_key_t *key,
-                            bool *found,
-                            size_t *slot_index,
-                            size_t *inspected_slot_count)
+static int flow_table_probe(
+    const flow_table_t *table,
+    const flow_key_t *key,
+    flow_table_probe_result_t *probe_result)
 {
+    flow_table_probe_result_t result = {0};
+
     uint64_t hash_value;
 
     size_t current_index;
     size_t probe_count;
     size_t first_deleted_index;
+    size_t occupied_slot_count;
 
     bool has_deleted_slot;
     int error_code;
 
     if (!flow_table_has_valid_shape(table) ||
         key == NULL ||
-        found == NULL ||
-        slot_index == NULL ||
-        inspected_slot_count == NULL) {
+        probe_result == NULL) {
         return EINVAL;
     }
 
@@ -166,55 +190,69 @@ static int flow_table_probe(const flow_table_t *table,
         return error_code;
     }
 
-    /*
-     * 哈希值可能远大于数组容量。
-     *
-     * 取模后得到0到capacity - 1之间的合法数组下标。
-     */
-    current_index = (size_t)(hash_value % (uint64_t)table->capacity);
+    current_index =
+        (size_t)(hash_value % (uint64_t)table->capacity);
 
     has_deleted_slot = false;
     first_deleted_index = 0U;
+    occupied_slot_count = 0U;
 
-    /*
-     * 最多检查capacity个槽位。
-     *
-     * 这既能覆盖整个哈希表，也能防止数组已满时无限循环。
-     */
-    for (probe_count = 0U; probe_count < table->capacity; probe_count += 1U) {
-
-        const flow_table_slot_t *current_slot = &table->slots[current_index];
+    for (probe_count = 0U;
+         probe_count < table->capacity;
+         probe_count += 1U) {
+        const flow_table_slot_t *current_slot =
+            &table->slots[current_index];
 
         switch (current_slot->state) {
         case FLOW_TABLE_SLOT_EMPTY:
             /*
-             * EMPTY表示这个探测链从未继续到更远的位置，
-             * 因此可以确定表中不存在该流键。
+             * EMPTY终止当前探测链，因此可以确认key不存在。
              */
-            *found = false;
+            result.found = false;
 
             if (has_deleted_slot) {
-                *slot_index = first_deleted_index;
+                result.slot_index = first_deleted_index;
             } else {
-                *slot_index = current_index;
+                result.slot_index = current_index;
             }
 
-            *inspected_slot_count = probe_count + 1U;
+            result.inspected_slot_count =
+                probe_count + 1U;
 
+            *probe_result = result;
             return 0;
 
         case FLOW_TABLE_SLOT_OCCUPIED:
             /*
-             * OCCUPIED槽位必须包含有效的flow_record_t。
+             * 已占用槽位必须保存有效记录和有效时间戳。
              */
-            if (!current_slot->record.initialized) {
+            if (!current_slot->record.initialized ||
+                current_slot->record.last_seen.microseconds <
+                    INT32_C(0) ||
+                current_slot->record.last_seen.microseconds >
+                    INT32_C(999999)) {
                 return EINVAL;
             }
 
+            occupied_slot_count += 1U;
+
+            /*
+             * 在正常哈希探测过程中顺便维护最旧候选，
+             * 不额外遍历流表。
+             */
+            if (!result.oldest_found || flow_timestamp_before(
+                    &current_slot->record.last_seen,
+                    &table->slots[result.oldest_slot_index].record.last_seen)) {
+                result.oldest_found = true;
+                result.oldest_slot_index = current_index;
+            }
+
             if (flow_key_equal(&current_slot->record.key, key)) {
-                *found = true;
-                *slot_index = current_index;
-                *inspected_slot_count = probe_count + 1U;
+                result.found = true;
+                result.slot_index = current_index;
+                result.inspected_slot_count = probe_count + 1U;
+
+                *probe_result = result;
                 return 0;
             }
 
@@ -222,30 +260,19 @@ static int flow_table_probe(const flow_table_t *table,
 
         case FLOW_TABLE_SLOT_DELETED:
             /*
-             * DELETED不能终止查找。
-             *
-             * 只记录第一个DELETED位置，后面仍要继续查找，
-             * 因为相同流键可能位于探测链的更后面。
+             * DELETED可以复用，但不能终止查找。
              */
             if (!has_deleted_slot) {
-                first_deleted_index = current_index;
                 has_deleted_slot = true;
+                first_deleted_index = current_index;
             }
 
             break;
 
         default:
-            /*
-             * 出现枚举定义以外的值，说明流表内部状态损坏。
-             */
             return EINVAL;
         }
 
-        /*
-         * 移动到下一个槽位。
-         *
-         * 到达数组末尾后回到0，这就是线性探测的环形遍历。
-         */
         current_index += 1U;
 
         if (current_index == table->capacity) {
@@ -254,18 +281,31 @@ static int flow_table_probe(const flow_table_t *table,
     }
 
     /*
-     * 整张表已经检查完成。
-     *
-     * 如果存在DELETED槽位，仍然可以复用；否则表确实已满。
+     * 只有完整扫描后，才能核对count与实际槽位数量。
      */
+    if (occupied_slot_count != table->count) {
+        return EINVAL;
+    }
+
+    result.found = false;
+    result.inspected_slot_count = table->capacity;
+
     if (has_deleted_slot) {
-        *found = false;
-        *slot_index = first_deleted_index;
-        *inspected_slot_count = table->capacity;
+        result.slot_index = first_deleted_index;
+        *probe_result = result;
         return 0;
     }
 
-    *inspected_slot_count = table->capacity;
+    /*
+     * 没有EMPTY和DELETED，说明真正满表。
+     *
+     * 合法的非零容量满表中一定存在最旧候选。
+     */
+    if (!result.oldest_found) {
+        return EINVAL;
+    }
+
+    *probe_result = result;
     return ENOSPC;
 }
 
@@ -309,36 +349,49 @@ int flow_table_init(flow_table_t *table,
     return 0;
 }
 
-int flow_table_process_packet(
+/**
+ * @brief 实现普通数据包处理和可选的满表原位淘汰。
+ *
+ * evict_oldest_when_full为false时保持原有ENOSPC语义。
+ *
+ * evict_oldest_when_full为true时，evicted_record和evicted必须有效；
+ * 真正满表时使用probe_result中的最旧候选原位创建新流。
+ */
+static int flow_table_process_packet_internal(
     flow_table_t *table,
     const packet_info_t *packet,
+    bool evict_oldest_when_full,
     const flow_record_t **record,
-    bool *created)
+    bool *created,
+    flow_record_t *evicted_record,
+    bool *evicted)
 {
     flow_key_t packet_key;
     flow_direction_t packet_direction;
 
     flow_record_t new_record;
+    flow_record_t result_evicted_record = {0};
+
     flow_table_slot_t *target_slot;
 
     const flow_record_t *result_record;
-    size_t inspected_slot_count;
-    bool result_created;
-    bool found;
 
-    size_t slot_index;
+    bool result_created;
+    bool result_evicted = false;
+
     int error_code;
+
+    flow_table_probe_result_t probe_result = {0};
 
     if (!flow_table_has_valid_shape(table) ||
         packet == NULL ||
         record == NULL ||
-        created == NULL) {
+        created == NULL ||
+        (evict_oldest_when_full &&
+         (evicted_record == NULL || evicted == NULL))) {
         return EINVAL;
     }
 
-    /*
-     * 先生成经过端点规范化的双向流键。
-     */
     error_code = flow_key_from_packet(
         packet,
         &packet_key,
@@ -350,67 +403,57 @@ int flow_table_process_packet(
     }
 
     /*
-     * flow_record_update内部会重新判断方向。
-     * 当前函数这里只需要packet_key进行流表查找。
+     * flow_record_update会根据packet重新确定方向。
+     * 当前函数只使用规范化后的packet_key进行哈希探测。
      */
     (void)packet_direction;
 
     error_code = flow_table_probe(
         table,
         &packet_key,
-        &found,
-        &slot_index,
-        &inspected_slot_count
+        &probe_result
     );
 
     /*
-    * 正常命中、正常插入和流表满载拒绝都实际执行了探测，
-    * 因此都应进入观测统计。
-    *
-    * EINVAL等内部错误没有可靠的完整探测结果，不累计。
-    */
+     * 正常查找、插入和完整满表扫描都是真实数据包探测。
+     */
     if (error_code == 0 ||
         error_code == ENOSPC) {
         flow_table_record_probe_statistics(
             table,
-            inspected_slot_count
+            probe_result.inspected_slot_count
         );
     }
 
-    if (error_code != 0) {
-        return error_code;
-    }
-
-    target_slot = &table->slots[slot_index];
-
-    if (found) {
+    if (error_code == ENOSPC &&
+        evict_oldest_when_full) {
         /*
-         * 找到已有流后，在原槽位累计当前数据包。
+         * ENOSPC表示已经完整扫描整张表，并确认：
+         *
+         * - 当前key不存在；
+         * - 没有EMPTY；
+         * - 没有DELETED。
+         *
+         * 因此最旧候选必须存在，count也必须等于capacity。
          */
-        error_code = flow_record_update(
-            &target_slot->record,
-            packet
-        );
-
-        if (error_code != 0) {
-            return error_code;
+        if (!probe_result.oldest_found ||
+            table->count != table->capacity) {
+            return EINVAL;
         }
 
-        result_record = &target_slot->record;
-        result_created = false;
-    } else {
-        /*
-         * probe返回的插入位置只能是EMPTY或DELETED。
-         */
-        if (target_slot->state != FLOW_TABLE_SLOT_EMPTY &&
-            target_slot->state != FLOW_TABLE_SLOT_DELETED) {
+        target_slot =
+            &table->slots[probe_result.oldest_slot_index];
+
+        if (target_slot->state !=
+                FLOW_TABLE_SLOT_OCCUPIED ||
+            !target_slot->record.initialized) {
             return EINVAL;
         }
 
         /*
-         * 先在局部变量中初始化流记录。
+         * 必须先在局部变量中初始化新记录。
          *
-         * 如果初始化失败，原槽位和流表count都不会被修改。
+         * 如果初始化失败，旧槽位、count和输出参数都保持不变。
          */
         error_code = flow_record_init(
             &new_record,
@@ -421,21 +464,124 @@ int flow_table_process_packet(
             return error_code;
         }
 
-        target_slot->record = new_record;
-        target_slot->state = FLOW_TABLE_SLOT_OCCUPIED;
-        table->count += 1U;
+        /*
+         * 先取得独立值副本，再覆盖原槽位。
+         */
+        result_evicted_record = target_slot->record;
 
+        target_slot->record = new_record;
+
+        /*
+         * 状态仍然是OCCUPIED，count也保持不变。
+         */
         result_record = &target_slot->record;
         result_created = true;
+        result_evicted = true;
+    } else {
+        if (error_code != 0) {
+            return error_code;
+        }
+
+        target_slot =
+            &table->slots[probe_result.slot_index];
+
+        if (probe_result.found) {
+            error_code = flow_record_update(
+                &target_slot->record,
+                packet
+            );
+
+            if (error_code != 0) {
+                return error_code;
+            }
+
+            result_record = &target_slot->record;
+            result_created = false;
+        } else {
+            if (target_slot->state !=
+                    FLOW_TABLE_SLOT_EMPTY &&
+                target_slot->state !=
+                    FLOW_TABLE_SLOT_DELETED) {
+                return EINVAL;
+            }
+
+            /*
+             * probe找到了可插入槽位，因此count必须小于capacity。
+             */
+            if (table->count >= table->capacity) {
+                return EINVAL;
+            }
+
+            error_code = flow_record_init(
+                &new_record,
+                packet
+            );
+
+            if (error_code != 0) {
+                return error_code;
+            }
+
+            target_slot->record = new_record;
+            target_slot->state = FLOW_TABLE_SLOT_OCCUPIED;
+
+            table->count += 1U;
+
+            result_record = &target_slot->record;
+            result_created = true;
+        }
     }
 
     /*
-     * 所有操作成功后再写入输出参数。
+     * 流表修改完全成功后才发布调用者输出。
      */
     *record = result_record;
     *created = result_created;
 
+    if (evict_oldest_when_full) {
+        if (result_evicted) {
+            *evicted_record = result_evicted_record;
+        }
+
+        *evicted = result_evicted;
+    }
+
     return 0;
+}
+
+int flow_table_process_packet(
+    flow_table_t *table,
+    const packet_info_t *packet,
+    const flow_record_t **record,
+    bool *created)
+{
+    return flow_table_process_packet_internal(
+        table,
+        packet,
+        false,
+        record,
+        created,
+        NULL,
+        NULL
+    );
+}
+
+int flow_table_process_packet_with_oldest_eviction(
+    flow_table_t *table,
+    const packet_info_t *packet,
+    const flow_record_t **record,
+    bool *created,
+    flow_record_t *evicted_record,
+    bool *evicted)
+{
+    return flow_table_process_packet_internal(
+        table,
+        packet,
+        true,
+        record,
+        created,
+        evicted_record,
+        evicted
+    );
 }
 
 int flow_table_evict_oldest(
@@ -662,9 +808,7 @@ int flow_table_find(const flow_table_t *table,
                     const flow_key_t *key,
                     const flow_record_t **record)
 {
-    bool found;
-    size_t slot_index;
-    size_t inspected_slot_count;
+    flow_table_probe_result_t probe_result = {0};
     int error_code;
 
     if (!flow_table_has_valid_shape(table) ||
@@ -673,7 +817,11 @@ int flow_table_find(const flow_table_t *table,
         return EINVAL;
     }
 
-    error_code = flow_table_probe(table, key, &found, &slot_index, &inspected_slot_count);
+    error_code = flow_table_probe(
+        table,
+        key,
+        &probe_result
+    );
 
     /*
      * 表中所有槽位都被占用，但没有匹配项时，
@@ -687,11 +835,11 @@ int flow_table_find(const flow_table_t *table,
         return error_code;
     }
 
-    if (!found) {
+    if (!probe_result.found) {
         return ENOENT;
     }
 
-    *record = &table->slots[slot_index].record;
+    *record = &table->slots[probe_result.slot_index].record;
 
     return 0;
 }

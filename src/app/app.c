@@ -807,6 +807,7 @@ static int app_process_packet(
     runtime_metrics_packet_result_t result = RUNTIME_METRICS_PACKET_RESULT_COMPLETE;
     flow_record_t evicted_flow_result = {0};
     bool flow_created;
+    bool flow_evicted_result = false;
 
     char source_mac[ETHERNET_MAC_STRING_SIZE];
     char destination_mac[ETHERNET_MAC_STRING_SIZE];
@@ -1097,88 +1098,76 @@ static int app_process_packet(
     }
 
     /*
-     * 只有协议分发成功、parse_status为COMPLETE的数据包，
-     * 才能生成可靠的双向五元组并进入流表。
-     */
+    * 只有协议分发成功、parse_status为COMPLETE的数据包，
+    * 才能生成可靠的双向五元组并进入流表。
+    */
     if (error_code == 0) {
-        error_code = flow_table_process_packet(
-            flow_table,
-            &packet_info,
-            &updated_flow,
-            &flow_created
-        );
-
-        if (error_code == ENOSPC &&
-            flow_full_policy == APP_FLOW_FULL_POLICY_REJECT) {
+        /*
+        * 应用层只负责选择满表策略。
+        *
+        * 哈希探测、最旧候选选择和原位替换全部封装在flow_table，
+        * 应用层不读取物理槽位下标，也不直接修改槽位状态。
+        */
+        if (flow_full_policy == APP_FLOW_FULL_POLICY_EVICT_OLDEST) {
+            error_code =
+                flow_table_process_packet_with_oldest_eviction(
+                    flow_table,
+                    &packet_info,
+                    &updated_flow,
+                    &flow_created,
+                    &evicted_flow_result,
+                    &flow_evicted_result
+                );
+        } else {
             /*
-             * reject策略保持原有行为：
-             * 当前包解析成功，但新流不能进入已经满载的流表。
-             */
-            result =
-                RUNTIME_METRICS_PACKET_RESULT_FLOW_REJECTED;
-            error_code = 0;
-        } else if (
-            error_code == ENOSPC &&
-            flow_full_policy ==
-                APP_FLOW_FULL_POLICY_EVICT_OLDEST
-        ) {
-            /*
-             * 第一次插入已经确认：
-             *
-             * 1. 当前数据包能够生成合法流键；
-             * 2. 它不属于现有流；
-             * 3. 流表没有可用于插入的槽位。
-             *
-             * 先按值复制并删除last_seen最早的流，再重新处理当前包。
-             */
-            error_code = flow_table_evict_oldest(
-                flow_table,
-                &evicted_flow_result
-            );
-
-            if (error_code != 0) {
-                return error_code;
-            }
-
-            /*
-             * 淘汰后流表至少释放了一个位置。
-             *
-             * 这次调用属于真实的数据包哈希操作，因此会再次进入
-             * flow_table的探测统计。淘汰扫描本身不计入哈希探测。
-             */
+            * flow_full_policy已经在函数入口验证。
+            * 因此另一个合法值只能是REJECT。
+            */
             error_code = flow_table_process_packet(
                 flow_table,
                 &packet_info,
                 &updated_flow,
                 &flow_created
             );
+        }
 
-            if (error_code != 0) {
-                /*
-                 * 按当前流表不变量，重试应当能够创建新流。
-                 * 如果仍然失败，说明内部状态不一致，不能把当前包
-                 * 降级成普通flow_rejected继续运行。
-                 */
-                return error_code;
-            }
-
+        if (error_code == ENOSPC &&
+            flow_full_policy == APP_FLOW_FULL_POLICY_REJECT) {
             /*
-             * 只有淘汰和重试全部成功后，才向调用者发布淘汰事件。
-             */
-            *evicted_flow = evicted_flow_result;
-            *flow_evicted = true;
+            * reject策略保持原有语义：
+            * 数据包协议解析成功，但新流无法进入满载流表。
+            */
+            result = RUNTIME_METRICS_PACKET_RESULT_FLOW_REJECTED;
 
-            result =
-                RUNTIME_METRICS_PACKET_RESULT_COMPLETE;
+            error_code = 0;
         } else if (error_code != 0) {
+            /*
+            * evict-oldest接口在合法满表状态下会完成原位替换，
+            * 不应再向应用层返回ENOSPC。
+            *
+            * 其他错误表示数据包或流表内部状态异常，不能降级成
+            * 普通flow_rejected继续运行。
+            */
             return error_code;
         } else {
+            /*
+            * 新接口返回淘汰记录的独立值副本。
+            *
+            * 只有流表操作全部成功后，才向app_process_packet的
+            * 调用者发布本次淘汰事件。
+            */
+            if (flow_evicted_result) {
+                *evicted_flow = evicted_flow_result;
+                *flow_evicted = true;
+            }
+
             result =
                 RUNTIME_METRICS_PACKET_RESULT_COMPLETE;
 
             /*
-             * 当前应用只需要知道流表已经完成更新。
-             */
+            * 当前应用只需要确认流表操作已经完成。
+            * 记录指针和created状态由流表测试负责验证。
+            */
             (void)updated_flow;
             (void)flow_created;
         }

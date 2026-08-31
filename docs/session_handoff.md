@@ -1,6 +1,6 @@
 # Netflow Analyzer会话交接文档
 
-最后更新：2026-08-30（Asia/Shanghai）
+最后更新：2026-08-31（Asia/Shanghai）
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
@@ -23,15 +23,15 @@ cmake -E chdir build ctest --output-on-failure
 
 - 当前分支：`main`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前已提交基线：`183617c docs(flow): record eviction policy validation`，前一提交`be08b7e`实现实时满表策略，并与`origin/main`一致；实际接手时仍须以`git log`为准；
-- 当前工作区只包含本轮LubanCat淘汰策略复测的文档补充，尚未提交；接手时必须保留并检查这些改动；
+- 当前已提交基线：`b23fa59 docs(board): record ARM64 eviction validation`，并与`origin/main`一致；实际接手时仍须以`git log`为准；
+- 当前工作区包含尚未提交的单次满表扫描优化：公开组合接口、流表内部最旧候选跟踪与原位替换、应用策略分派、完整单元测试及对应文档；接手时必须保留并检查这些改动；
 - 当前正式版本宏为`0.2.0`；
 - 已有标签：`v0.0.1`、`v0.1.0`、`v0.2.0`；
 - Debug构建目录：`/home/zcb/workspace/netflow-analyzer/build`；
 - 本地主程序：`build/bin/netflow-analyzer`；
 - 官方SDK交叉构建目录：`/home/zcb/build/netflow-analyzer-lubancat-sdk-release-v2`；
 - 通用GCC交叉构建目录：`/home/zcb/build/netflow-analyzer-generic-sysroot-release`；
-- 当前x86_64的17项CTest全部通过；此前LubanCat ARM64原生Debug构建的17项CTest也全部通过，两种ARM64交叉产物均已运行成功，最新官方SDK交叉产物又完成流表探测成本复测。
+- 当前x86_64的17项CTest全部通过；单次扫描优化已完成Ubuntu `lo`和LubanCat-2N物理网卡300流手工验收。优化版官方SDK ARM64产物只要求`GLIBC_2.17`，板端得到300次操作、44次淘汰、256条最终流和零drop。
 
 如果实际状态与上面不同，应先查看用户是否在新会话开始前继续修改了代码，不要覆盖未提交改动。
 
@@ -413,7 +413,7 @@ flow_table_expire_before复制并删除旧流
     ↓
 输出完整/截断/畸形/不支持/流表拒绝分类
     ↓ 完整且有容量
-流表聚合；满载时按策略拒绝新流，或淘汰last_seen最早流后重试
+流表聚合；满载时按策略拒绝新流，或在同一次满表扫描中选择并原位替换last_seen最早流
     ↓
 总捕获包数达到N，或收到SIGINT/SIGTERM
     ↓
@@ -513,7 +513,7 @@ int capture_open_live(..., capture_t **capture, ...);
 - 当前不支持动态扩容；
 - 当前没有内部锁，不能被多个线程同时修改。
 
-数据包路径还累计线性探测操作数、检查槽位总数和最大探测长度。起始槽位算1次检查；命中、插入和满载`ENOSPC`都计入，`flow_table_find()`等管理查询不计入。两个`uint64_t`累计值达到上限后饱和而不回绕；应用退出时输出平均、最大和饱和状态。
+数据包路径还累计线性探测操作数、检查槽位总数和最大探测长度。起始槽位算1次检查；命中、插入和满载`ENOSPC`都计入，`flow_table_find()`等管理查询不计入。两个`uint64_t`累计值达到上限后饱和而不回绕；应用退出时输出平均、最大和饱和状态。`evict-oldest`组合接口也只把当前包记为一次探测操作；满表扫描已经取得最旧候选，因此不再执行淘汰后的第二次哈希探测。
 
 `DELETED`不能直接变回`EMPTY`，否则会提前截断发生哈希冲突后的探测链。流表完全为空时可以统一清除删除标记。
 
@@ -635,8 +635,8 @@ sudo ./build/bin/netflow-analyzer \
 实时流表满载策略：
 
 - 默认`--flow-full-policy reject`，新流包计入`flow_rejected`并继续运行；
-- 可选`--flow-full-policy evict-oldest`，按最小`last_seen`复制并移除最久未活动流，再重试当前包；
-- 重试成功的当前包计入`complete`，淘汰使用独立`evicted_flows`计数；
+- 可选`--flow-full-policy evict-oldest`，在确认新键不存在的同一次满表扫描中按最小`last_seen`复制最久未活动流，并用当前新流原位替换；
+- 原位替换成功的当前包计入`complete`，淘汰使用独立`evicted_flows`计数；
 - 该选项第一版只允许实时模式使用，离线模式仍保持完整文件级聚合和固定容量拒绝语义。
 
 达到数量上限或收到`SIGINT`/`SIGTERM`后，实时模式在关闭capture句柄前查询`pcap_stats()`，输出捕获后端接收、抓包缓冲区丢弃和接口丢弃统计。统计查询失败只降级显示不可用，不丢弃已经完成的流分析。
@@ -694,7 +694,7 @@ sudo ./build/bin/netflow-analyzer \
 | 10 | `ipv4_dispatch_tests` | 协议号分发、未知协议和分片处理 |
 | 11 | `flow_key_tests` | 双向规范化、方向、字段比较和稳定FNV-1a哈希 |
 | 12 | `flow_record_tests` | 两个方向统计、首末时间、错误和溢出保护 |
-| 13 | `flow_table_tests` | 哈希冲突、线性探测、回绕、删除标记、复用、遍历、过期、探测统计、查询隔离和饱和保护 |
+| 13 | `flow_table_tests` | 哈希冲突、线性探测、回绕、删除标记、复用、遍历、过期、探测统计、查询隔离、饱和保护，以及单次满表扫描选择并原位替换最旧流的成功/失败契约 |
 | 14 | `offline_flow_acceptance` | 6包PCAP验证聚合、预览、CSV和无冲突探测；260包PCAP验证四类异常/拒绝、256槽满载、完整扫描和继续运行 |
 | 15 | `flow_export_tests` | CSV表头、记录字段顺序、格式化和无效参数 |
 | 16 | `flow_expiration_tests` | 事件时间高水位、扫描边界、乱序时间戳、参数验证和截止时间下溢 |
@@ -1117,19 +1117,23 @@ LubanCat官方SDK交叉产物实测：
 
 结论：当前受控50%占用工作负载没有哈希查找退化，无需为了探测性能立即更换哈希或动态扩容；固定256条活跃流仍是独立的业务容量边界。下一步若处理容量问题，应先明确内存上限、驱逐偏差和被驱逐流的输出所有权。
 
-### 18.7 实时最旧流淘汰（基础完成）
+### 18.7 实时最旧流淘汰与单次扫描（已完成）
 
 当前已经完成：
 
 - CLI增加`--flow-full-policy reject|evict-oldest`，默认保持`reject`；
 - `flow_table_evict_oldest()`按最小`last_seen`选择记录，删除前返回不依赖槽位生命周期的值副本；
-- `evict-oldest`在第一次插入返回`ENOSPC`后淘汰旧流并重试，重试成功的当前包计入`complete`，淘汰事件单独计入周期和退出`evicted_flows`；
+- 新增`flow_table_process_packet_with_oldest_eviction()`，与默认拒绝路径复用内部探测逻辑；满表扫描同步记录最旧候选，确认新键不存在且所有槽位均被占用后，在原槽位发布已经完整初始化的新记录；
+- 替换前按值复制旧记录，槽位保持`OCCUPIED`、`count`保持不变；当前包计入`complete`，淘汰事件单独计入周期和退出`evicted_flows`；应用层只选择策略，不取得槽位指针或下标；
 - 单元测试覆盖最旧选择、刷新后保留、`DELETED`复用、值副本、探测统计隔离、空表、无效参数、内部计数不一致和最后一条流；
+- 组合接口测试还覆盖普通插入、已有流更新、满表替换后的容量与查找、每包只增加一次探测操作，以及无效包、空输出参数、损坏的内部计数和全部失败输出不变；
 - CLI测试覆盖默认值、重新解析复位、合法值、缺失、空、未知、重复、离线组合、无来源以及绕过解析的非法上下文；
-- Ubuntu `lo`用300个不同UDP五元组完成真实验收：`complete=300`、`flow_rejected=0`、`Evicted flows: 44`、最终256条流且两个drop字段为0；本地17项CTest全部通过。
-- 最新官方SDK ARM64 Release产物已部署到LubanCat-2N，物理网卡300流复测得到`operations=344`、`inspected_slots=25505`、`average=74.14`、`maximum=256`、44次淘汰、256条最终流、后端接收300包和两个drop字段为0。
+- 优化前Ubuntu `lo`基线为`operations=344`、`inspected_slots=25055`、`average=72.83`和`maximum=256`；最新官方SDK ARM64 Release板端基线为344次操作、25505次槽位检查、平均74.14、最大256、44次淘汰和两个drop字段为0；
+- 优化后Ubuntu `lo`用300个不同UDP五元组复测：`operations=300`、`inspected_slots=12416`、`average=41.39`、`maximum=256`、`complete=300`、`flow_rejected=0`、44次淘汰、最终256条流且两个drop字段为0；被淘汰端口从30000到30043，与时间顺序一致；
+- 优化后官方SDK ARM64产物在LubanCat-2N得到`operations=300`、`inspected_slots=15364`、`average=51.21`、`maximum=256`、`complete=300`、`flow_rejected=0`、44次淘汰、最终256条流、后端接收303包和两个drop字段为0；
+- 官方GCC 9对局部探测结果给出的保守未初始化告警已经通过显式零初始化消除；本地重点测试和全部17项CTest、官方SDK Release构建、`git diff --check`及板端运行均通过。
 
-当前实现为保证职责边界，组合首次满表探测、最旧流扫描和淘汰后的通用插入重试。实测`operations=344`、`inspected_slots=25055`、`average=72.83`、`maximum=256`；探测统计不包含最旧流扫描，因此满载持续换入时的实际槽位访问成本更高。后续可在流表模块内把满表探测、最旧候选选择和原位替换合并为一次扫描，但不能把内部槽位指针交给应用层直接修改。
+旧实现每次满表新流执行“256槽满表探测、256槽独立淘汰扫描、256槽插入重试”。44次淘汰中，已报告的重试扫描为`44 * 256 = 11264`次槽位检查，未进入探测统计的独立淘汰扫描也是11264次。新实现将三次整表扫描收敛为一次，最多省去22528次槽位访问；`operations`从344降到300直接证明重试已经消除。两轮测试源端口和哈希分布不同，因此不能用25055和12416计算严格的CPU提升百分比；若需要性能结论，应使用完全相同的五元组序列和构建产物做成对测试。
 
 ### 18.8 应用层与DPI
 
@@ -1196,11 +1200,12 @@ LubanCat官方SDK交叉产物实测：
 - 官方Buildroot GCC 9.3、glibc 2.29 sysroot和隔离libpcap overlay已经完成ARM64 Release交叉构建；
 - Ubuntu GCC 13、板端完整sysroot和GCC `-B`启动文件前缀也已经完成ARM64 Release交叉构建；
 - 两种交叉产物均只要求`GLIBC_2.17`，并在板端通过`ldd`、`--help`和真实ICMP抓包；
-- 完整交叉命令见`docs/cross_compilation.md`，详细排查过程见`docs/problem_log.md`第5.1至5.12节；
+- 完整交叉命令见`docs/cross_compilation.md`，详细排查过程见`docs/problem_log.md`第5.1至5.14节；
 - 单流Release性能基线已完成：最高约9 Kpps、20万包、每包CPU约6.95微秒、最大RSS约1.64 MiB且零drop，详见`docs/performance_baseline.md`；
 - 多流与长稳基线已完成：300流得到256个完整流和44个满载拒绝；128流、约9 Kpps、540万包持续10分钟时每包CPU约6.24微秒、RSS采样恒定且零drop，整机平均空闲90.97%，详见`docs/multiflow_longrun_baseline.md`。
 - 流表探测统计版官方SDK交叉产物已完成板端复测：128流、20万包时平均和最大探测长度均为1；300流满载时11928次槽位检查中有11264次来自44个拒绝包的完整扫描，两个场景均零drop。
 - 最旧流淘汰版官方SDK交叉产物只要求`GLIBC_2.17`，SHA-256为`02da53505b1f1230a9a04c60af8a618d85b734ed89a7c19176f5d59a7d4a3604`；板端300流得到300个完整包、44次淘汰、256条最终流和零drop。
+- 单次满表扫描优化版官方SDK产物SHA-256为`c2dcc119ebbd27d321dbf041683d57a31ac0d22645fe16fea2ce08e873b37036`；板端300流得到300次探测操作、44次淘汰、256条最终流和零drop，证明优化在ARM64真实运行环境中成立。
 
 不要宣称完整开发板验证已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、当前17项板端CTest、确定性PCAP跨平台输出对比、两种交叉编译、跨设备ICMP实时抓包、单流/多流性能、满载边界、流表探测成本、整机软中断和10分钟长稳；尚未完成双向直连网络验证、非root权限方案和生产级数小时/数天浸泡测试。当前仓库提供环境检查脚本：
 
@@ -1238,7 +1243,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计和实时`reject|evict-oldest`满表策略已经完成。本机17项CTest、Ubuntu `lo`和LubanCat ARM64官方SDK产物的300流最旧流淘汰验收均通过。下一步先提交板端复测文档，再选择合并满载扫描优化、TCP状态跟踪或非root服务化部署。
+周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计，以及实时`reject|evict-oldest`满表策略的单次扫描原位替换已经完成。本机17项CTest、优化后的Ubuntu `lo`和LubanCat ARM64 300流验收均通过。下一步从TCP状态跟踪或非root服务化部署中选择一个独立迭代。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1249,7 +1254,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 - 为什么现有性能数据不支持接入线程流水线，以及下一步为何转向新的功能或部署问题；
 - 本轮不会直接替用户修改C源码。
 
-然后从本轮多流与长稳文档的提交检查和下一项技术选择开始；性能方法见`docs/performance_baseline.md`与`docs/multiflow_longrun_baseline.md`，交叉构建方法见`docs/cross_compilation.md`。
+然后先检查单次扫描优化的源码、测试和文档差异以及Git提交状态，再进入下一项技术选择；性能方法见`docs/performance_baseline.md`与`docs/multiflow_longrun_baseline.md`，交叉构建方法见`docs/cross_compilation.md`。
 
 ## 21. 本次交接结论
 
@@ -1279,4 +1284,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-应用处理结果分类、默认满载拒绝、显式最旧流淘汰和线性探测可观测性已经完成。两种既有ARM64交叉构建和最新最旧流淘汰版官方SDK产物均通过板端实际运行，Python验收脚本兼容板端Python 3.8.10；x86_64的17项CTest、Ubuntu `lo`及LubanCat物理网卡300流验收全部通过。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳；新淘汰测试进一步量化了通用接口组合的重复扫描成本。当前不接入`labs/thread_pipeline`，下一步可单独以相同负载优化满表扫描，或转向TCP状态跟踪与非root服务化部署。
+应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。两种既有ARM64交叉构建和单次扫描优化版官方SDK产物均通过板端实际运行，Python验收脚本兼容板端Python 3.8.10；x86_64的17项CTest、优化后的Ubuntu `lo`及LubanCat物理网卡300流验收全部通过。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳；新实现把满载换入路径从三次整表扫描收敛为一次，并保持应用层与流表槽位的职责边界。当前不接入`labs/thread_pipeline`；下一步可转向TCP状态跟踪或非root服务化部署。

@@ -177,6 +177,51 @@ int flow_table_process_packet(
     bool *created);
 
 /**
+ * @brief 处理数据包，并在真正满表时原位淘汰最旧流。
+ *
+ * 正常情况下，本函数与flow_table_process_packet行为相同：
+ *
+ * - 找到已有流时更新记录；
+ * - 存在EMPTY或DELETED槽位时创建新流；
+ * - 上述两种情况都不会淘汰流。
+ *
+ * 如果当前数据包属于新流，并且一次完整哈希探测确认流表中
+ * 没有EMPTY或DELETED槽位，则使用探测期间找到的最旧槽位：
+ *
+ * 1. 把旧记录按值复制到evicted_record；
+ * 2. 在局部变量中初始化当前包的新流记录；
+ * 3. 使用新记录原位替换最旧槽位。
+ *
+ * 原位替换前后槽位都保持OCCUPIED，因此table->count不变，
+ * 也不会产生会截断开放寻址探测链的EMPTY槽位。
+ *
+ * 成功时：
+ *
+ * - record指向创建或更新后的流表内部记录；
+ * - created表示是否创建了新流；
+ * - evicted表示是否发生了原位淘汰；
+ * - evicted为true时，evicted_record包含被淘汰流的值副本；
+ * - evicted为false时，不修改evicted_record。
+ *
+ * record由流表拥有，调用者不能free或直接修改。
+ * evicted_record由调用者拥有，不依赖原槽位的后续生命周期。
+ *
+ * 每个数据包只记录一次哈希探测操作。原位替换不会再次增加
+ * packet_operation_count或total_inspected_slot_count。
+ *
+ * 函数失败时不修改record、created、evicted_record和evicted。
+ *
+ * @return 成功时返回0，参数、数据包或流表状态无效时返回相应错误码。
+ */
+int flow_table_process_packet_with_oldest_eviction(
+    flow_table_t *table,
+    const packet_info_t *packet,
+    const flow_record_t **record,
+    bool *created,
+    flow_record_t *evicted_record,
+    bool *evicted);
+
+/**
  * @brief 移除最后活动时间最早的一条流，并返回其值副本。
  *
  * “最旧”由最小的record->last_seen决定。

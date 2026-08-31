@@ -636,7 +636,7 @@ scp /home/zcb/build/netflow-analyzer-lubancat-sdk-release-v2/bin/netflow-analyze
 12bfa1b5a1735390529b7685168c632a074d00a0384d878fde3c5ffad2ffc9cd
 ```
 
-提交`183617c`包含实时最旧流淘汰策略的最新官方SDK产物：
+提交`183617c`包含实时最旧流淘汰策略的优化前官方SDK产物：
 
 ```text
 文件：/home/cat/bin/netflow-analyzer-cross-sdk-evict
@@ -644,6 +644,28 @@ SHA-256：02da53505b1f1230a9a04c60af8a618d85b734ed89a7c19176f5d59a7d4a3604
 ```
 
 该产物继续只要求`GLIBC_2.17`，动态依赖为`libpcap.so.0.8`和`libc.so.6`。LubanCat物理网卡300流验收得到300个`complete`、44个`evicted_flows`、256条最终流和两个drop字段为0。
+
+单次满表扫描优化后的官方SDK产物：
+
+```text
+文件：/home/cat/bin/netflow-analyzer-cross-sdk-single-probe
+SHA-256：c2dcc119ebbd27d321dbf041683d57a31ac0d22645fe16fea2ce08e873b37036
+```
+
+该产物由官方Buildroot GCC 9.3构建，仍为AArch64 ELF且只要求`GLIBC_2.17`。300个不同UDP五元组的LubanCat物理网卡复测得到：
+
+```text
+Processing results: complete=300 truncated=0 malformed=0 unsupported=0 flow_rejected=0
+Flow table probes: operations=300 inspected_slots=15364 average=51.21 maximum=256 saturated=false
+Expired flows: 0
+Evicted flows: 44
+Capture received packets: 303
+Capture dropped packets: 0
+Interface dropped packets: 0
+Flow summary: 256 flow(s)
+```
+
+旧版相同策略需要344次数据包路径探测操作，新版只需要300次，证明44次淘汰后的重新插入探测已经消除。`inspected_slots`受本轮临时源端口、NAT改写和哈希分布影响，不能与Ubuntu数值直接换算成严格性能提升；后端接收303包与应用取得300包属于libpcap统计层级差异，两个专用drop字段均为0。
 
 ### 8.2 通用GCC产物
 

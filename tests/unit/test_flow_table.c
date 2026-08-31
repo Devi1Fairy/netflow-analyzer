@@ -1829,6 +1829,554 @@ static int test_evict_oldest_and_reuse_capacity(void)
 }
 
 /**
+ * @brief 验证满表数据包通过一次探测原位淘汰最旧流。
+ */
+static int test_process_packet_with_oldest_eviction(void)
+{
+    flow_table_slot_t storage[2];
+    flow_table_t table;
+
+    packet_info_t first_packet;
+    packet_info_t second_packet;
+    packet_info_t replacement_packet;
+
+    flow_key_t first_key;
+    flow_key_t second_key;
+    flow_key_t replacement_key;
+    flow_direction_t direction;
+
+    flow_record_t evicted_record;
+
+    const flow_record_t sentinel_record = {
+        .last_seen = {
+            .seconds = INT64_C(777),
+            .microseconds = INT32_C(123456)
+        },
+        .initialized = true
+    };
+
+    const flow_record_t *record;
+    const flow_record_t *found_record;
+
+    flow_table_probe_statistics_t statistics_before;
+    flow_table_probe_statistics_t statistics_after;
+
+    bool created;
+    bool evicted;
+
+    TEST_CHECK(
+        flow_table_init(
+            &table,
+            storage,
+            sizeof(storage) / sizeof(storage[0])
+        ) == 0
+    );
+
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &first_packet,
+            INT64_C(100),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(2000)
+        ) == 0
+    );
+
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &second_packet,
+            INT64_C(200),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(3000)
+        ) == 0
+    );
+
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &replacement_packet,
+            INT64_C(300),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(4000)
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_key_from_packet(
+            &first_packet,
+            &first_key,
+            &direction
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_key_from_packet(
+            &second_packet,
+            &second_key,
+            &direction
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_key_from_packet(
+            &replacement_packet,
+            &replacement_key,
+            &direction
+        ) == 0
+    );
+
+    /*
+     * 表未满时使用新接口，不应产生淘汰。
+     */
+    evicted_record = sentinel_record;
+    evicted = true;
+
+    TEST_CHECK(
+        flow_table_process_packet_with_oldest_eviction(
+            &table,
+            &first_packet,
+            &record,
+            &created,
+            &evicted_record,
+            &evicted
+        ) == 0
+    );
+
+    TEST_CHECK(created);
+    TEST_CHECK(!evicted);
+    TEST_CHECK(
+        evicted_record.last_seen.seconds ==
+            INT64_C(777)
+    );
+
+    evicted_record = sentinel_record;
+    evicted = true;
+
+    TEST_CHECK(
+        flow_table_process_packet_with_oldest_eviction(
+            &table,
+            &second_packet,
+            &record,
+            &created,
+            &evicted_record,
+            &evicted
+        ) == 0
+    );
+
+    TEST_CHECK(created);
+    TEST_CHECK(!evicted);
+    TEST_CHECK(flow_table_count(&table) == 2U);
+
+    TEST_CHECK(
+        flow_table_get_probe_statistics(
+            &table,
+            &statistics_before
+        ) == 0
+    );
+
+    /*
+     * 第三条不同五元组进入满表：
+     * first_packet的last_seen最早，必须被原位淘汰。
+     */
+    evicted_record = sentinel_record;
+    evicted = false;
+
+    TEST_CHECK(
+        flow_table_process_packet_with_oldest_eviction(
+            &table,
+            &replacement_packet,
+            &record,
+            &created,
+            &evicted_record,
+            &evicted
+        ) == 0
+    );
+
+    TEST_CHECK(created);
+    TEST_CHECK(evicted);
+    TEST_CHECK(flow_table_count(&table) == 2U);
+
+    TEST_CHECK(
+        flow_key_equal(
+            &evicted_record.key,
+            &first_key
+        )
+    );
+
+    TEST_CHECK(
+        evicted_record.last_seen.seconds ==
+            INT64_C(100)
+    );
+
+    TEST_CHECK(
+        flow_key_equal(
+            &record->key,
+            &replacement_key
+        )
+    );
+
+    /*
+     * 原位淘汰只产生一次数据包探测。
+     * 满容量为2，因此本次检查恰好2个槽位。
+     */
+    TEST_CHECK(
+        flow_table_get_probe_statistics(
+            &table,
+            &statistics_after
+        ) == 0
+    );
+
+    TEST_CHECK(
+        statistics_after.packet_operation_count ==
+            statistics_before.packet_operation_count +
+                UINT64_C(1)
+    );
+
+    TEST_CHECK(
+        statistics_after.total_inspected_slot_count ==
+            statistics_before.total_inspected_slot_count +
+                UINT64_C(2)
+    );
+
+    TEST_CHECK(
+        statistics_after.maximum_probe_length == 2U
+    );
+
+    /*
+     * 最旧流已经不存在，其他旧流和替换流仍能正常查找。
+     */
+    TEST_CHECK(
+        flow_table_find(
+            &table,
+            &first_key,
+            &found_record
+        ) == ENOENT
+    );
+
+    TEST_CHECK(
+        flow_table_find(
+            &table,
+            &second_key,
+            &found_record
+        ) == 0
+    );
+
+    TEST_CHECK(
+        flow_table_find(
+            &table,
+            &replacement_key,
+            &found_record
+        ) == 0
+    );
+
+    /*
+     * 满表中已有流再次到达时只更新，不能错误淘汰其他流。
+     */
+    evicted_record = sentinel_record;
+    evicted = true;
+
+    TEST_CHECK(
+        flow_table_process_packet_with_oldest_eviction(
+            &table,
+            &replacement_packet,
+            &record,
+            &created,
+            &evicted_record,
+            &evicted
+        ) == 0
+    );
+
+    TEST_CHECK(!created);
+    TEST_CHECK(!evicted);
+    TEST_CHECK(flow_table_count(&table) == 2U);
+    TEST_CHECK(
+        evicted_record.last_seen.seconds ==
+            INT64_C(777)
+    );
+
+    flow_table_cleanup(&table);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证组合处理接口的参数检查和失败不修改语义。
+ */
+static int
+test_process_packet_with_oldest_eviction_validation(void)
+{
+    flow_table_slot_t storage[1];
+    flow_table_t table;
+
+    packet_info_t valid_packet;
+    packet_info_t replacement_packet;
+    packet_info_t invalid_packet = {0};
+
+    flow_record_t evicted_record;
+    flow_record_t stored_record;
+
+    const flow_record_t sentinel_record = {
+        .last_seen = {
+            .seconds = INT64_C(777),
+            .microseconds = INT32_C(123456)
+        },
+        .initialized = true
+    };
+
+    const flow_record_t *record;
+
+    flow_table_probe_statistics_t statistics_before;
+    flow_table_probe_statistics_t statistics_after;
+
+    bool created;
+    bool evicted;
+
+    TEST_CHECK(
+        flow_table_init(
+            &table,
+            storage,
+            sizeof(storage) / sizeof(storage[0])
+        ) == 0
+    );
+
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &valid_packet,
+            INT64_C(100),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(2000)
+        ) == 0
+    );
+
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &replacement_packet,
+            INT64_C(200),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(3000)
+        ) == 0
+    );
+
+    /*
+     * invalid_packet没有经过packet_info_init和协议解析，
+     * 不能生成有效流键。
+     *
+     * 失败时四个输出都必须保持哨兵值，流表仍为空。
+     */
+    record = &sentinel_record;
+    created = true;
+    evicted_record = sentinel_record;
+    evicted = true;
+
+    TEST_CHECK(
+        flow_table_process_packet_with_oldest_eviction(
+            &table,
+            &invalid_packet,
+            &record,
+            &created,
+            &evicted_record,
+            &evicted
+        ) == EINVAL
+    );
+
+    TEST_CHECK(record == &sentinel_record);
+    TEST_CHECK(created);
+    TEST_CHECK(evicted);
+    TEST_CHECK(
+        evicted_record.last_seen.seconds ==
+            INT64_C(777)
+    );
+    TEST_CHECK(flow_table_count(&table) == 0U);
+
+    /*
+     * 新接口必须提供用于接收被淘汰记录的值对象。
+     * 参数检查失败发生在哈希探测和流表修改之前。
+     */
+    record = &sentinel_record;
+    created = true;
+    evicted = true;
+
+    TEST_CHECK(
+        flow_table_process_packet_with_oldest_eviction(
+            &table,
+            &valid_packet,
+            &record,
+            &created,
+            NULL,
+            &evicted
+        ) == EINVAL
+    );
+
+    TEST_CHECK(record == &sentinel_record);
+    TEST_CHECK(created);
+    TEST_CHECK(evicted);
+    TEST_CHECK(flow_table_count(&table) == 0U);
+
+    /*
+     * 是否发生淘汰的布尔输出同样不能为空。
+     */
+    record = &sentinel_record;
+    created = true;
+    evicted_record = sentinel_record;
+
+    TEST_CHECK(
+        flow_table_process_packet_with_oldest_eviction(
+            &table,
+            &valid_packet,
+            &record,
+            &created,
+            &evicted_record,
+            NULL
+        ) == EINVAL
+    );
+
+    TEST_CHECK(record == &sentinel_record);
+    TEST_CHECK(created);
+    TEST_CHECK(
+        evicted_record.last_seen.seconds ==
+            INT64_C(777)
+    );
+    TEST_CHECK(flow_table_count(&table) == 0U);
+
+    /*
+     * 先正常填满容量为1的流表。
+     */
+    TEST_CHECK(
+        flow_table_process_packet(
+            &table,
+            &valid_packet,
+            &record,
+            &created
+        ) == 0
+    );
+
+    TEST_CHECK(created);
+    TEST_CHECK(flow_table_count(&table) == 1U);
+
+    /*
+     * 保存槽位值副本，用于确认深层验证失败后没有覆盖旧流。
+     */
+    stored_record = storage[0].record;
+
+    TEST_CHECK(
+        flow_table_get_probe_statistics(
+            &table,
+            &statistics_before
+        ) == 0
+    );
+
+    /*
+     * 人为制造count与实际OCCUPIED槽位数量不一致：
+     *
+     * 物理槽位有1条流，但table.count错误地记录为0。
+     *
+     * replacement_packet不属于已有流，所以probe会完整扫描，
+     * 随后发现occupied_slot_count与table->count不一致。
+     */
+    table.count = 0U;
+
+    record = &sentinel_record;
+    created = true;
+    evicted_record = sentinel_record;
+    evicted = true;
+
+    TEST_CHECK(
+        flow_table_process_packet_with_oldest_eviction(
+            &table,
+            &replacement_packet,
+            &record,
+            &created,
+            &evicted_record,
+            &evicted
+        ) == EINVAL
+    );
+
+    /*
+     * 调用者输出保持不变。
+     */
+    TEST_CHECK(record == &sentinel_record);
+    TEST_CHECK(created);
+    TEST_CHECK(evicted);
+    TEST_CHECK(
+        evicted_record.last_seen.seconds ==
+            INT64_C(777)
+    );
+
+    /*
+     * 原槽位仍然保存调用前的旧流，没有被新记录覆盖。
+     */
+    TEST_CHECK(
+        storage[0].state ==
+            FLOW_TABLE_SLOT_OCCUPIED
+    );
+    TEST_CHECK(storage[0].record.initialized);
+    TEST_CHECK(
+        flow_key_equal(
+            &storage[0].record.key,
+            &stored_record.key
+        )
+    );
+    TEST_CHECK(
+        storage[0].record.last_seen.seconds ==
+            stored_record.last_seen.seconds
+    );
+
+    /*
+     * 内部一致性错误没有形成可靠的完整数据包操作，
+     * 因此不能污染探测统计。
+     */
+    TEST_CHECK(
+        flow_table_get_probe_statistics(
+            &table,
+            &statistics_after
+        ) == 0
+    );
+
+    TEST_CHECK(
+        statistics_after.packet_operation_count ==
+            statistics_before.packet_operation_count
+    );
+    TEST_CHECK(
+        statistics_after.total_inspected_slot_count ==
+            statistics_before.total_inspected_slot_count
+    );
+    TEST_CHECK(
+        statistics_after.maximum_probe_length ==
+            statistics_before.maximum_probe_length
+    );
+    TEST_CHECK(
+        statistics_after.counters_saturated ==
+            statistics_before.counters_saturated
+    );
+
+    /*
+     * 测试人为破坏了count，清理前先恢复合法状态。
+     */
+    table.count = 1U;
+    flow_table_cleanup(&table);
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 验证空表、无效参数、内部不一致和最后一条流驱逐。
  */
 static int test_evict_oldest_validation(void)
@@ -2040,6 +2588,24 @@ int main(void)
     }
 
     printf("[PASS] evict oldest flow and reuse capacity\n");
+
+    if (test_process_packet_with_oldest_eviction() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf(
+        "[PASS] process packet with oldest eviction\n"
+    );
+
+    if (test_process_packet_with_oldest_eviction_validation() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf(
+        "[PASS] process packet with oldest eviction validation\n"
+    );
 
     if (test_evict_oldest_validation() !=
         EXIT_SUCCESS) {

@@ -978,3 +978,40 @@ printf(
 ```
 
 修正后严格格式警告消失，本地17项CTest全部通过，300个不同UDP五元组的实时淘汰验收也成功完成。该问题说明多行`printf`修改后必须核对格式说明符数量、类型与实参顺序，不能只根据终端排版判断逗号位置。
+
+### 5.14 官方GCC 9无法证明探测结果与返回码的条件化初始化关系
+
+单次满表扫描优化在x86_64 Debug构建和测试中通过，但使用官方GCC 9执行Release交叉构建时，对`flow_table_process_packet_internal()`中的局部探测结果给出多条告警：
+
+```text
+warning: ‘probe_result.oldest_slot_index’ may be used uninitialized
+warning: ‘probe_result.oldest_found’ may be used uninitialized
+warning: ‘probe_result.slot_index’ may be used uninitialized
+warning: ‘probe_result.found’ may be used uninitialized
+```
+
+`flow_table_probe()`采用“局部构造、成功后发布”的失败不修改契约：
+
+- 返回`0`时已经完整写入`probe_result`，结果表示已有流或可插入槽位；
+- 返回`ENOSPC`时也已经完整写入`probe_result`，结果包含整张满表的最旧候选；
+- 返回`EINVAL`等其他错误时不修改调用者传入的结果对象。
+
+调用者只在返回`0`或`ENOSPC`后读取结果字段，其他错误会直接返回，因此控制流检查没有发现实际的未初始化读取。告警来自旧版GCC在Release优化下无法稳定证明“特定返回码意味着输出参数已经发布”的跨函数关系。
+
+处理时没有改变公开输出的失败不修改语义，只把两个调用点的私有局部变量显式零初始化：
+
+```c
+flow_table_probe_result_t probe_result = {0};
+```
+
+`{0}`为所有布尔值和索引提供确定初值；正常成功路径仍由`flow_table_probe()`覆盖完整结构，错误路径仍不会把局部默认值发布给API调用者。第二个`flow_table_find()`调用点同步采用相同写法，使相同输出参数模式保持一致，并避免后续控制流调整再次触发旧编译器告警。
+
+验证结果：
+
+- x86_64 Debug构建没有警告；
+- 本地17项CTest全部通过；
+- `git diff --check`通过；
+- 官方Buildroot GCC 9.3 Release交叉构建不再报告该告警；
+- 生成的程序仍为AArch64 ELF，动态加载器为`/lib/ld-linux-aarch64.so.1`，最高只要求`GLIBC_2.17`；
+- 本轮产物SHA-256为`c2dcc119ebbd27d321dbf041683d57a31ac0d22645fe16fea2ce08e873b37036`；
+- 产物在LubanCat-2N成功加载并完成300流复测：300包全部`complete`、44次最旧流淘汰、最终256条流、`operations=300`，两个drop字段均为0。
