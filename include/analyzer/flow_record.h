@@ -3,6 +3,7 @@
 
 #include "analyzer/flow_key.h"
 #include "analyzer/packet_info.h"
+#include "analyzer/tcp_flow_state.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -70,6 +71,19 @@ typedef struct {
     flow_key_t key;
 
     /**
+     * 当前TCP流的连接生命周期状态。
+     *
+     * 对TCP流，该对象已经初始化并随每个TCP包推进。
+     *
+     * 对UDP和ICMP流，该对象保持零初始化，
+     * tcp_state.initialized为false，不能调用观察接口。
+     *
+     * 状态对象只保存数值，不拥有数据包或动态内存，
+     * 因此流记录按值复制、过期或淘汰时不需要额外释放。
+     */
+    tcp_flow_state_t tcp_state;
+
+    /**
      * endpoint_a到endpoint_b方向的统计结果。
      */
     flow_direction_stats_t a_to_b;
@@ -100,6 +114,9 @@ typedef struct {
  *
  * 函数内部调用flow_key_from_packet生成规范化流键和数据包方向，
  * 然后把第一条数据包计入对应方向。
+ * 
+ * 对TCP流，函数还会初始化tcp_state并观察第一条TCP数据包。
+ * 对UDP和ICMP流，tcp_state保持未初始化状态。
  *
  * 函数失败时不修改record。
  *
@@ -122,7 +139,9 @@ int flow_record_init(
  *
  * first_seen始终保存最早时间，last_seen始终保存最晚时间。
  * 即使PCAP中的数据包时间顺序不严格递增，也能得到正确时间范围。
- *
+ * 
+ * 对TCP流，每次成功更新还会使用数据包方向和TCP标志推进record中的连接状态。
+ * 
  * 任意计数器可能溢出时返回EOVERFLOW，并且不修改record。
  *
  * 函数失败时不修改record。
