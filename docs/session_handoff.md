@@ -21,9 +21,9 @@ cmake -E chdir build ctest --output-on-failure
 
 预期基线：
 
-- 当前功能分支：`feature/tcp-state-tracking`；
+- 当前功能分支：`feature/nonroot-service`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前已提交TCP状态文档基线：`26de37a docs(tcp): record flow state tracking`，并与`origin/feature/tcp-state-tracking`一致；本次板端验证记录将形成其后的独立文档提交，实际接手时仍须以`git log`为准；
+- 当前已提交服务化前置基线：`6adf14a feat(app): allow unbounded live capture`，并与`origin/feature/nonroot-service`一致；本次无上限实时验收记录将形成其后的独立文档提交，实际接手时仍须以`git log`为准；
 - TCP状态机、流记录接入、终端显示、CSV字段和确定性三次握手验收均已提交；接手时仍须先检查工作区，不能覆盖用户后续未提交改动；
 - 当前正式版本宏为`0.2.0`；
 - 已有标签：`v0.0.1`、`v0.1.0`、`v0.2.0`；
@@ -32,6 +32,7 @@ cmake -E chdir build ctest --output-on-failure
 - 官方SDK交叉构建目录：`/home/zcb/build/netflow-analyzer-lubancat-sdk-release-v2`；
 - 通用GCC交叉构建目录：`/home/zcb/build/netflow-analyzer-generic-sysroot-release`；
 - x86_64与LubanCat-2N ARM64原生Debug构建的18项CTest全部通过；单次扫描优化已完成Ubuntu `lo`和LubanCat-2N物理网卡300流手工验收。优化版官方SDK ARM64产物只要求`GLIBC_2.17`，板端得到300次操作、44次淘汰、256条最终流和零drop；新增TCP状态功能也已在`lo`真实HTTP/1.0连接中处理12包并最终输出`closed`，两个drop字段均为0。
+- 实时`--count`已改为可选上限；本机`lo`在省略上限后能于静默期正常报告，随后处理4个`complete` ICMP包，并在`SIGTERM`后完成统计、流汇总与清理。
 
 如果实际状态与上面不同，应先查看用户是否在新会话开始前继续修改了代码，不要覆盖未提交改动。
 
@@ -387,10 +388,10 @@ CSV导出
 实时模式：
 
 ```text
-CLI --interface NAME --count N [--filter EXPRESSION]
+CLI --interface NAME [--count N] [--filter EXPRESSION]
     [--flow-full-policy reject|evict-oldest]
     ↓
-严格解析N为大于0的size_t
+提供N时严格解析为大于0的size_t；省略时无包数上限
     ↓
 capture_open_live
     ↓
@@ -637,7 +638,7 @@ EtherType `0x0800`是IEEE/IANA约定的IPv4标识，不是项目自定义示例�
 
 目标文件必须不存在。已有文件不会被覆盖。
 
-### 10.4 实时有限包数分析
+### 10.4 实时有限或持续分析
 
 ```bash
 sudo ./build/bin/netflow-analyzer \
@@ -653,7 +654,7 @@ sudo ./build/bin/netflow-analyzer \
 - 非数字拒绝；
 - 超出`size_t`范围拒绝；
 - `--count`不能与`--read`组合；
-- 实时模式必须提供`--count`；
+- 省略`--count`时，实时模式持续运行到收到停止请求或致命错误；
 - 当前实时模式不能与`--csv`组合。
 
 实时流表满载策略：
@@ -663,7 +664,7 @@ sudo ./build/bin/netflow-analyzer \
 - 原位替换成功的当前包计入`complete`，淘汰使用独立`evicted_flows`计数；
 - 该选项第一版只允许实时模式使用，离线模式仍保持完整文件级聚合和固定容量拒绝语义。
 
-达到数量上限或收到`SIGINT`/`SIGTERM`后，实时模式在关闭capture句柄前查询`pcap_stats()`，输出捕获后端接收、抓包缓冲区丢弃和接口丢弃统计。统计查询失败只降级显示不可用，不丢弃已经完成的流分析。
+提供上限时达到数量，或任意实时模式收到`SIGINT`/`SIGTERM`后，程序都在关闭capture句柄前查询`pcap_stats()`，输出捕获后端接收、抓包缓冲区丢弃和接口丢弃统计。统计查询失败只降级显示不可用，不丢弃已经完成的流分析。
 
 打开实时接口通常需要root权限或适当Linux capability。当前手工验收使用`sudo`运行主程序，但不要使用`sudo cmake`或`sudo cmake --build`，避免构建目录出现root所有权文件。
 
@@ -688,6 +689,8 @@ sudo ./build/bin/netflow-analyzer \
 ```
 
 先保持接口静默，程序连续输出约5.007至5.008秒的零包报告；另一个终端执行`ping -i 0.2 -c 30 127.0.0.1`后，60个逻辑ICMP包分别进入16包和44包两个报告区间；流量结束后报告再次归零。Ctrl+C正常收尾，最终输出`Total packets: 60`、`Capture received packets: 120`和两个drop字段为0。
+
+无上限服务生命周期前置验收省略`--count`，使用`timeout --signal=TERM`模拟systemd停止。程序启动时显示`Packet limit: unlimited`，静默期先输出0包报告；一次`ping -c 2 127.0.0.1`产生4个`complete`包，随后`SIGTERM`沿正常路径收尾。最终后端报告8包，两个drop字段均为0，证明没有依赖包数上限才能完成清理。
 
 重要结论：
 
@@ -1273,7 +1276,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`满表策略的单次扫描原位替换，以及TCP握手/关闭基本状态跟踪和终端/CSV输出已经完成。x86_64与LubanCat-2N ARM64原生Debug构建的18项CTest全部通过；板端`lo`真实HTTP/1.0连接以12个`complete`包得到1条`closed` TCP流，两个drop字段均为0。下一步从同一五元组重新建连与TCP字节流重组，或非root服务化部署中选择一个独立迭代。
+周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`满表策略的单次扫描原位替换，以及TCP握手/关闭基本状态跟踪和终端/CSV输出已经完成。x86_64与LubanCat-2N ARM64原生Debug构建的18项CTest全部通过；板端`lo`真实HTTP/1.0连接以12个`complete`包得到1条`closed` TCP流，两个drop字段均为0。实时`--count`已改为可选，无上限模式的静默报告、ICMP处理和`SIGTERM`正常收尾已完成验收。下一步增加CMake安装规则、systemd单元和只授予`CAP_NET_RAW`的非root运行边界。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1315,4 +1318,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流现在按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及CSV中使用统一名称；确定性3包握手PCAP与状态不变量测试已纳入18项CTest，x86_64与LubanCat-2N ARM64原生Debug构建均全部通过。板端`lo`真实HTTP/1.0连接进一步证明12个完整TCP包能正确聚合为1条双向流并最终进入`closed`，两个drop字段均为0。两种既有ARM64交叉构建和单次扫描优化版官方SDK产物均通过此前板端实际运行，Python验收脚本兼容板端Python 3.8.10。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳；当前仍没有接入`labs/thread_pipeline`。下一步可选择同一五元组重新建连与TCP字节流重组，或非root服务化部署。
+应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流现在按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及CSV中使用统一名称；确定性3包握手PCAP与状态不变量测试已纳入18项CTest，x86_64与LubanCat-2N ARM64原生Debug构建均全部通过。板端`lo`真实HTTP/1.0连接进一步证明12个完整TCP包能正确聚合为1条双向流并最终进入`closed`，两个drop字段均为0。实时`--count`已改为可选，无上限模式已通过静默、ICMP和`SIGTERM`正常收尾验收，为systemd服务化提供了正确的持续运行语义。两种既有ARM64交叉构建和单次扫描优化版官方SDK产物均通过此前板端实际运行，Python验收脚本兼容板端Python 3.8.10。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳；当前仍没有接入`labs/thread_pipeline`。下一步增加CMake安装规则、systemd单元和只授予`CAP_NET_RAW`的非root运行边界。

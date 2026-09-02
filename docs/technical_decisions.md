@@ -53,6 +53,8 @@
 | TD-029 | 用Release外部负载基线决定是否引入并发 | 已采用 |
 | TD-030 | 统计数据包路径的线性探测成本，再决定流表容量策略 | 已采用 |
 | TD-031 | 实时满表使用单次探测选择并原位替换最旧流 | 已采用 |
+| TD-032 | 用每流旁路状态机建立TCP生命周期语义 | 已采用 |
+| TD-033 | 把可选包数上限与服务生命周期分离 | 已采用 |
 
 ## 3. 核心语言与运行平台
 
@@ -173,9 +175,9 @@ Makefile仍需要理解，但当前项目的重点不是重复维护平台相关
 - `capture_open_offline()`负责打开离线PCAP；
 - `capture_open_live()`负责打开实时网卡，并显式接收快照长度、混杂模式和读取超时；
 - 两种输入统一复用链路类型查询、逐包读取、错误查询和关闭接口；
-- CLI使用`--interface NAME --count PACKETS [--filter EXPRESSION]`运行有限包数的实时处理循环；
+- CLI使用`--interface NAME [--count PACKETS] [--filter EXPRESSION]`运行实时处理循环；省略`--count`时持续运行，提供时使用有限包数上限；
 - 实时与离线数据复用同一套协议解析、双向流聚合和输出函数，采集来源差异被限制在应用编排层；
-- `--count`限制返回应用的包数而不是等待秒数；安装BPF后只统计匹配包，实时模式可以通过`SIGINT`或`SIGTERM`提前结束，并在关闭句柄前取得libpcap运行统计。
+- 提供`--count`时只限制返回应用的包数而不是等待秒数；安装BPF后只统计匹配包，实时模式可以通过`SIGINT`或`SIGTERM`结束，并在关闭句柄前取得libpcap运行统计。
 
 选择libpcap的原因：
 
@@ -1050,7 +1052,7 @@ SD卡项目目录：7.2MB
 
 详细方法和原始结果摘要见[`docs/performance_baseline.md`](performance_baseline.md)与[`docs/multiflow_longrun_baseline.md`](multiflow_longrun_baseline.md)。
 
-### TD-030：用每流旁路状态机建立TCP生命周期语义
+### TD-032：用每流旁路状态机建立TCP生命周期语义
 
 状态：已采用第一版。
 
@@ -1086,6 +1088,30 @@ SD卡项目目录：7.2MB
 - LubanCat-2N的`lo`上使用HTTP/1.0真实连接完成运行验收：应用处理12个TCP包，全部为`complete`，双向各6包并聚合为1条流，最终状态为`closed`，两个drop字段均为0；
 - 捕获后端报告`received=24`而应用处理12包，属于Linux回环捕获后端与应用交付层的统计口径差异，不解释为应用重复处理或丢包；
 - 当前不核对ACK号是否精确确认SYN/FIN，不处理乱序字节、TCP选项、重组或同一五元组在终止状态后的重新建连；
+
+
+### TD-033：把可选包数上限与服务生命周期分离
+
+状态：已采用，作为systemd服务化前置。
+
+决定：
+
+- 实时模式只提供`--interface NAME`时持续运行，直到收到`SIGINT`、`SIGTERM`或致命错误；
+- `--count PACKETS`保留为可选的有限测试与人工验收上限，显式参数仍必须为正整数；
+- `app_context_t.packet_limit == 0`只是内部的“无上限”哨兵值，启动输出显示`Packet limit: unlimited`而不是容易误解的0；
+- 有限与无上限模式复用同一采集循环、信号处理和清理路径，只在包数终止条件上分支。
+
+主要理由：
+
+- systemd服务的自然生命周期是持续运行，由服务管理器发送`SIGTERM`停止；
+- 使用特别大的`--count`伪装无限运行仍会耗尽，且把部署语义错误地绑定到`size_t`范围；
+- 已有信号中断、非阻塞poll等待和正常清理路径，不需要为服务寿命新增定时线程、忙轮询或另一套退出逻辑。
+
+验证：
+
+- 参数测试同时覆盖省略`--count`的无上限模式、合法正整数上限，以及显式0、非数字和缺少参数值；
+- 本机18项CTest全部通过；
+- `lo`上省略`--count`并使用`icmp` BPF，静默期先输出0包周期报告，随后处理4个`complete`包，`SIGTERM`后正常输出汇总；后端`received=8`，两个drop字段均为0。
 
 
 ### TD-019：Git功能分支、Pull Request和版本标签

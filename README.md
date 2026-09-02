@@ -26,7 +26,7 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 
 因此，`v0.1.0`可以视为一个完整版本迭代，但不是整个项目完成。它具备明确输入、完整处理链、可观察输出和自动化验收；实时抓包、流过期、应用层协议、异常检测、可视化和开发板部署仍属于后续版本。
 
-`v0.2.0`在这条链路上增加了流过期清理、FNV-1a哈希流表、CSV导出、实时抓包和BPF过滤。CLI可以通过`--interface NAME --count PACKETS [--filter EXPRESSION]`从网卡读取有限数量的数据包，并复用离线模式的协议解析、双向流聚合和终端汇总流程。
+`v0.2.0`在这条链路上增加了流过期清理、FNV-1a哈希流表、CSV导出、实时抓包和BPF过滤。当前CLI可以通过`--interface NAME [--count PACKETS] [--filter EXPRESSION]`从网卡读取数据包，并复用离线模式的协议解析、双向流聚合和终端汇总流程。省略`--count`时持续运行到收到停止信号，显式提供时则作为人工验收或测试的有限包数上限。
 
 当前`Unreleased`开发进度进一步为实时模式加入`SIGINT`和`SIGTERM`优雅退出，以及基于`pcap_stats()`的运行统计。用户按下Ctrl+C或服务管理器发送终止信号后，程序会中断阻塞的libpcap读取，沿正常控制流取得libpcap累计统计、关闭采集句柄，并输出已经处理的数据包、抓包丢弃情况和流汇总。
 
@@ -212,6 +212,11 @@ sudo ./build/bin/netflow-analyzer \
     --interface lo \
     --count 4
 
+# 不设置包数上限，持续运行到Ctrl+C或外部SIGTERM。
+sudo ./build/bin/netflow-analyzer \
+    --interface lo \
+    --filter "icmp"
+
 # 只接收lo上的IPv4 ICMP流量；--count只统计匹配过滤器的数据包。
 sudo ./build/bin/netflow-analyzer \
     --interface lo \
@@ -226,12 +231,11 @@ sudo ./build/bin/netflow-analyzer \
     --flow-full-policy evict-oldest
 ```
 
-若要观察周期运行指标，可把包数上限调大，让程序跨越多个5秒区间：
+若要观察周期运行指标，可以省略包数上限，让程序跨越多个5秒区间：
 
 ```bash
 sudo ./build/bin/netflow-analyzer \
     --interface lo \
-    --count 100 \
     --filter "icmp"
 ```
 
@@ -266,14 +270,14 @@ Flow summary: 1 flow(s)
 | `-V`、`--version` | 显示版本 |
 | `-r FILE`、`--read FILE` | 分析离线PCAP文件 |
 | `-i NAME`、`--interface NAME` | 选择实时抓包网卡 |
-| `-c N`、`--count N` | 实时模式最多读取N个数据包，N必须大于0 |
+| `-c N`、`--count N` | 可选的实时包数上限，N必须大于0；省略时持续运行到停止信号 |
 | `--filter EXPRESSION` | 为实时抓包安装BPF过滤表达式；含空格时需要使用引号 |
 | `--flow-full-policy POLICY` | 设置实时流表满载策略：默认`reject`，或使用`evict-oldest`淘汰最久未活动流 |
 | `--csv FILE` | 把流记录导出到一个新CSV文件，不覆盖已有文件 |
 
 离线分析会先显示文件与链路类型，再预览前5个数据包。程序仍会处理文件中的所有数据包，最后输出总包数、预览包数和双向流汇总。TCP流汇总包含`tcp_state`；指定`--csv`后，应用层在聚合成功后创建CSV文件，写入固定表头和全部流记录，其中TCP写入稳定阶段名称，UDP和ICMP写入`not-applicable`。C11的独占创建模式会在目标已存在时失败，避免静默覆盖原文件。
 
-实时分析会等待网卡流量，达到`--count`指定的数据包数量，或收到`SIGINT`、`SIGTERM`停止请求后，取得libpcap运行统计、关闭采集句柄并输出流汇总。不提供`--filter`时，计数针对接口上返回的全部数据包，不只包含用户主动执行`ping`等命令产生的流量；例如VS Code及其本地服务也可能通过`lo`持续交换TCP数据。提供过滤器后，libpcap在数据包进入应用读取循环前执行匹配，只有匹配包会增加`--count`计数并进入协议解析和流聚合。当前`--count`限制处理包数而不是等待时间；没有足够的匹配流量时程序会继续等待，用户可以使用Ctrl+C安全结束并保留已经聚合的结果。
+实时分析会等待网卡流量；提供`--count`时，达到指定数据包数量后结束，省略时则持续运行。两种模式收到`SIGINT`或`SIGTERM`停止请求后，都会取得libpcap运行统计、关闭采集句柄并输出流汇总。不提供`--filter`时，计数针对接口上返回的全部数据包，不只包含用户主动执行`ping`等命令产生的流量；例如VS Code及其本地服务也可能通过`lo`持续交换TCP数据。提供过滤器后，libpcap在数据包进入应用读取循环前执行匹配，只有匹配包会进入协议解析、流聚合和可选的`--count`计数。`--count`限制处理包数而不是等待时间；没有足够的匹配流量时程序会继续等待，用户可以使用Ctrl+C安全结束并保留已经聚合的结果。
 
 实时过期调度器使用捕获数据包时间戳的最大值作为时间高水位，避免乱序包让时间倒退。扫描发生在当前包加入流表之前，因此同一五元组在空闲30秒后重新出现时，旧记录会先输出和删除，当前包再建立新记录。`Expired flows`是运行期间已经输出的累计数量，最终`Flow summary`只包含仍留在流表中的记录。
 
