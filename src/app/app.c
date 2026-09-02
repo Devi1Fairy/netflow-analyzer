@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
+#include <limits.h>
 
 /*
  * 当前命令只显示前5个数据包，避免大型PCAP在终端输出数万行。
@@ -304,7 +305,7 @@ static int app_print_help(const char *program_name)
     if (printf(
             "Usage: %s [OPTION]\n"
             "       %s --read <PCAP_FILE> [--csv <CSV_FILE>]\n"
-            "       %s --interface <INTERFACE> --count <PACKETS> "
+            "       %s --interface <INTERFACE> [--count <PACKETS>] "
             "[--filter <BPF_EXPRESSION>] "
             "[--flow-full-policy <reject|evict-oldest>]\n"
             "\n"
@@ -315,7 +316,7 @@ static int app_print_help(const char *program_name)
             "  -V, --version    Show program version.\n"
             "  -r, --read FILE  Analyze an offline PCAP file.\n"
             "  -i, --interface NAME  Analyze a live capture interface.\n"
-            "  -c, --count PACKETS   Stop after capturing PACKETS packets.\n"
+            "  -c, --count PACKETS   Optional live packet limit; omit to run until stopped.\n"
             "      --filter EXPRESSION  Apply a BPF filter to live capture.\n"
             "      --flow-full-policy POLICY Handle a full live flow table: reject or evict-oldest.\n"
             "      --csv FILE   Export flow records to a new CSV file.\n",
@@ -1384,6 +1385,14 @@ static int app_run_capture_analysis(app_context_t *context)
     char capture_error[CAPTURE_ERROR_BUFFER_SIZE] = {0};
 
     /*
+    * size_t最多需要CHAR_BIT * sizeof(size_t)个二进制位。
+    *
+    * 十进制位数不会超过二进制位数，因此再预留一个空字符位置，
+    * 足够保存任意size_t文本或"unlimited"。
+    */
+    char packet_limit_text[(sizeof(size_t) * CHAR_BIT) + 1U] = {0};
+
+    /*
      * pcap_stats错误信息可能依赖仍然存活的capture句柄。
      *
      * 如果查询失败，必须在capture_close之前把说明复制到这个
@@ -1476,10 +1485,25 @@ static int app_run_capture_analysis(app_context_t *context)
      */
     live_capture = context->command == APP_COMMAND_CAPTURE_INTERFACE;
 
+    if (context->packet_limit == 0U) {
+        (void)snprintf(
+            packet_limit_text,
+            sizeof(packet_limit_text),
+            "%s",
+            "unlimited"
+        );
+    } else {
+        (void)snprintf(
+            packet_limit_text,
+            sizeof(packet_limit_text),
+            "%zu",
+            context->packet_limit
+        );
+    }
+
     if (live_capture) {
         if (context->interface_name == NULL ||
-            context->interface_name[0] == '\0' ||
-            context->packet_limit == 0U) {
+            context->interface_name[0] == '\0') {
             return EINVAL;
         }
 
@@ -1714,7 +1738,7 @@ static int app_run_capture_analysis(app_context_t *context)
     if (live_capture) {
         error_code = printf(
             "Capture interface: %s\n"
-            "Packet limit: %zu\n"
+            "Packet limit: %s\n"
             "BPF filter: %s\n"
             "Flow full policy: %s\n"
             "Link type: Ethernet\n"
@@ -1722,7 +1746,7 @@ static int app_run_capture_analysis(app_context_t *context)
             "Flow expiration scan interval: %" PRId64 " second(s)\n"
             "Runtime metrics interval: %" PRId64 " second(s)\n\n",
             capture_source,
-            context->packet_limit,
+            packet_limit_text,
             context->filter_expression != NULL
                 ? context->filter_expression
                 : "(none)",
@@ -1771,10 +1795,13 @@ static int app_run_capture_analysis(app_context_t *context)
         }
 
         /*
-         * 离线模式由文件末尾结束；
-         * 实时模式由用户指定的数据包数量结束。
-         */
-        if (live_capture && total_packet_count >= context->packet_limit) {
+        * 离线模式由文件末尾结束；
+        * 有限实时模式由用户指定的数据包数量结束；
+        * 无限实时模式只通过停止请求或致命错误结束。
+        */
+        if (live_capture &&
+            context->packet_limit != 0U &&
+            total_packet_count >= context->packet_limit) {
             break;
         }
 
@@ -2660,14 +2687,6 @@ int app_parse_arguments(app_context_t *context,
     }
 
     /*
-     * 实时抓包必须提供一个大于0的数据包数量。
-     */
-    if (parsed_interface_name != NULL &&
-        parsed_packet_limit == 0U) {
-        return EINVAL;
-    }
-
-    /*
      * 当前CSV导出只接在完整的离线聚合流程之后。
      *
      * 实时抓包还没有读取循环，因此暂不允许和--csv组合。
@@ -2815,16 +2834,6 @@ int app_run(app_context_t *context)
                 context->error_message,
                 sizeof(context->error_message),
                 "capture interface is missing"
-            );
-
-            return EINVAL;
-        }
-
-        if (context->packet_limit == 0U) {
-            (void)snprintf(
-                context->error_message,
-                sizeof(context->error_message),
-                "live packet limit is missing"
             );
 
             return EINVAL;

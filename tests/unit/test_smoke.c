@@ -351,6 +351,13 @@ static int test_live_interface_command(void)
         NULL
     };
 
+    char *unbounded_arguments[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        NULL
+    };
+
     TEST_CHECK(app_context_init(&context) == 0);
 
     TEST_CHECK(
@@ -379,6 +386,31 @@ static int test_live_interface_command(void)
     TEST_CHECK(context.capture_path == NULL);
     TEST_CHECK(context.csv_output_path == NULL);
     TEST_CHECK(context.filter_expression == NULL);
+
+    /*
+    * 不提供--count表示无限实时抓包。
+    *
+    * 重新解析还验证了旧的有限上限不会残留在context中。
+    */
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            3,
+            unbounded_arguments
+        ) == 0
+    );
+
+    TEST_CHECK(
+        context.command ==
+            APP_COMMAND_CAPTURE_INTERFACE
+    );
+
+    TEST_CHECK(
+        context.interface_name ==
+            unbounded_arguments[2]
+    );
+
+    TEST_CHECK(context.packet_limit == 0U);
 
     app_cleanup(&context);
 
@@ -588,10 +620,11 @@ static int test_invalid_live_arguments(void)
 {
     app_context_t context;
 
-    char *missing_count[] = {
+    char *missing_count_value[] = {
         "netflow-analyzer",
         "--interface",
         "lo",
+        "--count",
         NULL
     };
 
@@ -647,8 +680,8 @@ static int test_invalid_live_arguments(void)
     TEST_CHECK(
         app_parse_arguments(
             &context,
-            3,
-            missing_count
+            4,
+            missing_count_value
         ) == EINVAL
     );
 

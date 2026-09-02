@@ -111,7 +111,9 @@ typedef struct {
      * 实时抓包最多处理的数据包数量。
      *
      * 只有command为APP_COMMAND_CAPTURE_INTERFACE时才使用。
-     * 0表示尚未提供合法的--count参数。
+     *
+     * 0表示不设置数据包上限，实时抓包持续运行，直到收到停止
+     * 请求或遇到致命错误。显式的--count参数仍只接受正整数。
      */
     size_t packet_limit;
 
@@ -183,7 +185,7 @@ int app_context_init(app_context_t *context);
  * - --version或-V。
  * - --read FILE或-r FILE
  * - --read FILE --csv CSV_FILE
- * - --interface NAME --count PACKETS [--filter EXPRESSION] [--flow-full-policy reject|evict-oldest]
+ * - --interface NAME [--count PACKETS] [--filter EXPRESSION] [--flow-full-policy reject|evict-oldest]
  *
  * @param context 指向已经初始化的应用上下文。
  * @param argc main函数收到的参数数量。
