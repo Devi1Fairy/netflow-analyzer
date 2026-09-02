@@ -74,7 +74,7 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 - 流过期的事件时间只随实际收到的数据包推进，接口完全静默时要等下一包到来才判断旧流；周期运行指标使用单调时钟，因此静默时仍会按时输出；
 - 尚未解析DNS、HTTP等应用层协议；
 - 尚未实现规则异常检测、机器学习、Qt界面或云端展示；
-- ARM Linux开发板已完成原生Debug/Release构建、当前17项CTest、离线跨平台一致性、两种交叉产物、物理网卡抓包、单流/多流性能、满载边界、流表探测成本和10分钟长稳基线；最新官方SDK产物又完成单次满表扫描优化复测，300个UDP新流对应300次探测操作、44次最旧流淘汰、256条最终流和零drop。
+- ARM Linux开发板已完成原生Debug/Release构建、当前18项CTest、离线跨平台一致性、两种交叉产物、物理网卡抓包、真实TCP完整关闭、单流/多流性能、满载边界、流表探测成本和10分钟长稳基线；最新官方SDK产物又完成单次满表扫描优化复测，300个UDP新流对应300次探测操作、44次最旧流淘汰、256条最终流和零drop。
 
 ## 项目目录
 
@@ -339,17 +339,17 @@ sh scripts/check_target_env.sh
 sh scripts/check_target_env.sh --expect-arm --with-tests
 ```
 
-LubanCat-2N已经完成ARM64原生Debug/Release构建、当前17项板端CTest、确定性离线PCAP端到端验收，以及来自VMware NAT虚拟机的物理网卡ICMP实时抓包。板端Python 3.8.10最初无法解释Python 3.9才支持的`list[tuple[...]]`类型注解；验收脚本改用`typing.List`和`typing.Tuple`后，目标测试及全量17项CTest均通过。板载系统位于容量8GB的eMMC，系统安装后空间有限；当前源码保留在SD卡，正在使用的构建树临时放在eMMC的Linux原生文件系统，避免VFAT缺少执行位和符号链接等Unix语义。不要在eMMC上长期积累源码和多个构建树；PCAP、CSV和交换数据继续优先放在SD卡。
+LubanCat-2N已经完成ARM64原生Debug/Release构建、当前18项板端CTest、确定性离线PCAP端到端验收，以及来自VMware NAT虚拟机的物理网卡ICMP实时抓包。新增TCP状态功能也已在`lo`上通过真实HTTP/1.0连接验收：应用处理12个完整TCP包，聚合为1条双向流并最终输出`tcp_state=closed`，两个drop字段均为0。板端Python 3.8.10最初无法解释Python 3.9才支持的`list[tuple[...]]`类型注解；验收脚本改用`typing.List`和`typing.Tuple`后，目标测试及全量18项CTest均通过。板载系统位于容量8GB的eMMC，系统安装后空间有限；当前源码保留在SD卡，正在使用的构建树临时放在eMMC的Linux原生文件系统，避免VFAT缺少执行位和符号链接等Unix语义。不要在eMMC上长期积累源码和多个构建树；PCAP、CSV和交换数据继续优先放在SD卡。
 
 开发电脑已经完成两条ARM64交叉编译和板端运行链：一条使用鲁班猫官方Buildroot GCC 9.3及隔离的板端libpcap overlay，另一条使用Ubuntu GCC 13、从板端导出的完整sysroot和GCC `-B`启动文件前缀。两种产物均为AArch64 ELF、只要求`GLIBC_2.17`，并在板端通过`ldd`、`--help`和实时ICMP抓包。完整Shell环境变量、CMake参数、ABI检查与故障记录见[交叉编译手册](docs/cross_compilation.md)。
 
-开发板上的CTest为3.16.3，低于`--test-dir`参数所需的3.20，因此测试时应先进入构建目录再运行`ctest`。同一确定性6包PCAP已经在x86_64与ARM64原生构建上得到一致标准输出和退出状态；当前17项测试也已在两侧全部通过。Release单流基线最高约9 Kpps、20万包零drop、每包CPU约6.95微秒；128流长稳基线以约9 Kpps处理540万包，全部分类为`complete`，两个drop为0、每包CPU约6.24微秒，RSS采样从首到尾保持564 KiB。300流容量测试也精确得到256个完整流和44个`flow_rejected`。完整方法见[单流性能基线](docs/performance_baseline.md)和[多流与长稳基线](docs/multiflow_longrun_baseline.md)。
+开发板上的CTest为3.16.3，低于`--test-dir`参数所需的3.20，因此测试时应先进入构建目录再运行`ctest`。同一确定性6包PCAP已经在x86_64与ARM64原生构建上得到一致标准输出和退出状态；当前18项测试也已在两侧全部通过。Release单流基线最高约9 Kpps、20万包零drop、每包CPU约6.95微秒；128流长稳基线以约9 Kpps处理540万包，全部分类为`complete`，两个drop为0、每包CPU约6.24微秒，RSS采样从首到尾保持564 KiB。300流容量测试也精确得到256个完整流和44个`flow_rejected`。完整方法见[单流性能基线](docs/performance_baseline.md)和[多流与长稳基线](docs/multiflow_longrun_baseline.md)。
 
 ## 后续迭代
 
 建议按以下顺序推进：
 
-1. 在LubanCat-2N复测当前18项测试和TCP状态输出，并完成非root抓包权限与服务化运行；
+1. 在LubanCat-2N完成非root抓包权限与systemd服务化运行；
 2. 处理同一五元组关闭后重新建连，随后增加TCP乱序与字节流重组，再进入DNS、HTTP等应用层解析；
 3. 当前继续保持单线程；只有后续测量证明单线程成为瓶颈，才复审实验中的阻塞队列和线程流水线；
 4. 如果真实负载超过256条活跃流，再根据占用率、探测长度、拒绝和淘汰数据评估可配置容量、重建或动态扩容；

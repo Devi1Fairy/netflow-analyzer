@@ -48,6 +48,7 @@
 - 新增稳定的TCP阶段名称接口；活动、过期和被淘汰流复用统一终端输出，离线CSV在`protocol`后增加`tcp_state`列，非TCP流明确写为`not-applicable`。
 - Python端到端验收新增不依赖Scapy的3包TCP三次握手PCAP，同时验证终端与CSV最终为`established`；TCP状态、流记录和CSV不变量单元测试使CTest增加到18项，本机全量回归通过。
 - 当前状态机是旁路观察模型，不复制Linux内核TCP socket状态，不验证ACK是否精确确认对应序列号，不处理乱序字节、重组、TCP选项或同一五元组在`closed`/`reset`后的重新建连。
+- LubanCat-2N ARM64原生Debug构建的18项CTest全部通过；`lo`上的HTTP/1.0真实连接处理12个TCP包，12个均为`complete`，聚合为1条双向流并最终进入`closed`，两个drop字段均为0。捕获后端的`received=24`与应用交付的12包属于不同统计层级，不解释为应用重复处理或丢包。
 
 ## [0.2.0] - 2026-08-26
 
