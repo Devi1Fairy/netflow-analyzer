@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /**
  * @brief 在Debug和Release构建中都有效的测试检查宏。
@@ -20,6 +21,85 @@
             return EXIT_FAILURE;                                   \
         }                                                          \
     } while (false)
+
+/**
+ * @brief 验证所有TCP阶段都有稳定的文本名称。
+ */
+static int test_tcp_flow_phase_names(void)
+{
+    struct phase_name_case {
+        tcp_flow_phase_t phase;
+        const char *expected_name;
+    };
+
+    static const struct phase_name_case cases[] = {
+        {
+            TCP_FLOW_PHASE_UNOBSERVED,
+            "unobserved"
+        },
+        {
+            TCP_FLOW_PHASE_SYN_SEEN,
+            "syn-seen"
+        },
+        {
+            TCP_FLOW_PHASE_SYN_ACK_SEEN,
+            "syn-ack-seen"
+        },
+        {
+            TCP_FLOW_PHASE_ESTABLISHED,
+            "established"
+        },
+        {
+            TCP_FLOW_PHASE_MIDSTREAM,
+            "midstream"
+        },
+        {
+            TCP_FLOW_PHASE_FIN_SEEN,
+            "fin-seen"
+        },
+        {
+            TCP_FLOW_PHASE_FIN_BIDIRECTIONAL,
+            "fin-bidirectional"
+        },
+        {
+            TCP_FLOW_PHASE_CLOSED,
+            "closed"
+        },
+        {
+            TCP_FLOW_PHASE_RESET,
+            "reset"
+        }
+    };
+
+    const char *actual_name;
+    size_t index;
+
+    for (index = 0U;
+         index < sizeof(cases) / sizeof(cases[0]);
+         index += 1U) {
+        actual_name = tcp_flow_phase_name(
+            cases[index].phase
+        );
+
+        TEST_CHECK(actual_name != NULL);
+
+        TEST_CHECK(
+            strcmp(
+                actual_name,
+                cases[index].expected_name
+            ) == 0
+        );
+    }
+
+    actual_name = tcp_flow_phase_name(
+        (tcp_flow_phase_t)999
+    );
+
+    TEST_CHECK(actual_name != NULL);
+    TEST_CHECK(strcmp(actual_name, "unknown") == 0);
+
+    return EXIT_SUCCESS;
+}
 
 /**
  * @brief 验证新状态对象进入合法的未观察阶段。
@@ -594,6 +674,13 @@ static int test_tcp_flow_state_reset(void)
  */
 int main(void)
 {
+    if (test_tcp_flow_phase_names() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] TCP flow phase names\n");
+
     if (test_tcp_flow_state_initialization() !=
         EXIT_SUCCESS) {
         return EXIT_FAILURE;

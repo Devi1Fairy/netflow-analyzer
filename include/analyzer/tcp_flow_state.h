@@ -114,6 +114,32 @@ typedef struct {
 } tcp_flow_state_t;
 
 /**
+ * @brief 把TCP流阶段转换成稳定的文本名称。
+ *
+ * 返回值用于终端、CSV、日志和后续Qt界面。
+ * 所有合法状态都返回固定的小写短横线名称，例如：
+ *
+ * - TCP_FLOW_PHASE_SYN_SEEN -> "syn-seen"；
+ * - TCP_FLOW_PHASE_ESTABLISHED -> "established"；
+ * - TCP_FLOW_PHASE_CLOSED -> "closed"。
+ *
+ * 如果phase不是当前版本定义的合法枚举值，返回"unknown"。
+ * 函数不会返回NULL。
+ *
+ * 返回的字符串位于程序的静态只读存储区：
+ *
+ * - 调用者不拥有该字符串；
+ * - 不能修改字符串内容；
+ * - 不需要也不能调用free；
+ * - 字符串在整个程序运行期间保持有效。
+ *
+ * @param phase 准备转换的TCP连接阶段。
+ *
+ * @return 指向静态只读字符串的指针。
+ */
+const char *tcp_flow_phase_name(tcp_flow_phase_t phase);
+
+/**
  * @brief 初始化一个TCP流状态对象。
  *
  * 成功后：

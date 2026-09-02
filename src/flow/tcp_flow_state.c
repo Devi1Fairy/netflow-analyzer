@@ -81,6 +81,40 @@ static bool tcp_flow_phase_is_valid(
     return false;
 }
 
+const char *tcp_flow_phase_name(tcp_flow_phase_t phase)
+{
+    switch (phase) {
+        case TCP_FLOW_PHASE_UNOBSERVED:
+            return "unobserved";
+
+        case TCP_FLOW_PHASE_SYN_SEEN:
+            return "syn-seen";
+
+        case TCP_FLOW_PHASE_SYN_ACK_SEEN:
+            return "syn-ack-seen";
+
+        case TCP_FLOW_PHASE_ESTABLISHED:
+            return "established";
+
+        case TCP_FLOW_PHASE_MIDSTREAM:
+            return "midstream";
+
+        case TCP_FLOW_PHASE_FIN_SEEN:
+            return "fin-seen";
+
+        case TCP_FLOW_PHASE_FIN_BIDIRECTIONAL:
+            return "fin-bidirectional";
+
+        case TCP_FLOW_PHASE_CLOSED:
+            return "closed";
+
+        case TCP_FLOW_PHASE_RESET:
+            return "reset";
+    }
+
+    return "unknown";
+}
+
 /**
  * @brief 把TCP标志位组合转换为状态机事件。
  */
