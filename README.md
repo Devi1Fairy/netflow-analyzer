@@ -36,6 +36,8 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 
 程序退出时还会输出流表线性探测统计：数据包路径操作次数、实际检查槽位总数、平均探测长度、最大探测长度和计数是否饱和。`flow_table_find()`等管理查询不进入该统计，满载新流最终返回`ENOSPC`之前发生的完整扫描仍会记录，因此可以区分正常查找成本与容量拒绝成本。选择`evict-oldest`时，同一次满表探测还会确定最旧流并在原槽位完成替换，应用层不接触流表槽位，也不再发起淘汰后的第二次哈希探测。
 
+当前`Unreleased`还为每条TCP流增加了旁路连接状态跟踪。状态机根据规范化流方向和TCP标志识别`unobserved`、`syn-seen`、`syn-ack-seen`、`established`、`midstream`、`fin-seen`、`fin-bidirectional`、`closed`和`reset`。终端流汇总与离线CSV复用同一组稳定名称；UDP和ICMP的`tcp_state`明确写为`not-applicable`。该状态机描述分析器实际观察到的报文过程，不等同于Linux内核socket状态，也尚未执行序列号确认、乱序处理或TCP字节流重组。
+
 ## v0.2.0新增
 
 - 为流表增加稳定哈希、开放寻址和按最后活动时间清理过期流的接口；
@@ -66,7 +68,7 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 - 实时模式已经支持BPF过滤、`SIGINT`/`SIGTERM`优雅退出、libpcap抓包统计和周期运行指标，但打开网卡仍需要相应Linux权限；
 - `pcap_stats()`字段的精确统计范围依赖操作系统和捕获后端，不能假定`Capture received packets`一定等于应用输出的`Total packets`；
 - 只支持Ethernet链路类型和IPv4，不支持VLAN、IPv6与隧道封装；
-- 不做IPv4分片重组、TCP流重组和校验和验证；
+- 已跟踪基本TCP握手、FIN关闭、RST中止和中途捕获状态，但不做IPv4分片重组、TCP乱序/字节流重组和校验和验证；
 - 流表容量仍固定为256个槽位；已有流在满载时仍可更新，实时模式默认让新流数据包计入`flow_rejected`，也可以通过`--flow-full-policy evict-oldest`按`last_seen`淘汰最久未活动流并接纳当前包。该策略已经在一次满表探测中同时选择最旧流并原位替换，不再重复探测；当前仍没有动态扩容；
 - 实时流过期暂时固定为空闲30秒、每5秒事件时间扫描一次，尚未开放CLI配置；
 - 流过期的事件时间只随实际收到的数据包推进，接口完全静默时要等下一包到来才判断旧流；周期运行指标使用单调时钟，因此静默时仍会按时输出；
@@ -94,6 +96,7 @@ netflow-analyzer/
 │   ├── ipv4_dispatch.h
 │   ├── flow_key.h
 │   ├── flow_record.h
+│   ├── tcp_flow_state.h
 │   ├── flow_table.h
 │   └── flow_expiration.h
 ├── src/
@@ -112,6 +115,7 @@ netflow-analyzer/
 │   └── flow/
 │       ├── flow_key.c
 │       ├── flow_record.c
+│       ├── tcp_flow_state.c
 │       ├── flow_table.c
 │       └── flow_expiration.c
 ├── tests/
@@ -267,7 +271,7 @@ Flow summary: 1 flow(s)
 | `--flow-full-policy POLICY` | 设置实时流表满载策略：默认`reject`，或使用`evict-oldest`淘汰最久未活动流 |
 | `--csv FILE` | 把流记录导出到一个新CSV文件，不覆盖已有文件 |
 
-离线分析会先显示文件与链路类型，再预览前5个数据包。程序仍会处理文件中的所有数据包，最后输出总包数、预览包数和双向流汇总。指定`--csv`后，应用层在聚合成功后创建CSV文件，写入固定表头和全部流记录；C11的独占创建模式会在目标已存在时失败，避免静默覆盖原文件。
+离线分析会先显示文件与链路类型，再预览前5个数据包。程序仍会处理文件中的所有数据包，最后输出总包数、预览包数和双向流汇总。TCP流汇总包含`tcp_state`；指定`--csv`后，应用层在聚合成功后创建CSV文件，写入固定表头和全部流记录，其中TCP写入稳定阶段名称，UDP和ICMP写入`not-applicable`。C11的独占创建模式会在目标已存在时失败，避免静默覆盖原文件。
 
 实时分析会等待网卡流量，达到`--count`指定的数据包数量，或收到`SIGINT`、`SIGTERM`停止请求后，取得libpcap运行统计、关闭采集句柄并输出流汇总。不提供`--filter`时，计数针对接口上返回的全部数据包，不只包含用户主动执行`ping`等命令产生的流量；例如VS Code及其本地服务也可能通过`lo`持续交换TCP数据。提供过滤器后，libpcap在数据包进入应用读取循环前执行匹配，只有匹配包会增加`--count`计数并进入协议解析和流聚合。当前`--count`限制处理包数而不是等待时间；没有足够的匹配流量时程序会继续等待，用户可以使用Ctrl+C安全结束并保留已经聚合的结果。
 
@@ -290,10 +294,10 @@ cmake --build build
 cmake -E chdir build ctest --output-on-failure
 ```
 
-当前共17项测试：
+当前共18项测试：
 
-- 16项C语言单元测试，分别验证字节读取、抓包与BPF及非阻塞等待封装、数据模型、各层协议解析、分发、流键、流记录、流表、流过期调度、周期运行指标和CSV格式化；
-- 1项Python端到端测试内部运行两个确定性场景：6包PCAP验证完整分析、5包预览、双向流统计和CSV；260包压力PCAP验证截断、畸形、不支持、流表满载拒绝及满载后继续运行。
+- 17项C语言单元测试，分别验证字节读取、抓包与BPF及非阻塞等待封装、数据模型、各层协议解析、分发、流键、流记录、TCP状态机、流表、流过期调度、周期运行指标和CSV格式化；
+- 1项Python端到端测试内部运行三个确定性场景：6包ICMP PCAP验证完整分析、5包预览、双向流统计和`not-applicable` CSV；3包TCP三次握手验证终端与CSV的`established`状态；260包压力PCAP验证截断、畸形、不支持、流表满载拒绝及满载后继续运行。
 
 只运行端到端验收：
 
@@ -316,11 +320,12 @@ cmake -E chdir build ctest -R offline_flow_acceptance --output-on-failure
 | `tcp`、`udp`、`icmp` | 解析对应传输层或控制协议字段 |
 | `ipv4_dispatch` | 根据IPv4协议号选择具体解析器 |
 | `flow_key` | 生成与方向无关的规范化双向五元组 |
-| `flow_record` | 保存一条流及两个方向的统计信息 |
+| `flow_record` | 保存一条流、两个方向的统计信息，并为TCP流推进独立连接状态 |
+| `tcp_flow_state` | 根据规范化方向和TCP标志跟踪握手、中途捕获、FIN关闭与RST中止，提供稳定状态名称 |
 | `flow_table` | 查找或创建流记录、聚合数据包，并在过期删除前返回值副本 |
 | `flow_expiration` | 维护事件时间高水位、扫描周期和空闲截止时间，处理乱序及整数边界 |
 | `runtime_metrics` | 根据单调时钟和累计计数生成处理结果分类、区间PPS、Mbps、流表占用率及过期流指标 |
-| `flow_export` | 把流记录转换成具有固定字段顺序的CSV表头和数据行 |
+| `flow_export` | 把流记录转换成具有固定字段顺序的CSV表头和数据行，包括TCP状态或非TCP的`not-applicable` |
 
 ## ARM Linux部署准备
 
@@ -344,8 +349,8 @@ LubanCat-2N已经完成ARM64原生Debug/Release构建、当前17项板端CTest�
 
 建议按以下顺序推进：
 
-1. 完成非root抓包权限和服务化运行，或进入TCP状态跟踪；
-2. 增加TCP流重组与DNS、HTTP等应用层解析；
+1. 在LubanCat-2N复测当前18项测试和TCP状态输出，并完成非root抓包权限与服务化运行；
+2. 处理同一五元组关闭后重新建连，随后增加TCP乱序与字节流重组，再进入DNS、HTTP等应用层解析；
 3. 当前继续保持单线程；只有后续测量证明单线程成为瓶颈，才复审实验中的阻塞队列和线程流水线；
 4. 如果真实负载超过256条活跃流，再根据占用率、探测长度、拒绝和淘汰数据评估可配置容量、重建或动态扩容；
 5. 实现规则异常检测，再准备机器学习特征与模型；

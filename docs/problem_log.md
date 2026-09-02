@@ -1015,3 +1015,49 @@ flow_table_probe_result_t probe_result = {0};
 - 生成的程序仍为AArch64 ELF，动态加载器为`/lib/ld-linux-aarch64.so.1`，最高只要求`GLIBC_2.17`；
 - 本轮产物SHA-256为`c2dcc119ebbd27d321dbf041683d57a31ac0d22645fe16fea2ce08e873b37036`；
 - 产物在LubanCat-2N成功加载并完成300流复测：300包全部`complete`、44次最旧流淘汰、最终256条流、`operations=300`，两个drop字段均为0。
+
+### 5.15 CSV新增TCP状态后测试预期和Python检查块未同步
+
+第一个现象：
+
+CSV表头测试通过，但完整记录测试失败：
+
+```text
+[PASS] CSV header
+[FAIL] tests/unit/test_flow_export.c:215: strcmp(actual_text, expected_record) == 0
+```
+
+实现已经在协议号后写入`tcp_state_name`，实际记录以：
+
+```text
+6,established,10.0.0.1,12345,...
+```
+
+开头，但`expected_record`仍保持旧格式：
+
+```text
+6,10.0.0.1,12345,...
+```
+
+因此编译器和格式检查都没有报错，运行时的精确字符串比较仍会失败。这属于输出契约变化后测试夹具未同步，不是状态机或`fprintf`参数错位。把预期记录增加`established`字段后，CSV记录测试通过。
+
+第二个现象：
+
+TCP CSV验证代码被粘贴到`run_processing_results_test()`末尾，而不是`run_tcp_state_output_test()`内部，并出现缩进错误。错误位置既访问了该函数中不存在的`csv_path`，又会使Python在执行C程序前就因语法或作用域问题失败。
+
+处理：
+
+- 从压力场景函数删除整段TCP CSV检查；
+- 把检查块移动到三次握手场景的`with TemporaryDirectory`作用域内；
+- 使用一致的8空格外层缩进，并在读取文件前检查CSV确实存在；
+- 用`PYTHONPYCACHEPREFIX=/tmp/... python3 -m py_compile`先检查脚本语法，避免在仓库生成`__pycache__`；
+- 再依次运行`flow_export_tests`、`offline_flow_acceptance`和全量CTest。
+
+验证结果：
+
+- CSV表头、TCP状态记录、协议与状态不变量及错误参数单元测试通过；
+- 3包TCP握手在终端和CSV中均得到`established`；
+- 6包ICMP CSV使用`not-applicable`；
+- 本机18项CTest全部通过。
+
+该问题说明结构化输出增加字段时要同时检查四层：格式串与实参、单元测试预期、端到端文件预期，以及测试代码所处函数和资源作用域。只看到表头通过不能证明数据行契约已经完整更新。

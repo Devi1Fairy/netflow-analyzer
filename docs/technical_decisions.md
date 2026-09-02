@@ -1050,6 +1050,41 @@ SD卡项目目录：7.2MB
 
 详细方法和原始结果摘要见[`docs/performance_baseline.md`](performance_baseline.md)与[`docs/multiflow_longrun_baseline.md`](multiflow_longrun_baseline.md)。
 
+### TD-030：用每流旁路状态机建立TCP生命周期语义
+
+状态：已采用第一版。
+
+决定：
+
+- 每条TCP `flow_record_t`按值保存独立的`tcp_flow_state_t`，UDP和ICMP保持该对象未初始化；
+- 状态机消费规范化流方向和TCP标志，识别`unobserved`、`syn-seen`、`syn-ack-seen`、`established`、`midstream`、`fin-seen`、`fin-bidirectional`、`closed`和`reset`；
+- `endpoint_a`和`endpoint_b`只来自五元组排序，不能当作客户端和服务器；发起方向只有观察到不带ACK的初始SYN后才建立；
+- 抓包从连接中途开始时进入`midstream`，不根据后来偶然出现的标志倒推出一次完整握手；
+- RST优先于其他标志并立即进入`reset`；相同方向FIN视为重传，两个方向均出现FIN后再由最先发送FIN的一方发出的ACK进入`closed`；
+- `closed`和`reset`作为第一版终止状态，迟到包和重传不会重新打开旧记录；
+- 状态名称由核心模块统一提供，终端和CSV不得各自维护不同映射；非TCP输出使用`not-applicable`，而不是伪造一个TCP阶段。
+
+主要理由：
+
+- 仅解析单包TCP头无法回答连接是否完成握手、是否从中途开始观察、是否正常关闭或被RST中止；
+- 每流状态是后续SYN完成率、大量失败连接、连接持续时间、规则检测和机器学习特征的基础；
+- 状态对象只含枚举、方向和布尔值，不拥有动态内存，适合当前固定容量流表的复制、过期与淘汰语义；
+- 把名称转换放在状态模块可保证CLI、CSV、Qt和未来事件模型共享同一含义。
+
+没有选择：
+
+- 没有复制Linux内核完整TCP状态机。旁路分析器看不到socket调用和全部内核事件，也可能从连接中途开始抓包；
+- 没有仅以`SYN`包数减`SYN+ACK`包数代替状态机，因为那无法表达方向、重传、正常关闭和每流历史；
+- 没有在当前步骤直接实现字节流重组。状态跟踪只消费标志，重组还需要序列号窗口、重复与重叠处理、乱序缓存、内存上限和超时策略。
+
+验证与当前边界：
+
+- 单元测试覆盖双向发起、SYN和SYN+ACK重传、完整握手、中途捕获、无效方向、FIN关闭、RST和终止状态；
+- 流记录测试验证首包和后续包共同推进状态，并验证非TCP流不拥有TCP状态；
+- 确定性3包PCAP端到端验证终端与CSV均输出`established`，ICMP CSV输出`not-applicable`；
+- 当前不核对ACK号是否精确确认SYN/FIN，不处理乱序字节、TCP选项、重组或同一五元组在终止状态后的重新建连；
+- 本机18项CTest全部通过；ARM64开发板尚需对本功能重新执行原生或交叉产物回归，不能沿用旧17项板端基线冒充已验证。
+
 
 ### TD-019：Git功能分支、Pull Request和版本标签
 
