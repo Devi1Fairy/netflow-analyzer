@@ -23,7 +23,7 @@ cmake -E chdir build ctest --output-on-failure
 
 - 当前功能分支：`feature/nonroot-service`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前已提交服务化前置基线：`6adf14a feat(app): allow unbounded live capture`，并与`origin/feature/nonroot-service`一致；本次无上限实时验收记录将形成其后的独立文档提交，实际接手时仍须以`git log`为准；
+- 当前分支已提交无上限实时模式、验收文档、CMake安装规则和非root systemd单元；记录本文档时最新已推送提交为`5a7de3c feat(deploy): add non-root systemd service`，实际接手时仍须以`git log`为准；
 - TCP状态机、流记录接入、终端显示、CSV字段和确定性三次握手验收均已提交；接手时仍须先检查工作区，不能覆盖用户后续未提交改动；
 - 当前正式版本宏为`0.2.0`；
 - 已有标签：`v0.0.1`、`v0.1.0`、`v0.2.0`；
@@ -33,6 +33,7 @@ cmake -E chdir build ctest --output-on-failure
 - 通用GCC交叉构建目录：`/home/zcb/build/netflow-analyzer-generic-sysroot-release`；
 - x86_64与LubanCat-2N ARM64原生Debug构建的18项CTest全部通过；单次扫描优化已完成Ubuntu `lo`和LubanCat-2N物理网卡300流手工验收。优化版官方SDK ARM64产物只要求`GLIBC_2.17`，板端得到300次操作、44次淘汰、256条最终流和零drop；新增TCP状态功能也已在`lo`真实HTTP/1.0连接中处理12包并最终输出`closed`，两个drop字段均为0。
 - 实时`--count`已改为可选上限；本机`lo`在省略上限后能于静默期正常报告，随后处理4个`complete` ICMP包，并在`SIGTERM`后完成统计、流汇总与清理。
+- 主程序已在stdout首次I/O前显式启用行缓冲；严格普通文件重定向测试在进程结束前读到5秒周期报告，避免systemd journal日志延迟到缓冲区填满或服务退出。
 
 如果实际状态与上面不同，应先查看用户是否在新会话开始前继续修改了代码，不要覆盖未提交改动。
 
@@ -310,6 +311,9 @@ netflow-analyzer/
 │   ├── unit/
 │   └── integration/test_offline_flow.py
 ├── scripts/check_target_env.sh
+├── packaging/systemd/
+│   ├── netflow-analyzer.service
+│   └── netflow-analyzer.default
 ├── docs/
 │   ├── problem_log.md
 │   ├── technical_decisions.md
@@ -324,7 +328,7 @@ netflow-analyzer/
 
 | 模块 | 职责 |
 |---|---|
-| `main.c` | 初始化上下文、解析参数、运行应用、统一清理，把错误码转换为进程退出码 |
+| `main.c` | 在首次输出前建立stdout行缓冲，初始化上下文、解析参数、安装停止信号处理、运行应用、统一清理，并把错误码转换为进程退出码 |
 | `app.c` | 应用编排；连接采集、协议解析、流表、周期运行指标和输出，不承担具体协议字段解析 |
 | `byte_reader` | 使用边界检查游标读取、跳过和切分原始二进制字节 |
 | `capture` | 封装libpcap，统一离线文件、实时网卡、BPF、非阻塞等待、中断和运行统计接口，隐藏`pcap_t`、`struct pcap_stat`与`DLT_*` |
@@ -853,6 +857,7 @@ cmake -E chdir build ctest \
 - BPF、信号退出和libpcap运行统计都停留在capture边界内，不向上层暴露第三方原生类型；
 - 捕获后端计数与应用处理计数分别输出，不能用二者差值计算丢包；
 - 不在没有性能数据时提前引入AF_XDP、DPDK或复杂线程池。
+- 持续服务由程序显式保证stdout按行刷新，不依赖终端探测结果或外部`stdbuf`命令。
 
 数据库目前不是必需项。只有出现历史查询、持久告警、用户配置、跨重启状态等明确需求时，再评估SQLite或外部数据库。
 
@@ -1203,6 +1208,21 @@ LubanCat官方SDK交叉产物实测：
 - 云平台作为后续扩展，用于远程设备、长期历史和多节点汇总；
 - 不需要现在同时实现完整Qt和云平台。
 
+### 18.11 非root systemd服务化（本地基础完成，板端待验收）
+
+当前已经完成：
+
+- `CMakeLists.txt`通过`GNUInstallDirs`定义可移植的运行文件安装位置，并安装`netflow_analyzer_cli`目标；
+- `packaging/systemd/netflow-analyzer.service`使用专用`netflow-analyzer`用户和组运行，不以root身份长期执行分析器；
+- 服务只保留抓取原始网络数据所需的`CAP_NET_RAW`环境能力和能力边界，并启用`NoNewPrivileges`、只读系统目录、私有临时目录及内核接口防护；
+- `/etc/default/netflow-analyzer`模板提供接口、BPF和满表策略参数，第一版默认只抓ICMP，避免启用服务后立即采集全部流量；
+- systemd使用`SIGTERM`停止无上限实时循环，复用现有信号处理、libpcap中断、统计和正常清理路径；
+- stdout在`main()`首次I/O前被显式设置为行缓冲，周期报告可以及时进入journal，而不依赖`stdbuf`；
+- 本地CMake配置、构建、18项CTest、临时安装前缀和服务单元静态检查已经完成。静态检查只因本机尚未安装`/usr/local/bin/netflow-analyzer`而报告目标不存在，没有发现单元语法错误；
+- 严格的普通文件重定向测试排除了终端和sudo伪终端影响，在进程退出前已经读到周期报告。
+
+下一步在LubanCat-2N上完成正式验收：安装Release产物和配置文件，创建无登录专用账户，启动服务，检查进程身份与Linux capability，使用`journalctl -f`观察静默及真实ICMP流量，最后执行`systemctl stop`验证`SIGTERM`正常收尾。板端验证通过前不能宣称非root部署完成。
+
 ## 19. ARM Linux开发板计划
 
 用户已经收到野火LubanCat-2N，并开始首次上板环境准备。选择原因主要是：
@@ -1239,6 +1259,7 @@ LubanCat官方SDK交叉产物实测：
 - 最旧流淘汰版官方SDK交叉产物只要求`GLIBC_2.17`，SHA-256为`02da53505b1f1230a9a04c60af8a618d85b734ed89a7c19176f5d59a7d4a3604`；板端300流得到300个完整包、44次淘汰、256条最终流和零drop。
 - 单次满表扫描优化版官方SDK产物SHA-256为`c2dcc119ebbd27d321dbf041683d57a31ac0d22645fe16fea2ce08e873b37036`；板端300流得到300次探测操作、44次淘汰、256条最终流和零drop，证明优化在ARM64真实运行环境中成立。
 - TCP状态版ARM64原生Debug构建的18项CTest全部通过；板端`lo`的HTTP/1.0实测处理12个`complete` TCP包，双向各6包并聚合为1条流，最终为`tcp_state=closed`，两个drop字段均为0；后端`received=24`与应用处理12包属于回环捕获的不同统计层级。
+- 仓库已提交CMake安装规则、非root systemd单元和默认参数模板；本地暂存安装及单元静态检查通过，板端尚未创建服务账户或启用服务。
 
 不要宣称完整开发板验证已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、当前18项板端CTest、确定性PCAP跨平台输出对比、两种交叉编译、跨设备ICMP实时抓包、TCP完整关闭状态、单流/多流性能、满载边界、流表探测成本、整机软中断和10分钟长稳；尚未完成双向直连网络验证、非root权限方案和生产级数小时/数天浸泡测试。当前仓库提供环境检查脚本：
 
@@ -1276,7 +1297,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`满表策略的单次扫描原位替换，以及TCP握手/关闭基本状态跟踪和终端/CSV输出已经完成。x86_64与LubanCat-2N ARM64原生Debug构建的18项CTest全部通过；板端`lo`真实HTTP/1.0连接以12个`complete`包得到1条`closed` TCP流，两个drop字段均为0。实时`--count`已改为可选，无上限模式的静默报告、ICMP处理和`SIGTERM`正常收尾已完成验收。下一步增加CMake安装规则、systemd单元和只授予`CAP_NET_RAW`的非root运行边界。
+周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`满表策略的单次扫描原位替换，以及TCP握手/关闭基本状态跟踪和终端/CSV输出已经完成。x86_64与LubanCat-2N ARM64原生Debug构建的18项CTest全部通过；板端`lo`真实HTTP/1.0连接以12个`complete`包得到1条`closed` TCP流，两个drop字段均为0。实时`--count`已改为可选，无上限模式的静默报告、ICMP处理和`SIGTERM`正常收尾已完成验收。CMake安装规则、非root systemd单元、默认参数模板和stdout行缓冲已经完成本地验证；下一步在LubanCat-2N上安装并验证专用用户、`CAP_NET_RAW`、journal实时日志和`SIGTERM`停止。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1318,4 +1339,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流现在按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及CSV中使用统一名称；确定性3包握手PCAP与状态不变量测试已纳入18项CTest，x86_64与LubanCat-2N ARM64原生Debug构建均全部通过。板端`lo`真实HTTP/1.0连接进一步证明12个完整TCP包能正确聚合为1条双向流并最终进入`closed`，两个drop字段均为0。实时`--count`已改为可选，无上限模式已通过静默、ICMP和`SIGTERM`正常收尾验收，为systemd服务化提供了正确的持续运行语义。两种既有ARM64交叉构建和单次扫描优化版官方SDK产物均通过此前板端实际运行，Python验收脚本兼容板端Python 3.8.10。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳；当前仍没有接入`labs/thread_pipeline`。下一步增加CMake安装规则、systemd单元和只授予`CAP_NET_RAW`的非root运行边界。
+应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流现在按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及CSV中使用统一名称；确定性3包握手PCAP与状态不变量测试已纳入18项CTest，x86_64与LubanCat-2N ARM64原生Debug构建均全部通过。板端`lo`真实HTTP/1.0连接进一步证明12个完整TCP包能正确聚合为1条双向流并最终进入`closed`，两个drop字段均为0。实时`--count`已改为可选，无上限模式已通过静默、ICMP和`SIGTERM`正常收尾验收，为systemd服务化提供了正确的持续运行语义。CMake安装规则、专用用户systemd单元、默认参数模板和stdout行缓冲已经完成本地验证，下一步是LubanCat-2N非root服务实装、journal实时观察和`SIGTERM`停止验收。两种既有ARM64交叉构建和单次扫描优化版官方SDK产物均通过此前板端实际运行，Python验收脚本兼容板端Python 3.8.10。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳；当前仍没有接入`labs/thread_pipeline`。

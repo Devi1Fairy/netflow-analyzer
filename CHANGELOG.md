@@ -50,6 +50,8 @@
 - 当前状态机是旁路观察模型，不复制Linux内核TCP socket状态，不验证ACK是否精确确认对应序列号，不处理乱序字节、重组、TCP选项或同一五元组在`closed`/`reset`后的重新建连。
 - LubanCat-2N ARM64原生Debug构建的18项CTest全部通过；`lo`上的HTTP/1.0真实连接处理12个TCP包，12个均为`complete`，聚合为1条双向流并最终进入`closed`，两个drop字段均为0。捕获后端的`received=24`与应用交付的12包属于不同统计层级，不解释为应用重复处理或丢包。
 - 实时模式将`--count`改为可选上限：省略时持续抓包，直到收到`SIGINT`、`SIGTERM`或致命错误；显式的`--count`仍只接受正整数，内部使用0表示`unlimited`。本机18项CTest全部通过；`lo`上的无上限ICMP实测在静默期正常报告0包，随后处理4个`complete`包，并在`SIGTERM`后正常输出汇总；后端`received=8`且两个drop字段均为0。
+- CMake新增GNU标准安装目录支持，可把主程序安装到目标前缀的`bin`目录；新增systemd服务单元和`/etc/default`参数模板，以专用用户、`CAP_NET_RAW`能力边界和只读系统防护运行持续抓包服务。
+- 主程序在任何stdout I/O之前显式启用行缓冲，使周期指标和生命周期日志在普通文件、Shell管道及systemd journal中及时发布，不再要求服务通过外部`stdbuf`包装；严格普通文件重定向测试在进程结束前读到了第一条周期报告。
 
 ## [0.2.0] - 2026-08-26
 

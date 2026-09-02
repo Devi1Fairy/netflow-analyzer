@@ -166,6 +166,24 @@ int main(int argc, char *argv[])
 {
     int error_code;
 
+    /*
+     * stdout连接终端时通常采用行缓冲，但连接到systemd journal、
+     * 管道或普通文件时通常会变成全缓冲。
+     *
+     * 显式设置为行缓冲，使每条以换行符结束的运行日志及时输出，
+     * 而不是等待缓冲区填满或进程退出。
+     *
+     * setvbuf必须在stdout发生任何I/O操作之前调用。
+     */
+    if (setvbuf(stdout, NULL, _IOLBF, 0) != 0) {
+        fprintf(
+            stderr,
+            "Failed to configure standard output buffering\n"
+        );
+
+        return EXIT_FAILURE;
+    }
+
     error_code = app_context_init(&application_context);
 
     if (error_code != 0) {
