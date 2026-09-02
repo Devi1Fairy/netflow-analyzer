@@ -583,6 +583,7 @@ def run_acceptance_test(
         expected_csv_lines = [
             (
                 "protocol,"
+                "tcp_state,"
                 "endpoint_a_ip,"
                 "endpoint_a_port,"
                 "endpoint_b_ip,"
@@ -599,7 +600,7 @@ def run_acceptance_test(
                 "last_seen_microseconds"
             ),
             (
-                "1,10.0.0.1,0,10.0.0.2,0,"
+                "1,not-applicable,10.0.0.1,0,10.0.0.2,0,"
                 "3,138,138,"
                 "3,138,138,"
                 "1700000001,100,"
@@ -659,6 +660,11 @@ def run_tcp_state_output_test(
             / "tcp-handshake-test.pcap"
         )
 
+        csv_path = (
+            Path(temporary_directory)
+            / "tcp-handshake-result.csv"
+        )
+
         write_tcp_handshake_pcap(pcap_path)
 
         completed_process = subprocess.run(
@@ -666,6 +672,8 @@ def run_tcp_state_output_test(
                 str(program),
                 "--read",
                 str(pcap_path),
+                "--csv",
+                str(csv_path),
             ],
             capture_output=True,
             text=True,
@@ -707,6 +715,38 @@ def run_tcp_state_output_test(
 
         require_text(output, "a_to_b_packets=2")
         require_text(output, "b_to_a_packets=1")
+
+        if not csv_path.is_file():
+            raise RuntimeError(
+                f"TCP state CSV was not created: {csv_path}"
+            )
+
+        tcp_csv_lines = csv_path.read_text(
+            encoding="utf-8"
+        ).splitlines()
+
+        if len(tcp_csv_lines) != 2:
+            raise RuntimeError(
+                "TCP state CSV should contain one header "
+                f"and one record: {tcp_csv_lines!r}"
+            )
+
+        expected_tcp_record = (
+            "6,established,"
+            "10.0.0.10,40000,"
+            "10.0.0.20,443,"
+            "2,108,108,"
+            "1,54,54,"
+            "1700002000,100,"
+            "1700002000,300"
+        )
+
+        if tcp_csv_lines[1] != expected_tcp_record:
+            raise RuntimeError(
+                "TCP state CSV record does not match\n"
+                f"expected: {expected_tcp_record!r}\n"
+                f"actual: {tcp_csv_lines[1]!r}"
+            )
 
 def run_processing_results_test(
     program: Path,
