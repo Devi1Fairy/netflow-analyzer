@@ -21,17 +21,17 @@ cmake -E chdir build ctest --output-on-failure
 
 预期基线：
 
-- 当前分支：`main`；
+- 当前功能分支：`feature/tcp-state-tracking`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前已提交基线：`b23fa59 docs(board): record ARM64 eviction validation`，并与`origin/main`一致；实际接手时仍须以`git log`为准；
-- 当前工作区包含尚未提交的单次满表扫描优化：公开组合接口、流表内部最旧候选跟踪与原位替换、应用策略分派、完整单元测试及对应文档；接手时必须保留并检查这些改动；
+- 当前TCP状态功能基线：`d427168 feat(output): export TCP flow state`，并与`origin/feature/tcp-state-tracking`一致；本文档更新将形成其后的独立文档提交，实际接手时仍须以`git log`为准；
+- TCP状态机、流记录接入、终端显示、CSV字段和确定性三次握手验收均已提交；接手时仍须先检查工作区，不能覆盖用户后续未提交改动；
 - 当前正式版本宏为`0.2.0`；
 - 已有标签：`v0.0.1`、`v0.1.0`、`v0.2.0`；
 - Debug构建目录：`/home/zcb/workspace/netflow-analyzer/build`；
 - 本地主程序：`build/bin/netflow-analyzer`；
 - 官方SDK交叉构建目录：`/home/zcb/build/netflow-analyzer-lubancat-sdk-release-v2`；
 - 通用GCC交叉构建目录：`/home/zcb/build/netflow-analyzer-generic-sysroot-release`；
-- 当前x86_64的17项CTest全部通过；单次扫描优化已完成Ubuntu `lo`和LubanCat-2N物理网卡300流手工验收。优化版官方SDK ARM64产物只要求`GLIBC_2.17`，板端得到300次操作、44次淘汰、256条最终流和零drop。
+- 当前x86_64的18项CTest全部通过；单次扫描优化已完成Ubuntu `lo`和LubanCat-2N物理网卡300流手工验收。优化版官方SDK ARM64产物只要求`GLIBC_2.17`，板端得到300次操作、44次淘汰、256条最终流和零drop；新增TCP状态功能尚未重新上板。
 
 如果实际状态与上面不同，应先查看用户是否在新会话开始前继续修改了代码，不要覆盖未提交改动。
 
@@ -219,17 +219,18 @@ origin git@github.com:Devi1Fairy/netflow-analyzer.git
 当前重要提交，从新到旧：
 
 ```text
-（当前工作区，待提交）GCC 9结果初始化兼容性修正和交叉编译文档
-eb114f3 feat(metrics): report packet processing results
-d1ef086 feat(metrics): model packet processing results
-5e407ad feat(metrics): report periodic live capture metrics
-5224f93 feat(metrics): add periodic traffic rate calculations
-0471f0d docs(board): record ARM deployment and live capture validation
-0f4a34e docs(board): record native ARM bring-up issues
-0cdfdb1 feat(flow): expire inactive flows during live capture
-3c54aba feat(cli): stop live capture gracefully on signals
-768985f feat(app): propagate stop requests to capture loop
-3a3fb3e feat(capture): support breaking active reads
+d427168 feat(output): export TCP flow state
+29aa018 feat(app): report TCP state in flow summaries
+1eea4d8 feat(flow): expose TCP phase names
+83586c1 feat(flow): track TCP lifecycle in flow records
+31ee759 feat(flow): replace oldest flow in one probe
+b23fa59 docs(board): record ARM64 eviction validation
+183617c docs(flow): record eviction policy validation
+be08b7e feat(flow): add oldest-flow eviction policy
+dd5221e feat(flow): report hash probe statistics
+25d2c06 docs(board): record multiflow and soak baselines
+295bf5c docs(board): record single-flow performance baseline
+b070f09 docs(board): record ARM64 17-test baseline
 a0de7df tag: v0.2.0
 a8fd76f feat(cli): expose live capture filter option
 8b047d2 feat(capture): add BPF filter support
@@ -256,7 +257,7 @@ e32a14c feat: parse TCP segments
 
 用户已经练习过feature分支、compare链接、Pull Request、review和merge。历史PR包括至少`#1`、`#2`，`v0.1.0`通过PR `#4`合入。近期为了连续学习直接在`main`提交；如果下一阶段需要模拟团队协作，应先创建feature分支，再通过PR合入，不要假设必须直接推main。
 
-`v0.1.0`是第一条完整离线分析链的发布标签。`v0.2.0`已经发布哈希流表、过期底层接口、CSV、实时抓包和BPF过滤。信号优雅退出、libpcap运行统计和实时流过期属于`Unreleased`开发进度，当前不需要立即更换版本标签。
+`v0.1.0`是第一条完整离线分析链的发布标签。`v0.2.0`已经发布哈希流表、过期底层接口、CSV、实时抓包和BPF过滤。信号优雅退出、libpcap运行统计、实时流过期、容量淘汰、探测统计和TCP状态跟踪属于`Unreleased`开发进度，当前不需要仅因这一功能立即更换版本标签。
 
 ## 6. 当前目录结构与职责
 
@@ -278,6 +279,7 @@ netflow-analyzer/
 │   ├── ipv4_dispatch.h
 │   ├── flow_key.h
 │   ├── flow_record.h
+│   ├── tcp_flow_state.h
 │   ├── flow_table.h
 │   ├── flow_expiration.h
 │   ├── flow_export.h
@@ -298,6 +300,7 @@ netflow-analyzer/
 │   ├── flow/
 │   │   ├── flow_key.c
 │   │   ├── flow_record.c
+│   │   ├── tcp_flow_state.c
 │   │   ├── flow_table.c
 │   │   └── flow_expiration.c
 │   ├── metrics/runtime_metrics.c
@@ -332,10 +335,11 @@ netflow-analyzer/
 | `icmp` | 解析ICMP类型、代码、echo字段和负载视图 |
 | `ipv4_dispatch` | 按IPv4协议号分发到TCP、UDP或ICMP解析器 |
 | `flow_key` | 生成规范化双向五元组，判断相等，计算FNV-1a 64位哈希 |
-| `flow_record` | 保存一个双向流的两个方向统计、首末时间并更新记录 |
+| `flow_record` | 保存一个双向流的两个方向统计、首末时间，并为TCP流推进独立连接状态 |
+| `tcp_flow_state` | 根据规范化方向和TCP标志跟踪握手、中途捕获、FIN关闭和RST中止，提供稳定阶段名称 |
 | `flow_table` | 开放寻址哈希表、线性探测、删除标记、查找、遍历、返回值副本的过期删除，以及数据包路径探测成本统计 |
 | `flow_expiration` | 维护数据包事件时间高水位、扫描周期和空闲截止时间，处理乱序与整数边界 |
-| `flow_export` | 将流记录写成固定字段顺序的CSV表头和记录 |
+| `flow_export` | 将流记录写成固定字段顺序的CSV表头和记录，包含TCP阶段或非TCP的`not-applicable` |
 | `runtime_metrics` | 使用单调时钟和累计值差分计算区间PPS、Mbps、流表占用率和过期流数量 |
 
 `common`目录存放不属于某一种网络协议或业务模块、但多个模块可复用的基础工具。当前只有安全字节读取器，未来可以放通用时间、错误转换、日志等工具，但不要把所有无法分类的业务代码都堆入`common`。
@@ -370,6 +374,8 @@ flow_table_process_packet
 flow_key_from_packet + flow_key_hash
     ↓
 flow_record_init或flow_record_update
+    ↓ TCP流
+tcp_flow_state_observe推进旁路连接阶段
     ↓
 终端逐包预览（最多5包）
     ↓
@@ -534,6 +540,24 @@ int capture_open_live(..., capture_t **capture, ...);
 
 当前CSV只允许离线模式使用，实时模式的参数组合会拒绝`--csv`。
 
+CSV在协议号后使用稳定的`tcp_state`字段。TCP流通过`tcp_flow_phase_name()`输出状态机阶段，UDP和ICMP写入`not-applicable`。状态名称来自核心状态模块，终端和CSV不各自维护重复映射。字段仅含小写字母和短横线，不需要额外CSV转义。
+
+### 8.9 TCP流状态与所有权
+
+每条TCP `flow_record_t`按值保存独立的`tcp_flow_state_t`。状态对象只包含枚举、规范化方向和布尔值，不保存原始报文指针，不拥有动态内存，因此流记录复制、过期和淘汰时不需要额外`free`。
+
+当前状态包括：
+
+- `unobserved`：已经初始化但尚未观察报文；
+- `syn-seen`、`syn-ack-seen`、`established`：完整握手路径；
+- `midstream`：从连接中途开始捕获，不能证明完整握手；
+- `fin-seen`、`fin-bidirectional`、`closed`：旁路观察到的关闭路径；
+- `reset`：观察到RST中止。
+
+`endpoint_a`和`endpoint_b`只表示规范化排序，不等于客户端和服务器；初始SYN的方向单独保存在`initiator_direction`。`handshake_completed`是历史事实，即使流之后关闭或重置也继续保留。`closed`和`reset`暂时是终止状态，同一五元组重新建立新连接留给下一轮生命周期设计。
+
+这不是Linux内核TCP状态机的复制：当前不验证ACK号是否精确确认SYN或FIN，不处理乱序、重叠、重传字节、TCP选项和字节流重组，也不能仅凭状态字段宣称已经具备应用层DPI。
+
 ## 9. 协议与二进制解析原则
 
 ### 9.1 为什么使用字节游标
@@ -678,7 +702,7 @@ sudo ./build/bin/netflow-analyzer \
 
 ## 12. 当前测试体系
 
-当前CTest共17项，最近一次全量执行全部通过，总耗时约0.12秒：
+当前x86_64 Debug构建的CTest共18项，最近一次全量执行全部通过，总耗时约0.10秒：
 
 | 编号 | CTest名称 | 主要覆盖 |
 |---:|---|---|
@@ -693,12 +717,13 @@ sudo ./build/bin/netflow-analyzer \
 | 9 | `icmp_tests` | ICMP通用字段、echo字段和负载 |
 | 10 | `ipv4_dispatch_tests` | 协议号分发、未知协议和分片处理 |
 | 11 | `flow_key_tests` | 双向规范化、方向、字段比较和稳定FNV-1a哈希 |
-| 12 | `flow_record_tests` | 两个方向统计、首末时间、错误和溢出保护 |
+| 12 | `flow_record_tests` | 两个方向统计、首末时间、错误和溢出保护，以及TCP状态随首包和后续包推进、非TCP无状态 |
 | 13 | `flow_table_tests` | 哈希冲突、线性探测、回绕、删除标记、复用、遍历、过期、探测统计、查询隔离、饱和保护，以及单次满表扫描选择并原位替换最旧流的成功/失败契约 |
-| 14 | `offline_flow_acceptance` | 6包PCAP验证聚合、预览、CSV和无冲突探测；260包PCAP验证四类异常/拒绝、256槽满载、完整扫描和继续运行 |
-| 15 | `flow_export_tests` | CSV表头、记录字段顺序、格式化和无效参数 |
+| 14 | `offline_flow_acceptance` | 6包ICMP PCAP验证聚合、预览和`not-applicable` CSV；3包TCP握手验证终端与CSV的`established`；260包PCAP验证四类异常/拒绝、256槽满载、完整扫描和继续运行 |
+| 15 | `flow_export_tests` | CSV表头、TCP状态字段、协议/状态不变量、记录顺序、格式化和无效参数 |
 | 16 | `flow_expiration_tests` | 事件时间高水位、扫描边界、乱序时间戳、参数验证和截止时间下溢 |
 | 17 | `runtime_metrics_tests` | 累计值差分、PPS/Mbps、流表占用率、零流量、时间边界和溢出保护 |
+| 18 | `tcp_flow_state_tests` | 初始化、稳定名称、双向握手、重传、中途捕获、无效输入、FIN关闭、RST和终止状态 |
 
 只运行重点测试示例：
 
@@ -847,7 +872,9 @@ cmake -E chdir build ctest \
 - 只支持Ethernet II和IPv4；
 - 不支持VLAN、IPv6、PPPoE、Linux cooked capture和隧道；
 - 不做IPv4分片重组；
+- 已完成基于方向和标志的TCP握手、中途捕获、FIN与RST基本状态跟踪；
 - 不做TCP乱序重组和字节流重组；
+- 不核对ACK号是否精确确认SYN或FIN，同一五元组在`closed`或`reset`后的重新建连尚未处理；
 - 不解析TCP选项；
 - 不验证IPv4/TCP/UDP/ICMP校验和；
 - 不解析DNS、HTTP、TLS等应用层协议；
@@ -1139,8 +1166,8 @@ LubanCat官方SDK交叉产物实测：
 
 推荐顺序：
 
-1. TCP连接状态基本跟踪；
-2. TCP字节流重组；
+1. TCP连接状态基本跟踪（已完成第一版）；
+2. 同一五元组重新建连语义与TCP字节流重组；
 3. DNS解析，先UDP再考虑TCP；
 4. HTTP/1.x请求行和头部；
 5. TLS ClientHello元数据，例如SNI和版本；
@@ -1148,6 +1175,8 @@ LubanCat官方SDK交叉产物实测：
 7. 特征导出和机器学习。
 
 没有TCP重组时，不能可靠地假设一个应用层消息完整存在于一个TCP包中。
+
+第一版状态跟踪已经完成：每条TCP流拥有独立状态，支持完整握手、中途捕获、FIN关闭和RST，并通过稳定名称输出到终端与CSV。下一阶段进入重组前，应先定义序列号比较、乱序和重叠段、重复数据、每流内存上限、超时清理，以及`closed`/`reset`后相同五元组的新SYN如何创建新生命周期。状态跟踪解决“连接处于什么阶段”，字节流重组解决“按什么顺序向应用层交付哪些字节”，两者不能混为一谈。
 
 ### 18.9 异常检测
 
@@ -1243,7 +1272,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计，以及实时`reject|evict-oldest`满表策略的单次扫描原位替换已经完成。本机17项CTest、优化后的Ubuntu `lo`和LubanCat ARM64 300流验收均通过。下一步从TCP状态跟踪或非root服务化部署中选择一个独立迭代。
+周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`满表策略的单次扫描原位替换，以及TCP握手/关闭基本状态跟踪和终端/CSV输出已经完成。本机18项CTest全部通过；优化后的Ubuntu `lo`和此前LubanCat ARM64 300流验收也已通过，但新增TCP状态功能尚需重新上板回归。下一步从同一五元组重新建连与TCP字节流重组，或非root服务化部署中选择一个独立迭代。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1254,7 +1283,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 - 为什么现有性能数据不支持接入线程流水线，以及下一步为何转向新的功能或部署问题；
 - 本轮不会直接替用户修改C源码。
 
-然后先检查单次扫描优化的源码、测试和文档差异以及Git提交状态，再进入下一项技术选择；性能方法见`docs/performance_baseline.md`与`docs/multiflow_longrun_baseline.md`，交叉构建方法见`docs/cross_compilation.md`。
+然后先检查TCP状态跟踪的源码、测试、文档和Git提交状态，再进入下一项技术选择；性能方法见`docs/performance_baseline.md`与`docs/multiflow_longrun_baseline.md`，交叉构建方法见`docs/cross_compilation.md`。
 
 ## 21. 本次交接结论
 
@@ -1270,8 +1299,9 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 → 数据包路径平均/最大线性探测统计
 → 事件时间调度、过期值副本与实时清理
 → 双向包数、字节数和时间统计
+→ TCP握手、中途捕获、FIN关闭和RST状态
 → 周期PPS、Mbps、流表占用率和过期数量
-→ 终端流汇总或离线CSV
+→ 含tcp_state的终端流汇总或离线CSV
 ```
 
 实时采集的第一组可控性能力已经完成：
@@ -1284,4 +1314,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。两种既有ARM64交叉构建和单次扫描优化版官方SDK产物均通过板端实际运行，Python验收脚本兼容板端Python 3.8.10；x86_64的17项CTest、优化后的Ubuntu `lo`及LubanCat物理网卡300流验收全部通过。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳；新实现把满载换入路径从三次整表扫描收敛为一次，并保持应用层与流表槽位的职责边界。当前不接入`labs/thread_pipeline`；下一步可转向TCP状态跟踪或非root服务化部署。
+应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流现在按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及CSV中使用统一名称；确定性3包握手PCAP与状态不变量测试已纳入本机18项CTest。两种既有ARM64交叉构建和单次扫描优化版官方SDK产物均通过此前板端实际运行，Python验收脚本兼容板端Python 3.8.10，但新增TCP状态提交还不能沿用旧17项结果冒充板端已验证。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳；当前仍没有接入`labs/thread_pipeline`。下一步可先完成TCP状态上板回归，再选择同一五元组重新建连与TCP字节流重组，或非root服务化部署。

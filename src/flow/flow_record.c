@@ -125,6 +125,7 @@ int flow_record_init(
      */
     new_record = (flow_record_t){
         .key = key,
+        .tcp_state = {0},
         .a_to_b = {
             .packet_count = UINT64_C(0),
             .captured_byte_count = UINT64_C(0),
@@ -147,6 +148,38 @@ int flow_record_init(
         },
         .initialized = true
     };
+
+    /*
+     * TCP流拥有独立的连接状态对象。
+     *
+     * flow_key_from_packet已经验证协议号与has_tcp一致，
+     * 所以这里可以使用has_tcp判断是否需要初始化状态机。
+     */
+    if (first_packet->has_tcp) {
+        error_code = tcp_flow_state_init(
+            &new_record.tcp_state
+        );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+
+        /*
+         * 创建流记录时，第一包同样必须进入状态机。
+         *
+         * 如果第一包是SYN，状态进入SYN_SEEN；
+         * 如果抓包从普通ACK开始，则进入MIDSTREAM。
+         */
+        error_code = tcp_flow_state_observe(
+            &new_record.tcp_state,
+            direction,
+            first_packet->tcp_flags
+        );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+    }
 
     direction_stats = flow_record_select_stats(
         &new_record,
@@ -221,6 +254,30 @@ int flow_record_update(
      * 即使后面发现计数器溢出，原record也不会被部分修改。
      */
     updated_record = *record;
+
+    /*
+     * TCP流记录必须拥有一个已经初始化的TCP状态对象。
+     *
+     * UDP或ICMP流则不能意外携带有效TCP状态。
+     * 这些检查用于发现内部结构被错误构造或破坏的情况。
+     */
+    if (packet->has_tcp) {
+        if (!updated_record.tcp_state.initialized) {
+            return EINVAL;
+        }
+
+        error_code = tcp_flow_state_observe(
+            &updated_record.tcp_state,
+            direction,
+            packet->tcp_flags
+        );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+    } else if (updated_record.tcp_state.initialized) {
+        return EINVAL;
+    }
 
     direction_stats = flow_record_select_stats(
         &updated_record,

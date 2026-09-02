@@ -1,6 +1,7 @@
 #include "analyzer/flow_record.h"
 #include "analyzer/ipv4.h"
 #include "analyzer/packet_info.h"
+#include "analyzer/tcp.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -506,6 +507,196 @@ static int test_counter_overflow_protection(void)
 }
 
 /**
+ * @brief 验证TCP状态随同一条流的数据包持续推进。
+ */
+static int test_tcp_state_updates_with_flow(void)
+{
+    packet_info_t syn_packet;
+    packet_info_t syn_ack_packet;
+    packet_info_t ack_packet;
+
+    flow_record_t record;
+
+    /*
+     * 第一个包：A到B的SYN。
+     */
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &syn_packet,
+            INT64_C(100),
+            INT32_C(0),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(2000)
+        ) == 0
+    );
+
+    syn_packet.tcp_flags = TCP_FLAG_SYN;
+
+    /*
+     * 第二个包：B到A的SYN+ACK。
+     */
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &syn_ack_packet,
+            INT64_C(101),
+            INT32_C(0),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x02020202),
+            UINT16_C(2000),
+            UINT32_C(0x01010101),
+            UINT16_C(1000)
+        ) == 0
+    );
+
+    syn_ack_packet.tcp_flags =
+        TCP_FLAG_SYN | TCP_FLAG_ACK;
+
+    /*
+     * 第三个包：A到B的最终ACK。
+     */
+    TEST_CHECK(
+        prepare_tcp_packet(
+            &ack_packet,
+            INT64_C(102),
+            INT32_C(0),
+            UINT32_C(60),
+            UINT32_C(60),
+            UINT32_C(0x01010101),
+            UINT16_C(1000),
+            UINT32_C(0x02020202),
+            UINT16_C(2000)
+        ) == 0
+    );
+
+    ack_packet.tcp_flags = TCP_FLAG_ACK;
+
+    TEST_CHECK(
+        flow_record_init(
+            &record,
+            &syn_packet
+        ) == 0
+    );
+
+    TEST_CHECK(record.tcp_state.initialized);
+
+    TEST_CHECK(
+        record.tcp_state.phase ==
+            TCP_FLOW_PHASE_SYN_SEEN
+    );
+
+    TEST_CHECK(
+        record.tcp_state.initiator_direction ==
+            FLOW_DIRECTION_A_TO_B
+    );
+
+    TEST_CHECK(
+        flow_record_update(
+            &record,
+            &syn_ack_packet
+        ) == 0
+    );
+
+    TEST_CHECK(
+        record.tcp_state.phase ==
+            TCP_FLOW_PHASE_SYN_ACK_SEEN
+    );
+
+    TEST_CHECK(
+        flow_record_update(
+            &record,
+            &ack_packet
+        ) == 0
+    );
+
+    TEST_CHECK(
+        record.tcp_state.phase ==
+            TCP_FLOW_PHASE_ESTABLISHED
+    );
+
+    TEST_CHECK(
+        record.tcp_state.handshake_completed
+    );
+
+    /*
+     * 状态推进不能破坏原有的双向统计。
+     */
+    TEST_CHECK(
+        record.a_to_b.packet_count ==
+            UINT64_C(2)
+    );
+
+    TEST_CHECK(
+        record.b_to_a.packet_count ==
+            UINT64_C(1)
+    );
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证UDP流不会错误初始化TCP状态。
+ */
+static int test_udp_flow_has_no_tcp_state(void)
+{
+    packet_info_t packet;
+    flow_record_t record;
+
+    TEST_CHECK(
+        packet_info_init(
+            &packet,
+            INT64_C(200),
+            INT32_C(0),
+            UINT32_C(60),
+            UINT32_C(60)
+        ) == 0
+    );
+
+    packet.has_ethernet = true;
+    packet.has_ipv4 = true;
+    packet.ipv4_protocol = IPV4_PROTOCOL_UDP;
+    packet.source_ipv4 =
+        UINT32_C(0x01010101);
+    packet.destination_ipv4 =
+        UINT32_C(0x02020202);
+
+    packet.has_udp = true;
+    packet.udp_source_port = UINT16_C(3000);
+    packet.udp_destination_port =
+        UINT16_C(4000);
+
+    TEST_CHECK(
+        packet_info_mark_complete(&packet) == 0
+    );
+
+    TEST_CHECK(
+        flow_record_init(
+            &record,
+            &packet
+        ) == 0
+    );
+
+    TEST_CHECK(record.initialized);
+
+    /*
+     * phase的零值本身不代表该UDP流处于UNOBSERVED。
+     * initialized为false才表示整个TCP状态对象无效。
+     */
+    TEST_CHECK(!record.tcp_state.initialized);
+
+    TEST_CHECK(
+        record.a_to_b.packet_count ==
+            UINT64_C(1)
+    );
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 单条流记录单元测试入口。
  */
 int main(void)
@@ -543,6 +734,20 @@ int main(void)
     }
 
     printf("[PASS] counter overflow protection\n");
+
+    if (test_tcp_state_updates_with_flow() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] TCP state updates with flow\n");
+
+    if (test_udp_flow_has_no_tcp_state() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] UDP flow has no TCP state\n");
 
     return EXIT_SUCCESS;
 }

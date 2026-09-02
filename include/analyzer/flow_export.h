@@ -11,6 +11,7 @@
  * 输出字段依次为：
  *
  * - IPv4协议号；
+ * - TCP连接阶段，非TCP流为not-applicable；
  * - endpoint_a的IP地址和端口；
  * - endpoint_b的IP地址和端口；
  * - 两个方向的包数、捕获字节数和线路字节数；
@@ -41,12 +42,15 @@ int flow_export_write_csv_header(FILE *output);
  *
  * output和record都由调用者拥有。本函数不会调用fclose，
  * 也不会修改record。
- *
+ * 
+ * tcp_state使用tcp_flow_phase_name()定义的稳定名称。
+ * 对UDP和ICMP流，该字段写为not-applicable。
+ * 
  * @param output 指向已经打开、可写的标准I/O流。
  * @param record 指向准备导出的只读流记录。
  *
  * @return 成功时返回0；
- *         参数、记录状态或时间戳无效时返回EINVAL；
+ *         参数、记录状态、协议状态关系或时间戳无效时返回EINVAL；
  *         IPv4地址格式化失败时返回对应错误码；
  *         写入失败时返回EIO。
  */

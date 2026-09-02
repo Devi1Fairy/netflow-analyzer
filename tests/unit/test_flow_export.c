@@ -94,6 +94,7 @@ static int test_csv_header(void)
 {
     static const char expected_header[] =
         "protocol,"
+        "tcp_state,"
         "endpoint_a_ip,"
         "endpoint_a_port,"
         "endpoint_b_ip,"
@@ -142,7 +143,7 @@ static int test_csv_header(void)
 static int test_csv_record(void)
 {
     static const char expected_record[] =
-        "6,10.0.0.1,12345,10.0.0.2,443,"
+        "6,established,10.0.0.1,12345,10.0.0.2,443,"
         "3,180,200,"
         "2,120,140,"
         "100,123456,"
@@ -159,6 +160,15 @@ static int test_csv_record(void)
                 .port = UINT16_C(443)
             },
             .protocol = IPV4_PROTOCOL_TCP
+        },
+        .tcp_state = {
+            .phase = TCP_FLOW_PHASE_ESTABLISHED,
+            .initiator_direction =
+                FLOW_DIRECTION_A_TO_B,
+            .first_fin_direction =
+                FLOW_DIRECTION_UNKNOWN,
+            .handshake_completed = true,
+            .initialized = true
         },
         .a_to_b = {
             .packet_count = UINT64_C(3),
@@ -205,6 +215,83 @@ static int test_csv_record(void)
     TEST_CHECK(
         strcmp(actual_text, expected_record) == 0
     );
+
+    TEST_CHECK(fclose(output) == 0);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证协议类型和TCP状态对象必须保持一致。
+ */
+static int test_csv_protocol_state_validation(void)
+{
+    flow_record_t tcp_without_state = {
+        .key = {
+            .protocol = IPV4_PROTOCOL_TCP
+        },
+        .first_seen = {
+            .seconds = INT64_C(100),
+            .microseconds = INT32_C(0)
+        },
+        .last_seen = {
+            .seconds = INT64_C(100),
+            .microseconds = INT32_C(0)
+        },
+        .initialized = true
+    };
+
+    flow_record_t icmp_with_state = {
+        .key = {
+            .protocol = IPV4_PROTOCOL_ICMP
+        },
+        .tcp_state = {
+            .phase = TCP_FLOW_PHASE_ESTABLISHED,
+            .initialized = true
+        },
+        .first_seen = {
+            .seconds = INT64_C(100),
+            .microseconds = INT32_C(0)
+        },
+        .last_seen = {
+            .seconds = INT64_C(100),
+            .microseconds = INT32_C(0)
+        },
+        .initialized = true
+    };
+
+    char actual_text[16];
+    FILE *output;
+
+    output = tmpfile();
+    TEST_CHECK(output != NULL);
+
+    TEST_CHECK(
+        flow_export_write_csv_record(
+            output,
+            &tcp_without_state
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        flow_export_write_csv_record(
+            output,
+            &icmp_with_state
+        ) == EINVAL
+    );
+
+    /*
+     * 两个错误都应发生在写入任何CSV内容之前。
+     */
+    TEST_CHECK(
+        read_stream_text(
+            output,
+            actual_text,
+            sizeof(actual_text)
+        ) == 0
+    );
+
+    TEST_CHECK(strcmp(actual_text, "") == 0);
 
     TEST_CHECK(fclose(output) == 0);
 
@@ -298,6 +385,13 @@ int main(void)
     }
 
     printf("[PASS] CSV flow record\n");
+
+    if (test_csv_protocol_state_validation() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] CSV protocol state validation\n");
 
     if (test_csv_argument_validation() !=
         EXIT_SUCCESS) {

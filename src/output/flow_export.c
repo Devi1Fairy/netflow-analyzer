@@ -1,5 +1,5 @@
 #include "analyzer/flow_export.h"
-
+#include "analyzer/tcp_flow_state.h"
 #include "analyzer/ipv4.h"
 
 #include <errno.h>
@@ -19,6 +19,7 @@ int flow_export_write_csv_header(FILE *output)
      */
     if (fputs(
             "protocol,"
+            "tcp_state,"
             "endpoint_a_ip,"
             "endpoint_a_port,"
             "endpoint_b_ip,"
@@ -47,6 +48,8 @@ int flow_export_write_csv_record(
     char endpoint_a_address[IPV4_ADDRESS_STRING_SIZE];
     char endpoint_b_address[IPV4_ADDRESS_STRING_SIZE];
 
+    const char *tcp_state_name;
+
     int error_code;
 
     /*
@@ -62,6 +65,28 @@ int flow_export_write_csv_record(
         record->last_seen.microseconds < INT32_C(0) ||
         record->last_seen.microseconds > INT32_C(999999)) {
         return EINVAL;
+    }
+
+    /*
+    * TCP流必须携带已经初始化的状态对象。
+    *
+    * 非TCP流没有TCP生命周期，使用not-applicable表示，
+    * 并拒绝非TCP记录意外携带已经初始化的TCP状态。
+    */
+    if (record->key.protocol == IPV4_PROTOCOL_TCP) {
+        if (!record->tcp_state.initialized) {
+            return EINVAL;
+        }
+
+        tcp_state_name = tcp_flow_phase_name(
+            record->tcp_state.phase
+        );
+    } else {
+        if (record->tcp_state.initialized) {
+            return EINVAL;
+        }
+
+        tcp_state_name = "not-applicable";
     }
 
     error_code = ipv4_format_address(
@@ -86,6 +111,7 @@ int flow_export_write_csv_record(
 
     /*
      * IPv4地址只包含数字和点，不包含逗号、双引号或换行，
+     * tcp_state名称只包含小写字母和短横线，均不包含逗号、双引号或换行。
      * 当前其他字段也都是整数，因此暂时不需要CSV转义。
      *
      * protocol和port转换成unsigned int，是因为uint8_t和uint16_t
@@ -94,12 +120,13 @@ int flow_export_write_csv_record(
      */
     if (fprintf(
             output,
-            "%u,%s,%u,%s,%u,"
+            "%u,%s,%s,%u,%s,%u,"
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
             "%" PRId64 ",%" PRId32 ","
             "%" PRId64 ",%" PRId32 "\n",
             (unsigned int)record->key.protocol,
+            tcp_state_name,
             endpoint_a_address,
             (unsigned int)record->key.endpoint_a.port,
             endpoint_b_address,

@@ -83,6 +83,7 @@ add_library(
     src/output/flow_export.c
     src/flow/flow_expiration.c
     src/metrics/runtime_metrics.c
+    src/flow/tcp_flow_state.c
 )
 
 # PUBLIC表示使用analyzer_core的目标自动继承公开头文件目录。
@@ -613,6 +614,34 @@ if(BUILD_TESTING)
 
     set_tests_properties(
         runtime_metrics_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+    # 创建TCP流状态机单元测试程序。
+    add_executable(
+        tcp_flow_state_tests
+        tests/unit/test_tcp_flow_state.c
+    )
+
+    # TCP流状态模型及方向类型由核心静态库提供。
+    target_link_libraries(
+        tcp_flow_state_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    # 启用与正式代码相同的严格编译警告。
+    enable_project_warnings(tcp_flow_state_tests)
+
+    # 注册到CTest自动化测试集合。
+    add_test(
+        NAME tcp_flow_state_tests
+        COMMAND tcp_flow_state_tests
+    )
+
+    set_tests_properties(
+        tcp_flow_state_tests
         PROPERTIES
             TIMEOUT 5
     )
