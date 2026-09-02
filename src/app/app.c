@@ -11,6 +11,7 @@
 #include "analyzer/flow_export.h"
 #include "analyzer/flow_expiration.h"
 #include "analyzer/runtime_metrics.h"
+#include "analyzer/tcp_flow_state.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -398,6 +399,8 @@ static int app_print_flow_record(
     char endpoint_a_address[IPV4_ADDRESS_STRING_SIZE];
     char endpoint_b_address[IPV4_ADDRESS_STRING_SIZE];
 
+    const char *tcp_state_name;
+
     int error_code;
 
     if (label == NULL ||
@@ -410,6 +413,28 @@ static int app_print_flow_record(
         record->last_seen.microseconds < INT32_C(0) ||
         record->last_seen.microseconds > INT32_C(999999)) {
         return EINVAL;
+    }
+
+    /*
+    * TCP流必须拥有已经初始化的状态对象。
+    *
+    * 非TCP流没有TCP连接生命周期，统一显示not-applicable，
+    * 同时拒绝非TCP记录意外携带已经初始化的TCP状态。
+    */
+    if (record->key.protocol == IPV4_PROTOCOL_TCP) {
+        if (!record->tcp_state.initialized) {
+            return EINVAL;
+        }
+
+        tcp_state_name = tcp_flow_phase_name(
+            record->tcp_state.phase
+        );
+    } else {
+        if (record->tcp_state.initialized) {
+            return EINVAL;
+        }
+
+        tcp_state_name = "not-applicable";
     }
 
     error_code = ipv4_format_address(
@@ -441,6 +466,7 @@ static int app_print_flow_record(
     if (printf(
             "%s %zu: "
             "protocol=%s "
+            "tcp_state=%s "
             "endpoint_a=%s:%u "
             "endpoint_b=%s:%u "
             "a_to_b_packets=%" PRIu64 " "
@@ -456,6 +482,7 @@ static int app_print_flow_record(
             app_ipv4_protocol_name(
                 record->key.protocol
             ),
+            tcp_state_name,
             endpoint_a_address,
             (unsigned int)record->key.endpoint_a.port,
             endpoint_b_address,

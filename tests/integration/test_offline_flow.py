@@ -105,6 +105,88 @@ def build_icmp_frame(
 
     return ethernet_header + ipv4_header + icmp_message
 
+def build_tcp_frame(
+    source_mac: bytes,
+    destination_mac: bytes,
+    source_ipv4: str,
+    destination_ipv4: str,
+    source_port: int,
+    destination_port: int,
+    sequence_number: int,
+    acknowledgment_number: int,
+    tcp_flags: int,
+) -> bytes:
+    """
+    构造不带选项和负载的Ethernet II / IPv4 / TCP报文。
+
+    当前解析器读取但不验证IPv4和TCP校验和，因此测试报文
+    使用0作为校验和。
+    """
+
+    if len(source_mac) != 6 or len(destination_mac) != 6:
+        raise ValueError(
+            "MAC addresses must contain exactly 6 bytes"
+        )
+
+    if not 0 <= source_port <= 0xFFFF:
+        raise ValueError("source port is outside uint16_t range")
+
+    if not 0 <= destination_port <= 0xFFFF:
+        raise ValueError(
+            "destination port is outside uint16_t range"
+        )
+
+    if not 0 <= sequence_number <= 0xFFFFFFFF:
+        raise ValueError(
+            "sequence number is outside uint32_t range"
+        )
+
+    if not 0 <= acknowledgment_number <= 0xFFFFFFFF:
+        raise ValueError(
+            "acknowledgment number is outside uint32_t range"
+        )
+
+    if not 0 <= tcp_flags <= 0x01FF:
+        raise ValueError("TCP flags are outside supported range")
+
+    ethernet_header = (
+        destination_mac
+        + source_mac
+        + struct.pack("!H", 0x0800)
+    )
+
+    data_offset_and_flags = (5 << 12) | tcp_flags
+
+    tcp_header = struct.pack(
+        "!HHIIHHHH",
+        source_port,
+        destination_port,
+        sequence_number,
+        acknowledgment_number,
+        data_offset_and_flags,
+        65535,  # Window size。
+        0,      # Checksum。
+        0,      # Urgent pointer。
+    )
+
+    ipv4_total_length = 20 + len(tcp_header)
+
+    ipv4_header = struct.pack(
+        "!BBHHHBBH4s4s",
+        0x45,
+        0,
+        ipv4_total_length,
+        sequence_number & 0xFFFF,
+        0x4000,
+        64,
+        6,  # Protocol=TCP。
+        0,
+        socket.inet_aton(source_ipv4),
+        socket.inet_aton(destination_ipv4),
+    )
+
+    return ethernet_header + ipv4_header + tcp_header
+
 def write_pcap(
     pcap_path: Path,
     packets: List[Tuple[int, int, bytes]],
@@ -195,6 +277,64 @@ def write_test_pcap(pcap_path: Path) -> None:
                 reply,
             )
         )
+
+    write_pcap(pcap_path, packets)
+
+def write_tcp_handshake_pcap(pcap_path: Path) -> None:
+    """写入一条完整TCP三次握手。"""
+
+    endpoint_a_mac = bytes.fromhex("001122334455")
+    endpoint_b_mac = bytes.fromhex("66778899aabb")
+
+    base_timestamp = 1_700_002_000
+
+    packets: List[Tuple[int, int, bytes]] = [
+        (
+            base_timestamp,
+            100,
+            build_tcp_frame(
+                source_mac=endpoint_a_mac,
+                destination_mac=endpoint_b_mac,
+                source_ipv4="10.0.0.10",
+                destination_ipv4="10.0.0.20",
+                source_port=40000,
+                destination_port=443,
+                sequence_number=1000,
+                acknowledgment_number=0,
+                tcp_flags=0x002,
+            ),
+        ),
+        (
+            base_timestamp,
+            200,
+            build_tcp_frame(
+                source_mac=endpoint_b_mac,
+                destination_mac=endpoint_a_mac,
+                source_ipv4="10.0.0.20",
+                destination_ipv4="10.0.0.10",
+                source_port=443,
+                destination_port=40000,
+                sequence_number=5000,
+                acknowledgment_number=1001,
+                tcp_flags=0x012,
+            ),
+        ),
+        (
+            base_timestamp,
+            300,
+            build_tcp_frame(
+                source_mac=endpoint_a_mac,
+                destination_mac=endpoint_b_mac,
+                source_ipv4="10.0.0.10",
+                destination_ipv4="10.0.0.20",
+                source_port=40000,
+                destination_port=443,
+                sequence_number=1001,
+                acknowledgment_number=5001,
+                tcp_flags=0x010,
+            ),
+        ),
+    ]
 
     write_pcap(pcap_path, packets)
 
@@ -403,6 +543,7 @@ def run_acceptance_test(
         require_text(
             output,
             "protocol=ICMP "
+            "tcp_state=not-applicable "
             "endpoint_a=10.0.0.1:0 "
             "endpoint_b=10.0.0.2:0",
         )
@@ -502,6 +643,70 @@ def run_acceptance_test(
             raise RuntimeError(
                 "existing CSV content changed after overwrite rejection"
             )
+
+def run_tcp_state_output_test(
+    program: Path,
+    work_dir: Path,
+) -> None:
+    """验证完整握手最终显示为established。"""
+
+    with tempfile.TemporaryDirectory(
+        prefix="offline-tcp-state-",
+        dir=work_dir,
+    ) as temporary_directory:
+        pcap_path = (
+            Path(temporary_directory)
+            / "tcp-handshake-test.pcap"
+        )
+
+        write_tcp_handshake_pcap(pcap_path)
+
+        completed_process = subprocess.run(
+            [
+                str(program),
+                "--read",
+                str(pcap_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+
+        if completed_process.returncode != 0:
+            raise RuntimeError(
+                "TCP state analysis returned non-zero status\n"
+                f"exit code: {completed_process.returncode}\n"
+                f"stdout:\n{completed_process.stdout}\n"
+                f"stderr:\n{completed_process.stderr}"
+            )
+
+        output = completed_process.stdout
+
+        require_text(output, "Total packets: 3")
+
+        require_text(
+            output,
+            "Processing results: "
+            "complete=3 "
+            "truncated=0 "
+            "malformed=0 "
+            "unsupported=0 "
+            "flow_rejected=0",
+        )
+
+        require_text(output, "Flow summary: 1 flow(s)")
+
+        require_text(
+            output,
+            "protocol=TCP "
+            "tcp_state=established "
+            "endpoint_a=10.0.0.10:40000 "
+            "endpoint_b=10.0.0.20:443",
+        )
+
+        require_text(output, "a_to_b_packets=2")
+        require_text(output, "b_to_a_packets=1")
 
 def run_processing_results_test(
     program: Path,
