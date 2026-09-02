@@ -1,0 +1,15 @@
+# Netflow Analyzer systemd运行参数。
+#
+# 修改本文件后需要重启服务：
+# sudo systemctl restart netflow-analyzer
+
+# 准备抓取的网络接口。
+NFA_INTERFACE=eth0
+
+# BPF表达式可能包含空格，因此建议使用双引号。
+#
+# 第一版默认只抓ICMP，避免服务启用后立即收集全部网络流量。
+NFA_FILTER="icmp"
+
+# 流表满载策略：reject或evict-oldest。
+NFA_FLOW_FULL_POLICY=reject
