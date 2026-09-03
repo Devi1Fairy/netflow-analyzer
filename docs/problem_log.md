@@ -1072,3 +1072,52 @@ TCP CSV验证代码被粘贴到`run_processing_results_test()`末尾，而不是
 - 本机18项CTest全部通过。
 
 该问题说明结构化输出增加字段时要同时检查四层：格式串与实参、单元测试预期、端到端文件预期，以及测试代码所处函数和资源作用域。只看到表头通过不能证明数据行契约已经完整更新。
+
+### 5.16 目标板journalctl不能解析带时区偏移的ISO时间
+
+现象：
+
+首次systemd服务验收使用：
+
+```bash
+export NFA_JOURNAL_SINCE="$(date --iso-8601=seconds)"
+sudo journalctl \
+    -u netflow-analyzer \
+    --since "$NFA_JOURNAL_SINCE" \
+    --no-pager
+```
+
+变量值为：
+
+```text
+2026-09-02T21:37:11+08:00
+```
+
+目标板返回：
+
+```text
+Failed to parse timestamp: 2026-09-02T21:37:11+08:00
+```
+
+原因：
+
+目标板提供的`journalctl`时间解析器不接受该命令生成的带`T`和显式时区偏移格式。服务本身仍为`active`，日志也已经进入journal，因此这是客户端查询参数兼容性问题，不是分析器、stdout行缓冲或systemd单元故障。
+
+处理：
+
+```bash
+export NFA_JOURNAL_SINCE="$(date '+%Y-%m-%d %H:%M:%S')"
+```
+
+该变量必须用双引号传给`--since`，避免Shell按中间空格拆成日期和时间两个参数。也可以不使用绝对时间，改用：
+
+```bash
+sudo journalctl -u netflow-analyzer -b --no-pager
+sudo journalctl -u netflow-analyzer -n 100 --no-pager
+```
+
+验证：
+
+- 改用`YYYY-MM-DD HH:MM:SS`后能够查看本轮服务日志；
+- 静默周期报告、4个ICMP包和SIGTERM后的最终汇总均完整存在；
+- 完整命令兼容性已经写入[`docs/systemd_deployment.md`](systemd_deployment.md)。

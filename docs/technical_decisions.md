@@ -56,6 +56,7 @@
 | TD-032 | 用每流旁路状态机建立TCP生命周期语义 | 已采用 |
 | TD-033 | 把可选包数上限与服务生命周期分离 | 已采用 |
 | TD-034 | 由程序显式保证服务日志按行刷新 | 已采用 |
+| TD-035 | 使用专用系统用户和systemd动态能力边界运行抓包服务 | 已采用第一版 |
 
 ## 3. 核心语言与运行平台
 
@@ -908,13 +909,13 @@ eMMC容量：待填写
 
 - 系统运行在板载eMMC上；
 - 开发板使用CMake/CTest 3.16.3；
-- ARM64原生Debug构建及当前17项CTest通过；
+- ARM64原生Debug构建及当前18项CTest通过；
 - ARM64原生Release构建及确定性离线PCAP端到端验收通过；
-- 板端Python 3.8.10兼容性问题已经修复，Python验收项与16个C测试共同通过；
+- 板端Python 3.8.10兼容性问题已经修复，Python验收项与17个C测试共同通过；
 - VMware NAT虚拟机能够向开发板发起ICMP，Release程序已在开发板物理网卡完成跨设备实时抓包；
 - 官方Buildroot GCC 9.3与隔离libpcap overlay已经生成只要求`GLIBC_2.17`的AArch64程序，并通过板端运行；
 - Ubuntu GCC 13配合板端完整sysroot和GCC `-B`启动文件前缀也已经生成只要求`GLIBC_2.17`的AArch64程序，并通过板端运行；
-- 后续仍需完成非root抓包权限、桥接网络双向连通和性能测量。
+- Release单流、多流、整机软中断和10分钟长稳已经测量；非root systemd手工启停也已通过。后续仍需完成桥接网络双向连通、开机自启/重启恢复和服务方式长稳。
 
 ### TD-024：按文件系统语义和容量分配eMMC与SD卡职责
 
@@ -1117,7 +1118,7 @@ SD卡项目目录：7.2MB
 
 ### TD-034：由程序显式保证服务日志按行刷新
 
-状态：已采用，待systemd板端复验。
+状态：已采用，已完成systemd板端复验。
 
 决定：
 
@@ -1144,7 +1145,46 @@ SD卡项目目录：7.2MB
 - 本机构建和18项CTest继续通过；
 - 人工测试让重定向发生在`sudo sh -c`内部，使分析器stdout直接连接普通文件；
 - 在12秒进程结束前，第7秒已经能够从文件读到第一条5秒周期报告，证明换行日志在真正的非终端输出环境中及时发布；
-- LubanCat-2N上的`systemctl`启动、`journalctl -f`实时显示和`SIGTERM`停止仍属于下一步板端验收。
+- LubanCat-2N服务仍在运行时，journal已经显示静默期5秒报告；真实ICMP流量和`SIGTERM`停止后的最终汇总也完整进入journal，证明程序级行缓冲在目标服务环境生效。
+
+
+### TD-035：使用专用系统用户和systemd动态能力边界运行抓包服务
+
+状态：已采用第一版，手工启停验收通过，开机自启待验证。
+
+决定：
+
+- 程序、配置和服务单元由`root:root`拥有，运行进程使用无登录、无home目录的`netflow-analyzer`系统用户和同名组；
+- 不让分析器长期以root运行，也不把文件capability永久写入ELF；
+- systemd通过`AmbientCapabilities=CAP_NET_RAW`把原始网络访问能力交给服务进程，通过`CapabilityBoundingSet=CAP_NET_RAW`限制可获得能力的上限；
+- 使用`NoNewPrivileges=yes`阻止进程及其子进程在后续`exec`中扩大权限；
+- 第一版不授予`CAP_NET_ADMIN`，因为程序不配置接口、地址、路由或防火墙；
+- 首次部署只执行手工`start`和`stop`，验证完成后再单独启用开机启动。
+
+主要理由：
+
+- libpcap实时打开Linux packet socket需要`CAP_NET_RAW`，但协议解析和流聚合不需要完整root权限；
+- root拥有磁盘文件可以防止服务进程利用自身漏洞改写下一次启动的程序或配置；
+- systemd动态能力属于进程生命周期，升级替换ELF时不会遗留难以发现的文件扩展属性；
+- bounding set和no-new-privileges形成两道明确上限，便于通过`/proc/PID/status`审计；
+- 把启动、停止、异常重启、日志和权限统一交给systemd，比在Shell后台运行或使用`sudo`包装长期进程更可观察。
+
+没有选择：
+
+- 没有使用root服务，因为权限范围远超当前业务需要；
+- 没有使用`sudo netflow-analyzer ... &`，因为它没有完整的服务依赖、重启、日志和开机生命周期模型；
+- 没有使用`setcap`给二进制永久授予能力，因为文件替换、备份和权限审计更容易出现状态差异；
+- 没有把服务用户设为程序文件所有者，避免运行进程能够修改自身可执行文件。
+
+验证：
+
+- 官方SDK为提交`740d5ab`生成的部署包SHA-256为`f916176829974d61ff853310638fd0b07c8570f715d97f67238aebfad259c55d`，两端传输摘要一致；
+- ARM64 ELF在板端通过`file`、`ldd`和`--version`检查；
+- systemd静态检查、单元加载、专用用户/组和手工启动通过；
+- 进程实际UID/GID为`netflow-analyzer`，有效、边界和ambient capability只包含`0x2000`，即`CAP_NET_RAW`，`NoNewPrivs=1`；
+- 虚拟机发送2次ping后，服务完整处理4个ICMP包并聚合为1条双向流；4次流表操作均只检查1槽，两个drop字段为0；
+- `systemctl stop`触发SIGTERM正常收尾，最终活动流汇总进入journal，没有异常重启；
+- 完整命令、Linux概念、故障定位和回滚见[`docs/systemd_deployment.md`](systemd_deployment.md)。
 
 
 ### TD-019：Git功能分支、Pull Request和版本标签

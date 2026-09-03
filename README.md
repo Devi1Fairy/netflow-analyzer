@@ -75,6 +75,7 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 - 尚未解析DNS、HTTP等应用层协议；
 - 尚未实现规则异常检测、机器学习、Qt界面或云端展示；
 - ARM Linux开发板已完成原生Debug/Release构建、当前18项CTest、离线跨平台一致性、两种交叉产物、物理网卡抓包、真实TCP完整关闭、单流/多流性能、满载边界、流表探测成本和10分钟长稳基线；最新官方SDK产物又完成单次满表扫描优化复测，300个UDP新流对应300次探测操作、44次最旧流淘汰、256条最终流和零drop。
+- LubanCat-2N已完成第一轮非root systemd手工启停验收：服务进程使用无登录专用用户，只获得`CAP_NET_RAW`且`NoNewPrivs=1`；静默周期日志、真实ICMP、双向流汇总和SIGTERM收尾均进入journal。开机自启和服务方式长稳仍待验证。
 
 ## 项目目录
 
@@ -122,9 +123,13 @@ netflow-analyzer/
 │   ├── unit/
 │   └── integration/test_offline_flow.py
 ├── scripts/check_target_env.sh
+├── packaging/systemd/
+│   ├── netflow-analyzer.service
+│   └── netflow-analyzer.default
 ├── docs/
 │   ├── problem_log.md
-│   └── technical_decisions.md
+│   ├── technical_decisions.md
+│   └── systemd_deployment.md
 └── labs/
 ```
 
@@ -347,17 +352,19 @@ LubanCat-2N已经完成ARM64原生Debug/Release构建、当前18项板端CTest�
 
 开发电脑已经完成两条ARM64交叉编译和板端运行链：一条使用鲁班猫官方Buildroot GCC 9.3及隔离的板端libpcap overlay，另一条使用Ubuntu GCC 13、从板端导出的完整sysroot和GCC `-B`启动文件前缀。两种产物均为AArch64 ELF、只要求`GLIBC_2.17`，并在板端通过`ldd`、`--help`和实时ICMP抓包。完整Shell环境变量、CMake参数、ABI检查与故障记录见[交叉编译手册](docs/cross_compilation.md)。
 
+提交`740d5ab`的官方SDK ARM64产物已经通过暂存安装打包并部署为systemd服务。程序和配置由root拥有，运行进程使用`netflow-analyzer`专用账户；systemd只授予`CAP_NET_RAW`，不把文件capability永久写入ELF。首次手工启停处理4个完整ICMP包、聚合1条双向流，两个drop字段为0，并在SIGTERM后正常收尾。完整的Linux命令、用户/组、权限、capability、journal、故障定位和回滚见[非root systemd部署手册](docs/systemd_deployment.md)。
+
 开发板上的CTest为3.16.3，低于`--test-dir`参数所需的3.20，因此测试时应先进入构建目录再运行`ctest`。同一确定性6包PCAP已经在x86_64与ARM64原生构建上得到一致标准输出和退出状态；当前18项测试也已在两侧全部通过。Release单流基线最高约9 Kpps、20万包零drop、每包CPU约6.95微秒；128流长稳基线以约9 Kpps处理540万包，全部分类为`complete`，两个drop为0、每包CPU约6.24微秒，RSS采样从首到尾保持564 KiB。300流容量测试也精确得到256个完整流和44个`flow_rejected`。完整方法见[单流性能基线](docs/performance_baseline.md)和[多流与长稳基线](docs/multiflow_longrun_baseline.md)。
 
 ## 后续迭代
 
 建议按以下顺序推进：
 
-1. 在LubanCat-2N完成非root抓包权限与systemd服务化运行；
+1. 完成LubanCat-2N的systemd开机自启、重启恢复和服务方式长稳验收；
 2. 处理同一五元组关闭后重新建连，随后增加TCP乱序与字节流重组，再进入DNS、HTTP等应用层解析；
 3. 当前继续保持单线程；只有后续测量证明单线程成为瓶颈，才复审实验中的阻塞队列和线程流水线；
 4. 如果真实负载超过256条活跃流，再根据占用率、探测长度、拒绝和淘汰数据评估可配置容量、重建或动态扩容；
 5. 实现规则异常检测，再准备机器学习特征与模型；
 6. 在稳定的数据接口之上实现Qt上位机，并按需要扩展云端展示。
 
-版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)，技术、环境和硬件选型见[docs/technical_decisions.md](docs/technical_decisions.md)，两种ARM64构建方式见[docs/cross_compilation.md](docs/cross_compilation.md)，首轮板端测量见[docs/performance_baseline.md](docs/performance_baseline.md)。
+版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)，技术、环境和硬件选型见[docs/technical_decisions.md](docs/technical_decisions.md)，两种ARM64构建方式见[docs/cross_compilation.md](docs/cross_compilation.md)，非root服务安装见[docs/systemd_deployment.md](docs/systemd_deployment.md)，首轮板端测量见[docs/performance_baseline.md](docs/performance_baseline.md)。
