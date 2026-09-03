@@ -9,6 +9,11 @@ project(
     LANGUAGES C
 )
 
+# 提供GNU/Linux常用的安装目录变量。
+#
+# CMAKE_INSTALL_BINDIR通常为bin。
+include(GNUInstallDirs)
+
 # 使用ISO C11标准。
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -130,6 +135,17 @@ target_link_libraries(
 )
 
 enable_project_warnings(netflow_analyzer_cli)
+
+# 安装正式命令行程序，不安装单元测试或内部静态库。
+#
+# netflow_analyzer_cli是CMake目标名；
+# OUTPUT_NAME属性会使最终安装文件名仍为netflow-analyzer。
+install(
+    TARGETS netflow_analyzer_cli
+    RUNTIME
+        DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        COMPONENT Runtime
+)
 
 # 引入CTest并创建BUILD_TESTING选项。
 include(CTest)

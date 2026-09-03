@@ -1,6 +1,6 @@
 # Netflow Analyzer会话交接文档
 
-最后更新：2026-08-31（Asia/Shanghai）
+最后更新：2026-09-03（Asia/Shanghai）
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
@@ -21,9 +21,9 @@ cmake -E chdir build ctest --output-on-failure
 
 预期基线：
 
-- 当前功能分支：`feature/tcp-state-tracking`；
+- 当前功能分支：`feature/nonroot-service`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前TCP状态功能基线：`d427168 feat(output): export TCP flow state`，并与`origin/feature/tcp-state-tracking`一致；本文档更新将形成其后的独立文档提交，实际接手时仍须以`git log`为准；
+- 当前分支已提交无上限实时模式、验收文档、CMake安装规则、非root systemd单元、服务日志行缓冲、沙箱加固和eMMC工作树恢复记录；开始本轮文档更新时最新已推送提交为`7526fcc docs(board): record eMMC repository recovery`，实际接手时仍须以`git log`为准；
 - TCP状态机、流记录接入、终端显示、CSV字段和确定性三次握手验收均已提交；接手时仍须先检查工作区，不能覆盖用户后续未提交改动；
 - 当前正式版本宏为`0.2.0`；
 - 已有标签：`v0.0.1`、`v0.1.0`、`v0.2.0`；
@@ -31,7 +31,14 @@ cmake -E chdir build ctest --output-on-failure
 - 本地主程序：`build/bin/netflow-analyzer`；
 - 官方SDK交叉构建目录：`/home/zcb/build/netflow-analyzer-lubancat-sdk-release-v2`；
 - 通用GCC交叉构建目录：`/home/zcb/build/netflow-analyzer-generic-sysroot-release`；
-- 当前x86_64的18项CTest全部通过；单次扫描优化已完成Ubuntu `lo`和LubanCat-2N物理网卡300流手工验收。优化版官方SDK ARM64产物只要求`GLIBC_2.17`，板端得到300次操作、44次淘汰、256条最终流和零drop；新增TCP状态功能尚未重新上板。
+- x86_64与LubanCat-2N ARM64原生Debug构建的18项CTest全部通过；单次扫描优化已完成Ubuntu `lo`和LubanCat-2N物理网卡300流手工验收。优化版官方SDK ARM64产物只要求`GLIBC_2.17`，板端得到300次操作、44次淘汰、256条最终流和零drop；新增TCP状态功能也已在`lo`真实HTTP/1.0连接中处理12包并最终输出`closed`，两个drop字段均为0。
+- 实时`--count`已改为可选上限；本机`lo`在省略上限后能于静默期正常报告，随后处理4个`complete` ICMP包，并在`SIGTERM`后完成统计、流汇总与清理。
+- 主程序已在stdout首次I/O前显式启用行缓冲；严格普通文件重定向测试在进程结束前读到5秒周期报告，避免systemd journal日志延迟到缓冲区填满或服务退出。
+- 提交`740d5ab`的官方SDK ARM64部署包已在LubanCat-2N完成首次非root systemd手工启停：进程使用专用用户，能力仅为`CAP_NET_RAW`，`NoNewPrivs=1`；真实4包ICMP得到1条双向流且两个drop字段为0，SIGTERM正常收尾。
+- `systemctl enable`后的受控重启也已通过：boot ID变化，无人工`start`时服务已为`enabled`和`active`，一次启动成功且`NRestarts=0`；新PID保持相同专用身份和唯一`CAP_NET_RAW`能力，静默报告与重启后ICMP正确。
+- 目标板systemd版本为`245 (245.4-4ubuntu3.24)`；提交`dc542ad`的第一批低风险沙箱配置保持非root身份、唯一`CAP_NET_RAW`、静默报告和真实ICMP正常，安全评分由`5.2 MEDIUM`降为`3.7 OK`。`ProtectClock=yes`仍被旧评分器扣分，不继续以追求分数作为项目主线。
+- 开发板VFAT持久化实验暴露了厂商存储服务风险：`usbmount`动态挂载数据卡，`resize-all.service`又遍历`/proc/mounts`；辅助脚本重建VFAT后恢复失败，UUID由`CB8E-AD01`变为`9741-D596`，原板端工作树丢失。项目权威副本仍在开发电脑和GitHub；旧`fstab`条目已移除，`resize-all.service`已禁用并屏蔽。工作树随后通过Git Bundle恢复到eMMC ext4，新构建路径下18项板端CTest全部通过；修正`usbmount`配置后，SD卡已跨重启唯一挂载到`/media/usb0`并通过普通用户读写验收，只承担大容量数据存储。
+- 未插入SD卡的后续重启确认屏蔽跨boot保持；同一boot中分析器第一次打开`eth0`时，`ETHTOOL_GET_TS_INFO`暂时返回`EBUSY`，systemd在2秒后自动重启，第二个进程成功运行并持续输出周期报告。随后使用不存在接口完成连续失败实验，显式`30s/5次`策略在5个进程失败后拒绝第6次启动；提交`903edd4`的正式单元已部署，摘要、静态检查、有效参数、正常启动和4包ICMP数据面均通过。
 
 如果实际状态与上面不同，应先查看用户是否在新会话开始前继续修改了代码，不要覆盖未提交改动。
 
@@ -189,7 +196,7 @@ Release主程序位于`build-release/bin/netflow-analyzer`。
 - 官方Buildroot GCC 9.3、SDK内置glibc 2.29 sysroot和隔离的板端libpcap overlay；
 - Ubuntu `aarch64-linux-gnu-gcc` 13、板端完整sysroot和GCC `-B`启动文件前缀。
 
-两种产物均为AArch64 ELF，动态加载器为`/lib/ld-linux-aarch64.so.1`，最终只要求`GLIBC_2.17`。交叉配置使用`BUILD_TESTING=OFF`；逻辑回归由x86_64与ARM64板端原生构建的17项CTest负责，交叉产物加载和真实采集由板端`ldd`、`--help`和ICMP测试负责。
+两种产物均为AArch64 ELF，动态加载器为`/lib/ld-linux-aarch64.so.1`，最终只要求`GLIBC_2.17`。交叉配置使用`BUILD_TESTING=OFF`；逻辑回归由x86_64与ARM64板端原生构建的18项CTest负责，交叉产物加载和真实采集由板端`ldd`、`--help`和ICMP测试负责。
 
 完整目录、环境变量、CMake命令和故障处理见[`docs/cross_compilation.md`](cross_compilation.md)。
 
@@ -309,9 +316,13 @@ netflow-analyzer/
 │   ├── unit/
 │   └── integration/test_offline_flow.py
 ├── scripts/check_target_env.sh
+├── packaging/systemd/
+│   ├── netflow-analyzer.service
+│   └── netflow-analyzer.default
 ├── docs/
 │   ├── problem_log.md
 │   ├── technical_decisions.md
+│   ├── systemd_deployment.md
 │   └── session_handoff.md
 └── labs/
     ├── blocking_queue/
@@ -323,7 +334,7 @@ netflow-analyzer/
 
 | 模块 | 职责 |
 |---|---|
-| `main.c` | 初始化上下文、解析参数、运行应用、统一清理，把错误码转换为进程退出码 |
+| `main.c` | 在首次输出前建立stdout行缓冲，初始化上下文、解析参数、安装停止信号处理、运行应用、统一清理，并把错误码转换为进程退出码 |
 | `app.c` | 应用编排；连接采集、协议解析、流表、周期运行指标和输出，不承担具体协议字段解析 |
 | `byte_reader` | 使用边界检查游标读取、跳过和切分原始二进制字节 |
 | `capture` | 封装libpcap，统一离线文件、实时网卡、BPF、非阻塞等待、中断和运行统计接口，隐藏`pcap_t`、`struct pcap_stat`与`DLT_*` |
@@ -387,10 +398,10 @@ CSV导出
 实时模式：
 
 ```text
-CLI --interface NAME --count N [--filter EXPRESSION]
+CLI --interface NAME [--count N] [--filter EXPRESSION]
     [--flow-full-policy reject|evict-oldest]
     ↓
-严格解析N为大于0的size_t
+提供N时严格解析为大于0的size_t；省略时无包数上限
     ↓
 capture_open_live
     ↓
@@ -637,7 +648,7 @@ EtherType `0x0800`是IEEE/IANA约定的IPv4标识，不是项目自定义示例�
 
 目标文件必须不存在。已有文件不会被覆盖。
 
-### 10.4 实时有限包数分析
+### 10.4 实时有限或持续分析
 
 ```bash
 sudo ./build/bin/netflow-analyzer \
@@ -653,7 +664,7 @@ sudo ./build/bin/netflow-analyzer \
 - 非数字拒绝；
 - 超出`size_t`范围拒绝；
 - `--count`不能与`--read`组合；
-- 实时模式必须提供`--count`；
+- 省略`--count`时，实时模式持续运行到收到停止请求或致命错误；
 - 当前实时模式不能与`--csv`组合。
 
 实时流表满载策略：
@@ -663,7 +674,7 @@ sudo ./build/bin/netflow-analyzer \
 - 原位替换成功的当前包计入`complete`，淘汰使用独立`evicted_flows`计数；
 - 该选项第一版只允许实时模式使用，离线模式仍保持完整文件级聚合和固定容量拒绝语义。
 
-达到数量上限或收到`SIGINT`/`SIGTERM`后，实时模式在关闭capture句柄前查询`pcap_stats()`，输出捕获后端接收、抓包缓冲区丢弃和接口丢弃统计。统计查询失败只降级显示不可用，不丢弃已经完成的流分析。
+提供上限时达到数量，或任意实时模式收到`SIGINT`/`SIGTERM`后，程序都在关闭capture句柄前查询`pcap_stats()`，输出捕获后端接收、抓包缓冲区丢弃和接口丢弃统计。统计查询失败只降级显示不可用，不丢弃已经完成的流分析。
 
 打开实时接口通常需要root权限或适当Linux capability。当前手工验收使用`sudo`运行主程序，但不要使用`sudo cmake`或`sudo cmake --build`，避免构建目录出现root所有权文件。
 
@@ -688,6 +699,8 @@ sudo ./build/bin/netflow-analyzer \
 ```
 
 先保持接口静默，程序连续输出约5.007至5.008秒的零包报告；另一个终端执行`ping -i 0.2 -c 30 127.0.0.1`后，60个逻辑ICMP包分别进入16包和44包两个报告区间；流量结束后报告再次归零。Ctrl+C正常收尾，最终输出`Total packets: 60`、`Capture received packets: 120`和两个drop字段为0。
+
+无上限服务生命周期前置验收省略`--count`，使用`timeout --signal=TERM`模拟systemd停止。程序启动时显示`Packet limit: unlimited`，静默期先输出0包报告；一次`ping -c 2 127.0.0.1`产生4个`complete`包，随后`SIGTERM`沿正常路径收尾。最终后端报告8包，两个drop字段均为0，证明没有依赖包数上限才能完成清理。
 
 重要结论：
 
@@ -850,6 +863,7 @@ cmake -E chdir build ctest \
 - BPF、信号退出和libpcap运行统计都停留在capture边界内，不向上层暴露第三方原生类型；
 - 捕获后端计数与应用处理计数分别输出，不能用二者差值计算丢包；
 - 不在没有性能数据时提前引入AF_XDP、DPDK或复杂线程池。
+- 持续服务由程序显式保证stdout按行刷新，不依赖终端探测结果或外部`stdbuf`命令。
 
 数据库目前不是必需项。只有出现历史查询、持久告警、用户配置、跨重启状态等明确需求时，再评估SQLite或外部数据库。
 
@@ -1200,6 +1214,33 @@ LubanCat官方SDK交叉产物实测：
 - 云平台作为后续扩展，用于远程设备、长期历史和多节点汇总；
 - 不需要现在同时实现完整Qt和云平台。
 
+### 18.11 非root systemd服务化（手工启停与开机自启完成）
+
+当前已经完成：
+
+- `CMakeLists.txt`通过`GNUInstallDirs`定义可移植的运行文件安装位置，并安装`netflow_analyzer_cli`目标；
+- `packaging/systemd/netflow-analyzer.service`使用专用`netflow-analyzer`用户和组运行，不以root身份长期执行分析器；
+- 服务只保留抓取原始网络数据所需的`CAP_NET_RAW`环境能力和能力边界，并启用`NoNewPrivileges`、只读系统目录、私有临时目录及内核接口防护；
+- `/etc/default/netflow-analyzer`模板提供接口、BPF和满表策略参数，第一版默认只抓ICMP，避免启用服务后立即采集全部流量；
+- systemd使用`SIGTERM`停止无上限实时循环，复用现有信号处理、libpcap中断、统计和正常清理路径；
+- stdout在`main()`首次I/O前被显式设置为行缓冲，周期报告可以及时进入journal，而不依赖`stdbuf`；
+- 本地CMake配置、构建、18项CTest、临时安装前缀和服务单元静态检查已经完成。静态检查只因本机尚未安装`/usr/local/bin/netflow-analyzer`而报告目标不存在，没有发现单元语法错误；
+- 严格的普通文件重定向测试排除了终端和sudo伪终端影响，在进程退出前已经读到周期报告。
+- 官方SDK为提交`740d5ab`生成的ARM64部署包SHA-256为`f916176829974d61ff853310638fd0b07c8570f715d97f67238aebfad259c55d`，开发电脑和目标板传输摘要一致；
+- 目标板创建了无登录、无home目录的`netflow-analyzer`系统用户和同名组；程序、配置和单元由root拥有，ELF本身没有文件capability；
+- systemd手工启动后，进程实际UID/GID为专用账户，有效、边界和ambient能力只包含`CAP_NET_RAW`对应的`0x2000`，`NoNewPrivs=1`；
+- 静默5秒周期报告在服务运行中进入journal；虚拟机2次ping对应4个完整ICMP包、4次单槽探测、1条双向流和两个drop字段为0；
+- `systemctl stop`发送SIGTERM后输出最终汇总并正常退出；`Flow 1`是4包聚合得到的第一条流记录，不是额外包；
+- 板端`journalctl`不能解析`date --iso-8601=seconds`产生的带`T`和时区偏移格式，已改用`date '+%Y-%m-%d %H:%M:%S'`或`-b`查询；
+- 完整Linux命令、权限模型、journal用法、故障定位与回滚见[`docs/systemd_deployment.md`](systemd_deployment.md)。
+- `enable`在`multi-user.target.wants`下建立启动依赖；受控重启后boot ID变化，无人工`start`时服务已为`enabled`和`active`；
+- 新boot一次启动成功，`Result=success`、`NRestarts=0`，新PID继续使用专用用户和唯一`CAP_NET_RAW`能力；
+- `critical-chain`显示服务排在`network-online.target`之后，当前物理`eth0`成功打开；该顺序不等价于互联网必然可达，异常网络恢复仍待单独验证；
+- 当前boot的静默报告和虚拟机再次产生的4个ICMP包均正常进入journal。
+- systemd 245安全审计基线为`5.2 MEDIUM`；报告已按业务必需、低风险候选和必须实验三类记录，不能为降低分数启用`PrivateNetwork=yes`或禁止`AF_PACKET`；
+
+第一批低风险沙箱加固和评分复测已经完成。其后的VFAT持久化实验触发了厂商`resize-all.service`重建数据卡且恢复失败；旧`fstab`条目已删除，事故证据已保存，该服务已同时`disable`和`mask`，且后续boot仍为`masked`。工作树已经通过Git Bundle恢复到eMMC ext4，新Debug构建路径下18项CTest全部通过。修正`usbmount.conf`后，SD卡又完成只读文件系统检查、跨重启唯一自动挂载和普通用户创建/写入/读取/删除验证，现在只用作PCAP、CSV、数据集和日志的数据盘。同一阶段还自然观察到一次接口瞬态繁忙并由systemd在2秒后成功恢复；后续确定性不存在接口实验又证明正式`30s/5次`策略能停止连续失败循环，恢复和4包ICMP数据面复测均通过。下一步进行服务方式长稳。地址族与系统调用限制不再作为当前必做项。手工启停、开机自启、异常恢复、连续失败限速和通用加固已经完成，但在长稳通过前不能宣称生产级部署完成。
+
 ## 19. ARM Linux开发板计划
 
 用户已经收到野火LubanCat-2N，并开始首次上板环境准备。选择原因主要是：
@@ -1211,17 +1252,22 @@ LubanCat官方SDK交叉产物实测：
 
 当前已确认：
 
-- SD卡分区为`/dev/mmcblk1p1`，以`vfat`（FAT32）格式挂载在`/media/usb0`；
+- SD卡分区为`/dev/mmcblk1p1`，以`vfat`（FAT32）格式使用；事故期间曾因重复管理出现在`/media/usb0`和`/media/usb1`，当前由`usbmount`唯一挂载到`/media/usb0`；
 - 因VFAT不保存Linux原生UID、GID和权限位，直接对挂载内容执行`chown`返回`Operation not permitted`；
 - 通过挂载时指定当前用户对应的`uid`、`gid`、`dmask`和`fmask`，已经解决项目目录无法创建的问题；
-- 项目源码已经位于`/media/usb0/Workspace/netflow-analyzer`；
+- 后续尝试把旧UUID写入`/etc/fstab`固化权限时，厂商`resize-all.service`扫描了`/proc/mounts`中的数据卡；其VFAT回退路径重建文件系统但恢复失败，UUID由`CB8E-AD01`变为`9741-D596`，原板端工作树已不在卡中；
+- 用户确认卡上没有项目之外的其他重要数据，开发电脑与GitHub仍保存权威仓库；旧SD卡`fstab`条目已删除，不再与`usbmount`重复管理；
+- `resize-all.service`已禁用并屏蔽：`is-enabled`返回`masked`，`/etc/systemd/system/resize-all.service`指向`/dev/null`，启动依赖不存在，手工`start`被拒绝；
+- `usbmount.conf`中拼错、使用弯引号且重复赋值的`FS_MOUNTOPTIONS`已经修正；重启后挂载选项包含`uid=1000,gid=1000,fmask=0133,dmask=0022,noexec,nodev`，根目录为`cat:cat`和`0755`；
+- `fsck.vfat -n /dev/mmcblk1p1`只读检查返回0；普通用户完成临时文件创建、31字节写入、同步、读取和删除，文件呈现`0644`，保留`pcap`、`csv`、`datasets`和`logs`四个数据目录；
+- 板端项目源码已通过Git Bundle恢复到eMMC的`/home/cat/workspace/netflow-analyzer`，不再把Git工作树放在VFAT；
 - 开发板使用CMake/CTest 3.16.3，不支持3.20才加入的`ctest --test-dir`，测试需要先进入构建目录；
 - VFAT构建树中的ELF文件因执行权限被屏蔽而无法启动，现已把构建树改到`/home/cat/build/netflow-analyzer-debug`；
-- 板上Debug原生构建和当前17项CTest已经通过；
+- 板上Debug原生构建和当前18项CTest已经通过；
 - 板端Python为3.8.10；验收脚本将Python 3.9内置泛型注解改为`typing.List`和`typing.Tuple`后，`offline_flow_acceptance`与全量测试均通过；
 - 板上Release原生构建和确定性6包PCAP端到端验收已经通过；
-- 系统位于容量8GB的eMMC，安装系统后空间有限；当前源码仍在SD卡，构建树临时位于eMMC，不建议再把完整源码和多个构建树长期迁入eMMC；
-- eMMC根分区实际为7.0GB ext4，已用4.7GB、可用2.1GB；Debug和Release构建目录分别只有2.6MB与456KB，目前无需清理；
+- 系统位于容量8GB的eMMC，根分区实际为7.0GB ext4，已用5.4GB、可用1.4GB；恢复后的源码约2.4MB，新Debug构建树约3.2MB，不在其中长期累积大型PCAP、模型数据集、日志和大量旧构建；
+- 新构建树位于`/home/cat/build/netflow-analyzer-debug-emmc`，没有复用保存旧SD卡绝对源码路径的CMake缓存；当前18项板端CTest全部通过；
 - VMware NAT虚拟机`192.168.78.130`能够`ping`开发板`192.168.1.102`，开发板不能反向`ping`虚拟机；这是NAT与路由边界，不是程序故障；
 - Release程序已在开发板物理网卡完成来自虚拟机的ICMP实时抓包和双向流聚合；开发板实际观察到NAT后对端`192.168.1.100`；
 - 受控测试中应用处理4个Echo包，后端报告接收6包且两个drop字段为0；多出的2包未进入应用，现有汇总统计无法还原其具体内容；
@@ -1235,8 +1281,10 @@ LubanCat官方SDK交叉产物实测：
 - 流表探测统计版官方SDK交叉产物已完成板端复测：128流、20万包时平均和最大探测长度均为1；300流满载时11928次槽位检查中有11264次来自44个拒绝包的完整扫描，两个场景均零drop。
 - 最旧流淘汰版官方SDK交叉产物只要求`GLIBC_2.17`，SHA-256为`02da53505b1f1230a9a04c60af8a618d85b734ed89a7c19176f5d59a7d4a3604`；板端300流得到300个完整包、44次淘汰、256条最终流和零drop。
 - 单次满表扫描优化版官方SDK产物SHA-256为`c2dcc119ebbd27d321dbf041683d57a31ac0d22645fe16fea2ce08e873b37036`；板端300流得到300次探测操作、44次淘汰、256条最终流和零drop，证明优化在ARM64真实运行环境中成立。
+- TCP状态版ARM64原生Debug构建的18项CTest全部通过；板端`lo`的HTTP/1.0实测处理12个`complete` TCP包，双向各6包并聚合为1条流，最终为`tcp_state=closed`，两个drop字段均为0；后端`received=24`与应用处理12包属于回环捕获的不同统计层级。
+- 仓库已提交CMake安装规则、非root systemd单元和默认参数模板；板端已安装提交`740d5ab`对应的官方SDK产物，并通过专用用户、`CAP_NET_RAW`、journal实时日志、真实ICMP和SIGTERM手工启停验收。
 
-不要宣称完整开发板验证已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、当前17项板端CTest、确定性PCAP跨平台输出对比、两种交叉编译、跨设备ICMP实时抓包、单流/多流性能、满载边界、流表探测成本、整机软中断和10分钟长稳；尚未完成双向直连网络验证、非root权限方案和生产级数小时/数天浸泡测试。当前仓库提供环境检查脚本：
+不要宣称完整开发板验证已经结束。已经完成源码获取、原生Debug/Release构建、当前18项板端CTest、确定性PCAP跨平台输出对比、两种交叉编译、跨设备ICMP实时抓包、TCP完整关闭状态、单流/多流性能、满载边界、流表探测成本、整机软中断、10分钟长稳，以及非root systemd手工启停、开机自启、异常恢复、连续失败限速和第一批安全加固。SD卡事故后，板端工作树已经通过Git Bundle恢复到eMMC并重新通过18项CTest；仍需完成双向直连网络验证和生产级数小时/数天浸泡测试。当前仓库提供环境检查脚本：
 
 ```bash
 sh scripts/check_target_env.sh
@@ -1272,7 +1320,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`满表策略的单次扫描原位替换，以及TCP握手/关闭基本状态跟踪和终端/CSV输出已经完成。本机18项CTest全部通过；优化后的Ubuntu `lo`和此前LubanCat ARM64 300流验收也已通过，但新增TCP状态功能尚需重新上板回归。下一步从同一五元组重新建连与TCP字节流重组，或非root服务化部署中选择一个独立迭代。
+周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`满表策略的单次扫描原位替换，以及TCP握手/关闭基本状态跟踪和终端/CSV输出已经完成。x86_64与LubanCat-2N ARM64原生Debug构建的18项CTest全部通过；板端`lo`真实HTTP/1.0连接以12个`complete`包得到1条`closed` TCP流，两个drop字段均为0。实时`--count`已改为可选，无上限模式的静默报告、ICMP处理和`SIGTERM`正常收尾已完成验收。LubanCat-2N已完成非root systemd手工启停、开机自启、异常恢复、连续失败限速和第一批低风险沙箱加固，专用用户只获得`CAP_NET_RAW`，systemd 245安全评分由`5.2 MEDIUM`降为`3.7 OK`。正式单元使用`30s/5次`限制连续失败，板端摘要、静态解析、有效参数、正常恢复和4包ICMP数据面均通过。一次VFAT持久化实验触发厂商`resize-all.service`重建数据卡且恢复失败；旧`fstab`条目已移除，该服务已禁用并跨boot保持屏蔽。板端工作树已通过Git Bundle恢复到eMMC ext4，新Debug构建目录中的18项CTest全部通过；SD卡已由修正配置后的`usbmount`唯一自动挂载，并通过只读文件系统检查和普通用户读写验证，只承担PCAP、CSV、数据集和日志存储。下一步进行服务方式长稳。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1314,4 +1362,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流现在按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及CSV中使用统一名称；确定性3包握手PCAP与状态不变量测试已纳入本机18项CTest。两种既有ARM64交叉构建和单次扫描优化版官方SDK产物均通过此前板端实际运行，Python验收脚本兼容板端Python 3.8.10，但新增TCP状态提交还不能沿用旧17项结果冒充板端已验证。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳；当前仍没有接入`labs/thread_pipeline`。下一步可先完成TCP状态上板回归，再选择同一五元组重新建连与TCP字节流重组，或非root服务化部署。
+应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流现在按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及CSV中使用统一名称；确定性3包握手PCAP与状态不变量测试已纳入18项CTest，x86_64与LubanCat-2N ARM64原生Debug构建均全部通过。板端`lo`真实HTTP/1.0连接进一步证明12个完整TCP包能正确聚合为1条双向流并最终进入`closed`，两个drop字段均为0。实时`--count`已改为可选，无上限模式已通过静默、ICMP和`SIGTERM`正常收尾验收，为systemd服务化提供了正确的持续运行语义。CMake安装规则、专用用户systemd单元、默认参数模板和stdout行缓冲已经完成；LubanCat-2N非root手工启停、开机自启、异常恢复、连续失败限速和第一批低风险沙箱加固已验证专用账户、仅`CAP_NET_RAW`、journal实时日志、真实ICMP、SIGTERM正常收尾以及`30s/5次`失败上限，systemd 245评分由`5.2 MEDIUM`降为`3.7 OK`。两种既有ARM64交叉构建和单次扫描优化版官方SDK产物均通过此前板端实际运行，Python验收脚本兼容板端Python 3.8.10。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳。SD卡事故的证据、隔离结果和最终恢复验收均已记录；`resize-all.service`跨重启保持屏蔽，SD数据盘由`usbmount`唯一管理并通过普通用户完整读写链路。板端工作树已通过Git Bundle恢复到eMMC ext4，新Debug构建目录中的18项CTest全部通过。下一步进行服务方式长稳，当前仍没有接入`labs/thread_pipeline`。

@@ -500,8 +500,151 @@ FAT32不保存Linux原生的每文件UID、GID和Unix权限位。分区挂载后
 - `sudo`只能绕过Linux权限检查，不能为FAT32补充其原本不支持的Unix所有权元数据；
 - 排查移动存储权限问题时，应先用`findmnt`或`lsblk -f`确认设备、挂载点、文件系统类型和挂载选项；
 - `dmask`和`fmask`表示“要屏蔽的权限位”，不是最终权限值；
-- 如果需要重启后保持设置，可后续使用分区UUID在`/etc/fstab`中配置挂载选项，避免依赖可能变化的`/dev/mmcblk1p1`设备名；
+- 在普通发行版中可以使用分区UUID和`/etc/fstab`固化挂载，但在厂商镜像上必须先审计`usbmount`、自动扩容和其他启动期存储服务；不能只根据通用Linux经验直接添加条目；
 - 如果项目后续需要符号链接、原生Unix权限或其他Linux文件系统语义，应评估使用ext4；重新格式化会清除数据，不能把它当作无风险的权限修复步骤。
+
+#### 重启后挂载参数丢失导致Git只读
+
+开发板完成受控重启后，SD卡再次显示为`root:root`。Git先以`detected dubious ownership`拒绝读取仓库；为自己确认可信的精确仓库路径加入`safe.directory`后，`git status`能够只读运行，但`git pull`仍因无法写入`.git/FETCH_HEAD`而返回`Permission denied`。
+
+这两个错误属于不同边界：
+
+- `safe.directory`只表示Git信任该仓库，不授予文件系统写权限；
+- `.git/FETCH_HEAD`需要在`fetch`阶段更新，最终仍受VFAT挂载时模拟的UID、GID和权限位控制。
+
+只执行带`uid`、`gid`、`dmask`和`fmask`的`remount`后，`findmnt`与`stat`仍显示原有参数和`root:root`，因此不能只根据`mount`退出状态判断设置已经生效。本次先离开挂载目录，再完整卸载并按当前`id -u`、`id -g`重新挂载；随后普通用户可以执行`git pull --ff-only`，证明仓库写权限恢复。
+
+本次使用精确仓库例外，没有配置宽泛的`safe.directory '*'`，也没有用`sudo git pull`掩盖权限问题。临时重新挂载确实恢复了当前启动中的写权限，但后续实机结果证明：在该厂商镜像上，不能在没有检查启动期存储服务的情况下直接把移动SD卡写入`/etc/fstab`。
+
+#### 固化VFAT挂载时触发厂商自动扩容服务
+
+现象：
+
+为固化SD卡的UID、GID和权限掩码，曾把旧分区UUID `CB8E-AD01`写入`/etc/fstab`并重启。重启后，原项目路径`/media/usb0/Workspace/netflow-analyzer`不存在；同一张卡被自动挂载到`/media/usb1`，文件系统UUID变为`9741-D596`，目录内容为空。用户确认卡上没有项目之外的其他重要数据，项目的权威副本仍在开发电脑和GitHub。
+
+只读排查还发现：
+
+- 镜像中的`usbmount`会为可移动设备选择`/media/usb0`、`/media/usb1`等动态挂载点；
+- 厂商提供的`resize-all.service`在`sysinit.target`启用，执行`/usr/bin/resize-helper`；
+- `resize-helper`不是Debian软件包拥有的标准文件，它逐行读取`/proc/mounts`，而不是只处理板载eMMC根分区；
+- 对该VFAT分区执行调整时，辅助逻辑因缺少`fatresize`进入“备份、`mkfs.vfat`重建、恢复”回退路径；恢复阶段报告无法找到临时备份中的`/media/usb1`，因此新文件系统创建后没有恢复原内容；
+- 脚本使用`set +e`继续执行错误后的命令，末尾又有成功的空命令`:`，所以systemd曾记录`Result=success`。这只表示脚本最终退出码为0，不证明内部备份和恢复成功；
+- 诊断期间还观察到同一设备同时出现在`/media/usb0`和`/media/usb1`。同一文件系统被重复挂载会进一步模糊哪个路径和哪个服务拥有挂载生命周期，不应作为稳定方案。
+
+处置：
+
+1. 删除为旧UUID添加的SD卡`/etc/fstab`条目，不改动系统原有根分区和`/boot`条目；
+2. 完整卸载`/dev/mmcblk1p1`，保持数据卡脱离自动处理链；
+3. 保存`resize-all.service`、`resize-helper`、`disk-helper`和`/tmp/resize-all.log`作为事故证据；
+4. 对当前已经完成扩容的eMMC系统禁用并屏蔽`resize-all.service`；
+5. 后续把Git源码和活动构建树恢复到eMMC的ext4目录，SD卡只在重新初始化和单独验证挂载策略后保存较大的PCAP、CSV或交换数据。
+
+屏蔽后的验证结果：
+
+```text
+systemctl is-enabled resize-all.service
+masked
+
+/etc/systemd/system/resize-all.service -> /dev/null
+sysinit.target.wants/resize-all.service 不存在
+
+systemctl start resize-all.service
+Failed to start resize-all.service: Unit resize-all.service is masked.
+```
+
+这里`disable`和`mask`不是同一层防护：`disable`移除开机目标对服务的依赖链接，`mask`再把管理员层单元名链接到`/dev/null`，使手工启动和其他单元依赖启动也被拒绝。该操作可通过`systemctl unmask`恢复，但在确认厂商脚本只处理精确目标之前不应恢复。
+
+#### 修正usbmount配置并恢复数据盘
+
+隔离厂商扩容服务后，重新插入SD卡时，`usbmount`能够把它挂载到`/media/usb0`，但目录仍显示为`root:root`，普通用户的`test -w /media/usb0`返回1。检查`/etc/usbmount/usbmount.conf`发现，文件中原有三行配置同时存在三个问题：
+
+- 变量名写成了`FS_MOUNTOPATIONS`，缺少`OPTIONS`中的字母`I`；
+- 值使用中文弯引号`“”`，不是Shell配置需要的ASCII双引号`"`；
+- VFAT、NTFS和exFAT分别重复赋值同一个变量，即使拼写正确，也只会保留最后一次赋值。
+
+本机当前只需要为VFAT数据卡设置权限，因此保留通用安全选项，并把文件系统特定选项改为一个ASCII引号包围的赋值：
+
+```bash
+MOUNTOPTIONS="sync,noexec,nodev,noatime,nodiratime"
+FS_MOUNTOPTIONS="-fstype=vfat,uid=1000,gid=1000,dmask=0022,fmask=0133"
+```
+
+这里没有同时恢复`/etc/fstab`条目，也没有再用手工`mount`长期管理同一设备；`usbmount`是当前唯一挂载生命周期所有者。`nodev`禁止把卡内特殊文件解释为设备，`noexec`禁止直接从数据卡执行程序，`uid`和`gid`把VFAT统一映射给登录用户`cat`，`dmask=0022`和`fmask=0133`分别得到目录`0755`与普通文件`0644`。`sync`让写入更及时提交到介质，但会降低性能并增加写放大，后续大流量PCAP写入前需要单独评估。
+
+重启前先离开挂载目录并完整卸载，然后用只读模式检查文件系统：
+
+```bash
+cd /home/cat
+sync
+sudo umount /media/usb0
+sudo fsck.vfat -n /dev/mmcblk1p1
+```
+
+`-n`表示只检查、不执行修复；本次输出为`1 files, 1/1907291 clusters`，退出状态为0。随后保持SD卡插入并重启，验证结果为：
+
+```text
+resize-all.service: masked
+/dev/mmcblk1p1 -> /media/usb0，只有一个挂载记录
+FSTYPE=vfat
+uid=1000,gid=1000,fmask=0133,dmask=0022
+nodev,noexec,sync,errors=remount-ro
+/media/usb0 owner=cat(1000) group=cat(1000) mode=0755
+test -w /media/usb0: 0
+```
+
+最后以普通用户、且不使用`sudo`完成受控写入验证：创建临时文件，写入31字节文本，执行`sync`，用`stat`确认其为`cat:cat`和`0644`，读取内容一致，再删除临时文件并确认不存在。保留的数据目录为：
+
+```text
+/media/usb0/netflow-analyzer-data/pcap
+/media/usb0/netflow-analyzer-data/csv
+/media/usb0/netflow-analyzer-data/datasets
+/media/usb0/netflow-analyzer-data/logs
+```
+
+这证明当前挂载策略同时通过了配置解析、跨重启持久性、唯一挂载、文件系统只读检查和实际读写链路验证。它不改变前面的存储职责决定：Git工作树、CMake构建树和ELF继续留在eMMC ext4，SD卡只作为大容量数据盘。
+
+经验：
+
+- 修改`/etc/fstab`前，不仅要确认UUID和挂载选项，还要检查目标镜像是否存在自动挂载、自动格式化或自动扩容服务；
+- 服务名或描述写着“internal partitions”不能替代代码审计，应确认脚本实际枚举的设备范围；
+- Shell脚本中的`set +e`会让中间失败继续执行，最终退出状态可能被后续成功命令覆盖，因此必须结合脚本日志和文件系统结果判断；
+- Git工作树、CMake构建树和可执行文件优先放在ext4；VFAT更适合作为经过隔离的大容量数据交换介质；
+- SD卡重新格式化、分区或恢复属于破坏性操作。即使本次没有其他重要数据，后续仍必须先确认设备名、备份和恢复路径，再执行任何写操作。
+
+#### 使用Git Bundle把仓库恢复到eMMC
+
+由于目标板此前直接访问GitHub出现超时，恢复时没有再次依赖板端互联网连接，也没有递归复制包含旧构建缓存的整个目录。开发电脑上的工作区已干净，当前分支`feature/nonroot-service`及提交`8a0c5fe`均已推送；随后创建包含全部已提交引用和Git对象的Bundle：
+
+```bash
+NFA_BUNDLE_DIR="$(mktemp -d /tmp/nfa-bundle.XXXXXX)"
+NFA_BUNDLE="$NFA_BUNDLE_DIR/netflow-analyzer.bundle"
+
+git bundle create "$NFA_BUNDLE" --all
+git bundle verify "$NFA_BUNDLE"
+scp "$NFA_BUNDLE" cat@192.168.1.102:/home/cat/netflow-analyzer.bundle
+```
+
+`git bundle`和普通压缩源码不同：它保存已提交的分支、标签和对象，可以作为本地只读Git传输源；它不会把`build/`、未跟踪文件或未提交修改混入恢复结果。板端从Bundle显式选择功能分支克隆，再把临时本地远程地址改回公开GitHub地址：
+
+```bash
+git clone \
+    --branch feature/nonroot-service \
+    /home/cat/netflow-analyzer.bundle \
+    /home/cat/workspace/netflow-analyzer
+
+git -C /home/cat/workspace/netflow-analyzer \
+    remote set-url origin \
+    https://github.com/Devi1Fairy/netflow-analyzer.git
+```
+
+恢复结果：
+
+- 板端HEAD为`8a0c5fe`，当前分支及上游均为`feature/nonroot-service`，工作区干净；
+- 源码目录位于eMMC ext4的`/home/cat/workspace/netflow-analyzer`，大小约2.4MB；
+- 没有复用记录旧SD卡绝对源码路径的CMake缓存，而是新建`/home/cat/build/netflow-analyzer-debug-emmc`；
+- 新Debug构建树约3.2MB，板端当前18项CTest全部通过；
+- eMMC根文件系统约7.0GB，已用5.4GB、可用1.4GB，使用率81%；源码和活动Debug构建合计约5.6MB，不构成当前容量压力；
+- Bundle暂时保留到恢复验收结束，不在确认前提前删除唯一的板端离线恢复介质。
 
 ### 5.2 CTest版本与VFAT执行权限导致板上测试无法启动
 
@@ -538,6 +681,8 @@ CTest仍然显示源码根目录为测试目录，并报告`No tests were found`
 ```bash
 ctest --output-on-failure
 ```
+
+以上是当时用于排除VFAT执行权限问题的过渡布局。后续SD卡事故发生后，当前决策已经调整为把源码和活动构建树都放在eMMC ext4；这里保留旧路径是为了完整记录原故障如何被定位。
 
 验证结果：
 
@@ -926,10 +1071,21 @@ stdbuf -oL -eL netflow-analyzer ... 2>&1 | tee 结果文件
 
 `-oL`和`-eL`分别让标准输出和标准错误按行刷新。之后终端能够实时显示周期报告，日志也完整保留。
 
+这只是性能测试阶段的外部补救。进入systemd服务化后，程序已经在`main()`对stdout执行：
+
+```c
+setvbuf(stdout, NULL, _IOLBF, 0);
+```
+
+调用位于stdout任何I/O之前，使终端、普通文件、Shell管道和systemd journal都采用明确的行刷新契约，不再要求部署环境通过`stdbuf`改变标准I/O行为。stderr仍用于启动与致命错误。
+
+此前“命令中存在`| tee`且看起来也能逐行输出”并不能证明分析器面对的就是普通管道：`sudo`可能为子进程分配伪终端；全缓冲也会在缓冲区填满时成批输出；正常退出还会刷新剩余数据。严格复测把`> logfile 2>&1`放在`sudo sh -c`内部，确保重定向覆盖sudo可能提供的伪终端。12秒运行尚未结束时，第7秒已经可以从普通文件读取第一条5秒周期报告，证明程序自身的行缓冲生效。
+
 验证结果：
 
 - 空闲22.04秒：应用0包、进程CPU时间0.01秒、最大RSS 1764 KiB、drop为0；
 - 20万包场景通过`stdbuf`完整保存程序和GNU `time`输出，应用分类、资源数据和退出状态均可追溯；
+- 服务化前的严格普通文件重定向测试无需`stdbuf`，运行期间即可读取周期报告；
 - 详细数据和复现命令记录在`docs/performance_baseline.md`。
 
 ### 5.12 长稳监控缺少测试后软中断快照
@@ -1061,3 +1217,130 @@ TCP CSV验证代码被粘贴到`run_processing_results_test()`末尾，而不是
 - 本机18项CTest全部通过。
 
 该问题说明结构化输出增加字段时要同时检查四层：格式串与实参、单元测试预期、端到端文件预期，以及测试代码所处函数和资源作用域。只看到表头通过不能证明数据行契约已经完整更新。
+
+### 5.16 目标板journalctl不能解析带时区偏移的ISO时间
+
+现象：
+
+首次systemd服务验收使用：
+
+```bash
+export NFA_JOURNAL_SINCE="$(date --iso-8601=seconds)"
+sudo journalctl \
+    -u netflow-analyzer \
+    --since "$NFA_JOURNAL_SINCE" \
+    --no-pager
+```
+
+变量值为：
+
+```text
+2026-09-02T21:37:11+08:00
+```
+
+目标板返回：
+
+```text
+Failed to parse timestamp: 2026-09-02T21:37:11+08:00
+```
+
+原因：
+
+目标板提供的`journalctl`时间解析器不接受该命令生成的带`T`和显式时区偏移格式。服务本身仍为`active`，日志也已经进入journal，因此这是客户端查询参数兼容性问题，不是分析器、stdout行缓冲或systemd单元故障。
+
+处理：
+
+```bash
+export NFA_JOURNAL_SINCE="$(date '+%Y-%m-%d %H:%M:%S')"
+```
+
+该变量必须用双引号传给`--since`，避免Shell按中间空格拆成日期和时间两个参数。也可以不使用绝对时间，改用：
+
+```bash
+sudo journalctl -u netflow-analyzer -b --no-pager
+sudo journalctl -u netflow-analyzer -n 100 --no-pager
+```
+
+验证：
+
+- 改用`YYYY-MM-DD HH:MM:SS`后能够查看本轮服务日志；
+- 静默周期报告、4个ICMP包和SIGTERM后的最终汇总均完整存在；
+- 完整命令兼容性已经写入[`docs/systemd_deployment.md`](systemd_deployment.md)。
+
+### 5.17 启动期ETHTOOL查询暂时繁忙触发systemd自动恢复
+
+现象：
+
+屏蔽厂商`resize-all.service`并在未插入SD卡的情况下受控重启后，`netflow-analyzer.service`最终为`active (running)`，但：
+
+```text
+NRestarts=1
+```
+
+本次boot的journal显示第一次进程PID 665在19:06:40失败：
+
+```text
+Application failed: failed to open interface 'eth0':
+eth0: SIOCETHTOOL(ETHTOOL_GET_TS_INFO) ioctl failed:
+Device or resource busy
+```
+
+随后systemd记录`Failed with result 'exit-code'`。单元配置了：
+
+```ini
+Restart=on-failure
+RestartSec=2s
+```
+
+第二次进程PID 845在19:06:42进入活动状态，并从19:06:43开始成功报告`Capture interface: eth0`。此后每约5秒持续输出零流量指标；检查时`eth0`已经为`UP,LOWER_UP`，服务保持运行，`Result=success`。
+
+判断：
+
+- 失败发生在libpcap打开接口期间的`ETHTOOL_GET_TS_INFO`查询，不是BPF编译、协议解析、流表或权限错误；
+- 错误码`EBUSY`表示内核或网卡驱动当时暂时无法完成该查询。结合2秒后相同程序、相同接口和相同配置成功，证据符合启动期驱动或网络初始化的瞬态繁忙；现有日志不能进一步确定具体由哪个内核组件占用，因此不把推断写成已证明的驱动缺陷；
+- `After=network-online.target`只定义systemd启动顺序，不保证每一种驱动ioctl在目标到达时都已可用；
+- `NRestarts=1`是恢复路径生效的证据，不表示应用重复处理了数据包；`Result=success`描述当前恢复后的活动实例，不能抹去journal里第一次失败的历史。
+
+处理决定：
+
+当前不修改C源码，也不在应用内部再增加一套并行重试循环。进程在接口打开失败时明确返回非零，由systemd统一等待2秒并重新创建干净进程，符合现有服务生命周期设计。本次单次瞬态错误已经自动恢复；后续生产级验收仍需观察连续失败时的启动限速，以及恢复后数小时或数天的稳定性。
+
+附带现象：
+
+普通用户执行`systemctl status`时出现`some journal files were not opened due to insufficient permissions`，只是当前账户不能读取所有系统journal文件；使用`sudo journalctl -b -u netflow-analyzer.service`已经取得目标单元完整日志，不是服务故障。
+
+### 5.18 默认启动窗口与重启间隔处在边界
+
+现象：
+
+目标板最初没有在单元中显式设置启动限速，继承systemd 245管理器默认值：
+
+```text
+StartLimitIntervalUSec=10s
+StartLimitBurst=5
+RestartUSec=2s
+```
+
+五次快速失败大约占满10秒，第六次启动时第一次记录可能刚好滑出窗口，因此默认参数不能稳定表达“连续故障后必须停止”的项目策略。
+
+验证：
+
+在`/run/systemd/system/netflow-analyzer.service.d`建立当前boot有效的临时drop-in，把窗口改为30秒，并用不存在的接口`nfa-start-limit-test0`产生确定性失败。五个不同PID均返回`No such device exists`，随后journal出现：
+
+```text
+Start request repeated too quickly.
+Failed to start Netflow Analyzer live capture service.
+```
+
+第六次启动被拒绝，之后没有继续创建进程。systemd 245同时仍记录`Failed with result 'exit-code'`，说明该版本不能仅根据`Result`是否等于`start-limit`判断限速；必须结合重复失败PID、拒绝日志和后续是否继续启动。
+
+处理：
+
+- 删除临时`/run` drop-in，执行`daemon-reload`和`reset-failed`后，服务以`eth0`恢复为`active/running`，`NRestarts=0`且`DropInPaths=`为空；
+- 提交`903edd4`在正式单元的`[Unit]`中增加`StartLimitIntervalSec=30s`和`StartLimitBurst=5`，继续保留`RestartSec=2s`；
+- 正式文件SHA-256为`68ad2d07d1597486a539435b2918e9ff8b20b9ff426059ae66454d93ea6803ba`，板端静态解析状态为0；系统自带`snapd.service`的`RestartMode`警告与本项目无关；
+- 正式加载后有效值为`30s/5`，没有drop-in；服务保持`enabled`和`active`，真实2次ping处理为4个`complete` ICMP包和392字节。
+
+恢复语义：
+
+达到启动上限后，服务不会只因30秒过去就自动恢复。管理员修正接口、配置或硬件问题后，需要执行`systemctl reset-failed`清除失败状态和频率计数，再执行`systemctl start`。该边界比永久高速重启更适合当前固定`eth0`的设备，但如果以后支持热插拔接口，需要重新评估退避与延迟重试策略。

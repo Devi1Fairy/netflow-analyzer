@@ -48,6 +48,20 @@
 - 新增稳定的TCP阶段名称接口；活动、过期和被淘汰流复用统一终端输出，离线CSV在`protocol`后增加`tcp_state`列，非TCP流明确写为`not-applicable`。
 - Python端到端验收新增不依赖Scapy的3包TCP三次握手PCAP，同时验证终端与CSV最终为`established`；TCP状态、流记录和CSV不变量单元测试使CTest增加到18项，本机全量回归通过。
 - 当前状态机是旁路观察模型，不复制Linux内核TCP socket状态，不验证ACK是否精确确认对应序列号，不处理乱序字节、重组、TCP选项或同一五元组在`closed`/`reset`后的重新建连。
+- LubanCat-2N ARM64原生Debug构建的18项CTest全部通过；`lo`上的HTTP/1.0真实连接处理12个TCP包，12个均为`complete`，聚合为1条双向流并最终进入`closed`，两个drop字段均为0。捕获后端的`received=24`与应用交付的12包属于不同统计层级，不解释为应用重复处理或丢包。
+- 实时模式将`--count`改为可选上限：省略时持续抓包，直到收到`SIGINT`、`SIGTERM`或致命错误；显式的`--count`仍只接受正整数，内部使用0表示`unlimited`。本机18项CTest全部通过；`lo`上的无上限ICMP实测在静默期正常报告0包，随后处理4个`complete`包，并在`SIGTERM`后正常输出汇总；后端`received=8`且两个drop字段均为0。
+- CMake新增GNU标准安装目录支持，可把主程序安装到目标前缀的`bin`目录；新增systemd服务单元和`/etc/default`参数模板，以专用用户、`CAP_NET_RAW`能力边界和只读系统防护运行持续抓包服务。
+- 主程序在任何stdout I/O之前显式启用行缓冲，使周期指标和生命周期日志在普通文件、Shell管道及systemd journal中及时发布，不再要求服务通过外部`stdbuf`包装；严格普通文件重定向测试在进程结束前读到了第一条周期报告。
+- 官方SDK为提交`740d5ab`生成ARM64服务部署包，并在LubanCat-2N完成首次非root systemd手工启停：专用用户只获得`CAP_NET_RAW`、`NoNewPrivs=1`，journal在运行中显示静默周期报告，2次外部ping对应4个完整ICMP包和1条双向流，两个drop字段为0，SIGTERM正常输出最终汇总。
+- 新增非root systemd部署手册，详细记录暂存安装、打包传输、Linux系统用户、文件权限、capability、journal查询、服务生命周期、故障定位和回滚；记录目标板`journalctl`不接受带时区偏移ISO时间并改用兼容时间格式。
+- LubanCat-2N完成受控重启验收：不同boot ID证明系统实际重启，无人工启动时服务已为`enabled`和`active`，一次启动成功且没有失败重试；新进程继续只获得`CAP_NET_RAW`，静默周期日志和重启后的真实ICMP均正确。
+- 记录LubanCat-2N systemd 245的服务安全评分基线`5.2 MEDIUM`，区分宿主网络、`AF_PACKET`和`CAP_NET_RAW`等抓包必需成本，以及命名空间、设备、时钟、内核日志、实时调度、W^X和umask等可继续收紧的边界。
+- LubanCat-2N应用第一批低风险systemd沙箱配置后，非root身份、唯一`CAP_NET_RAW`、静默报告和真实ICMP保持正常，安全评分由`5.2 MEDIUM`降为`3.7 OK`；记录systemd 245对`ProtectClock`的评分限制，不继续为追求分数扩大当前安全工作范围。
+- 记录板端VFAT权限和启动期存储事故：精确`safe.directory`只解决Git信任检查，重新挂载才能恢复写权限；把旧UUID写入`/etc/fstab`后的重启又暴露`usbmount`与厂商`resize-all.service`的冲突，辅助脚本重建VFAT但恢复失败。事故证据已保存，旧挂载条目已移除，数据卡保持卸载，已完成eMMC扩容的目标板禁用并屏蔽该服务；板端源码改为恢复到eMMC ext4。
+- 记录一次真实的systemd启动恢复：第一次进程打开`eth0`时，`ETHTOOL_GET_TS_INFO`查询暂时返回`EBUSY`并非零退出；`Restart=on-failure`等待2秒后启动第二个进程，成功打开接口并持续发布周期报告。`NRestarts=1`保留失败恢复历史，并据此继续验证连续失败边界。
+- 使用Git Bundle和SSH在不依赖板端GitHub连接的情况下恢复完整仓库：`feature/nonroot-service`及提交历史进入eMMC ext4，`origin`恢复为GitHub HTTPS地址；新建Debug构建目录而不复用旧SD卡绝对路径缓存，当前18项ARM64 CTest全部通过。源码与构建树合计约5.6MB，当前1.4GB可用空间足以承载活动开发文件。
+- 完成SD卡数据盘恢复验收：修正`usbmount.conf`中拼错且使用弯引号的`FS_MOUNTOPTIONS`配置，以`usbmount`作为唯一挂载管理者；只读VFAT检查返回0，跨重启后`/dev/mmcblk1p1`唯一挂载到`/media/usb0`，普通用户以`0644/0755`权限完成创建、写入、同步、读取和删除测试。源码与构建继续留在eMMC ext4，SD卡只保存PCAP、CSV、数据集和日志。
+- 为systemd单元显式增加`StartLimitIntervalSec=30s`和`StartLimitBurst=5`：LubanCat-2N使用不存在接口连续失败5次后，第6次启动请求被`Start request repeated too quickly`拒绝；清除运行时drop-in和`reset-failed`后服务恢复。提交`903edd4`的正式单元摘要一致、静态检查状态为0，有效参数为`30s/5`且无drop-in，真实2次ping继续处理为4个完整ICMP包。
 
 ## [0.2.0] - 2026-08-26
 

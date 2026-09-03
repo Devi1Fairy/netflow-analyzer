@@ -26,7 +26,7 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 
 因此，`v0.1.0`可以视为一个完整版本迭代，但不是整个项目完成。它具备明确输入、完整处理链、可观察输出和自动化验收；实时抓包、流过期、应用层协议、异常检测、可视化和开发板部署仍属于后续版本。
 
-`v0.2.0`在这条链路上增加了流过期清理、FNV-1a哈希流表、CSV导出、实时抓包和BPF过滤。CLI可以通过`--interface NAME --count PACKETS [--filter EXPRESSION]`从网卡读取有限数量的数据包，并复用离线模式的协议解析、双向流聚合和终端汇总流程。
+`v0.2.0`在这条链路上增加了流过期清理、FNV-1a哈希流表、CSV导出、实时抓包和BPF过滤。当前CLI可以通过`--interface NAME [--count PACKETS] [--filter EXPRESSION]`从网卡读取数据包，并复用离线模式的协议解析、双向流聚合和终端汇总流程。省略`--count`时持续运行到收到停止信号，显式提供时则作为人工验收或测试的有限包数上限。
 
 当前`Unreleased`开发进度进一步为实时模式加入`SIGINT`和`SIGTERM`优雅退出，以及基于`pcap_stats()`的运行统计。用户按下Ctrl+C或服务管理器发送终止信号后，程序会中断阻塞的libpcap读取，沿正常控制流取得libpcap累计统计、关闭采集句柄，并输出已经处理的数据包、抓包丢弃情况和流汇总。
 
@@ -74,7 +74,9 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 - 流过期的事件时间只随实际收到的数据包推进，接口完全静默时要等下一包到来才判断旧流；周期运行指标使用单调时钟，因此静默时仍会按时输出；
 - 尚未解析DNS、HTTP等应用层协议；
 - 尚未实现规则异常检测、机器学习、Qt界面或云端展示；
-- ARM Linux开发板已完成原生Debug/Release构建、当前17项CTest、离线跨平台一致性、两种交叉产物、物理网卡抓包、单流/多流性能、满载边界、流表探测成本和10分钟长稳基线；最新官方SDK产物又完成单次满表扫描优化复测，300个UDP新流对应300次探测操作、44次最旧流淘汰、256条最终流和零drop。
+- ARM Linux开发板已完成原生Debug/Release构建、当前18项CTest、离线跨平台一致性、两种交叉产物、物理网卡抓包、真实TCP完整关闭、单流/多流性能、满载边界、流表探测成本和10分钟长稳基线；最新官方SDK产物又完成单次满表扫描优化复测，300个UDP新流对应300次探测操作、44次最旧流淘汰、256条最终流和零drop。
+- LubanCat-2N已完成非root systemd手工启停、开机自启、异常恢复、连续失败限速和第一批低风险沙箱加固：服务进程使用无登录专用用户，只获得`CAP_NET_RAW`且`NoNewPrivs=1`；静默周期日志、真实ICMP、双向流汇总和SIGTERM收尾均进入journal。一次重启中接口时间戳能力查询短暂返回`EBUSY`，`Restart=on-failure`等待2秒后成功恢复；持续使用不存在接口时，显式的`30s/5次`策略在5次失败后拒绝第6次启动。systemd 245安全评分由`5.2 MEDIUM`降为`3.7 OK`，服务长稳仍待验证。
+- 目标镜像的`resize-all.service`会扫描`/proc/mounts`中的已挂载分区；一次SD卡持久化挂载实验触发VFAT重建且恢复失败。该服务现已禁用、屏蔽并通过跨boot验证；板端Git工作树已通过Git Bundle恢复到eMMC ext4，新构建目录中的18项CTest全部通过。修正`usbmount`配置后，数据卡由唯一挂载管理者以`uid=1000,gid=1000,fmask=0133,dmask=0022,noexec`自动挂载，普通用户读写测试通过；SD卡只承担PCAP、CSV、数据集和日志存储。
 
 ## 项目目录
 
@@ -122,9 +124,13 @@ netflow-analyzer/
 │   ├── unit/
 │   └── integration/test_offline_flow.py
 ├── scripts/check_target_env.sh
+├── packaging/systemd/
+│   ├── netflow-analyzer.service
+│   └── netflow-analyzer.default
 ├── docs/
 │   ├── problem_log.md
-│   └── technical_decisions.md
+│   ├── technical_decisions.md
+│   └── systemd_deployment.md
 └── labs/
 ```
 
@@ -212,6 +218,11 @@ sudo ./build/bin/netflow-analyzer \
     --interface lo \
     --count 4
 
+# 不设置包数上限，持续运行到Ctrl+C或外部SIGTERM。
+sudo ./build/bin/netflow-analyzer \
+    --interface lo \
+    --filter "icmp"
+
 # 只接收lo上的IPv4 ICMP流量；--count只统计匹配过滤器的数据包。
 sudo ./build/bin/netflow-analyzer \
     --interface lo \
@@ -226,12 +237,11 @@ sudo ./build/bin/netflow-analyzer \
     --flow-full-policy evict-oldest
 ```
 
-若要观察周期运行指标，可把包数上限调大，让程序跨越多个5秒区间：
+若要观察周期运行指标，可以省略包数上限，让程序跨越多个5秒区间：
 
 ```bash
 sudo ./build/bin/netflow-analyzer \
     --interface lo \
-    --count 100 \
     --filter "icmp"
 ```
 
@@ -266,14 +276,14 @@ Flow summary: 1 flow(s)
 | `-V`、`--version` | 显示版本 |
 | `-r FILE`、`--read FILE` | 分析离线PCAP文件 |
 | `-i NAME`、`--interface NAME` | 选择实时抓包网卡 |
-| `-c N`、`--count N` | 实时模式最多读取N个数据包，N必须大于0 |
+| `-c N`、`--count N` | 可选的实时包数上限，N必须大于0；省略时持续运行到停止信号 |
 | `--filter EXPRESSION` | 为实时抓包安装BPF过滤表达式；含空格时需要使用引号 |
 | `--flow-full-policy POLICY` | 设置实时流表满载策略：默认`reject`，或使用`evict-oldest`淘汰最久未活动流 |
 | `--csv FILE` | 把流记录导出到一个新CSV文件，不覆盖已有文件 |
 
 离线分析会先显示文件与链路类型，再预览前5个数据包。程序仍会处理文件中的所有数据包，最后输出总包数、预览包数和双向流汇总。TCP流汇总包含`tcp_state`；指定`--csv`后，应用层在聚合成功后创建CSV文件，写入固定表头和全部流记录，其中TCP写入稳定阶段名称，UDP和ICMP写入`not-applicable`。C11的独占创建模式会在目标已存在时失败，避免静默覆盖原文件。
 
-实时分析会等待网卡流量，达到`--count`指定的数据包数量，或收到`SIGINT`、`SIGTERM`停止请求后，取得libpcap运行统计、关闭采集句柄并输出流汇总。不提供`--filter`时，计数针对接口上返回的全部数据包，不只包含用户主动执行`ping`等命令产生的流量；例如VS Code及其本地服务也可能通过`lo`持续交换TCP数据。提供过滤器后，libpcap在数据包进入应用读取循环前执行匹配，只有匹配包会增加`--count`计数并进入协议解析和流聚合。当前`--count`限制处理包数而不是等待时间；没有足够的匹配流量时程序会继续等待，用户可以使用Ctrl+C安全结束并保留已经聚合的结果。
+实时分析会等待网卡流量；提供`--count`时，达到指定数据包数量后结束，省略时则持续运行。两种模式收到`SIGINT`或`SIGTERM`停止请求后，都会取得libpcap运行统计、关闭采集句柄并输出流汇总。不提供`--filter`时，计数针对接口上返回的全部数据包，不只包含用户主动执行`ping`等命令产生的流量；例如VS Code及其本地服务也可能通过`lo`持续交换TCP数据。提供过滤器后，libpcap在数据包进入应用读取循环前执行匹配，只有匹配包会进入协议解析、流聚合和可选的`--count`计数。`--count`限制处理包数而不是等待时间；没有足够的匹配流量时程序会继续等待，用户可以使用Ctrl+C安全结束并保留已经聚合的结果。
 
 实时过期调度器使用捕获数据包时间戳的最大值作为时间高水位，避免乱序包让时间倒退。扫描发生在当前包加入流表之前，因此同一五元组在空闲30秒后重新出现时，旧记录会先输出和删除，当前包再建立新记录。`Expired flows`是运行期间已经输出的累计数量，最终`Flow summary`只包含仍留在流表中的记录。
 
@@ -339,21 +349,25 @@ sh scripts/check_target_env.sh
 sh scripts/check_target_env.sh --expect-arm --with-tests
 ```
 
-LubanCat-2N已经完成ARM64原生Debug/Release构建、当前17项板端CTest、确定性离线PCAP端到端验收，以及来自VMware NAT虚拟机的物理网卡ICMP实时抓包。板端Python 3.8.10最初无法解释Python 3.9才支持的`list[tuple[...]]`类型注解；验收脚本改用`typing.List`和`typing.Tuple`后，目标测试及全量17项CTest均通过。板载系统位于容量8GB的eMMC，系统安装后空间有限；当前源码保留在SD卡，正在使用的构建树临时放在eMMC的Linux原生文件系统，避免VFAT缺少执行位和符号链接等Unix语义。不要在eMMC上长期积累源码和多个构建树；PCAP、CSV和交换数据继续优先放在SD卡。
+LubanCat-2N已经完成ARM64原生Debug/Release构建、当前18项板端CTest、确定性离线PCAP端到端验收，以及来自VMware NAT虚拟机的物理网卡ICMP实时抓包。新增TCP状态功能也已在`lo`上通过真实HTTP/1.0连接验收：应用处理12个完整TCP包，聚合为1条双向流并最终输出`tcp_state=closed`，两个drop字段均为0。板端Python 3.8.10最初无法解释Python 3.9才支持的`list[tuple[...]]`类型注解；验收脚本改用`typing.List`和`typing.Tuple`后，目标测试及全量18项CTest均通过。
+
+板载系统位于容量8GB的eMMC；当前根文件系统约7.0GB，已用5.4GB、可用1.4GB。一次为VFAT SD卡固化挂载权限的实验暴露了目标镜像中`usbmount`与`resize-all.service`的冲突：扩容辅助脚本扫描已挂载分区并重建了VFAT，但恢复失败。该服务现已禁用、屏蔽并通过跨boot验证；源码权威副本仍在开发电脑和GitHub，板端工作树已通过Git Bundle恢复到`/home/cat/workspace/netflow-analyzer`的ext4目录。源码约2.4MB，新Debug构建树约3.2MB，当前18项板端CTest全部通过。SD卡现在由`usbmount`唯一挂载，普通用户读写链路通过，只保存PCAP、CSV、数据集和日志。
 
 开发电脑已经完成两条ARM64交叉编译和板端运行链：一条使用鲁班猫官方Buildroot GCC 9.3及隔离的板端libpcap overlay，另一条使用Ubuntu GCC 13、从板端导出的完整sysroot和GCC `-B`启动文件前缀。两种产物均为AArch64 ELF、只要求`GLIBC_2.17`，并在板端通过`ldd`、`--help`和实时ICMP抓包。完整Shell环境变量、CMake参数、ABI检查与故障记录见[交叉编译手册](docs/cross_compilation.md)。
 
-开发板上的CTest为3.16.3，低于`--test-dir`参数所需的3.20，因此测试时应先进入构建目录再运行`ctest`。同一确定性6包PCAP已经在x86_64与ARM64原生构建上得到一致标准输出和退出状态；当前17项测试也已在两侧全部通过。Release单流基线最高约9 Kpps、20万包零drop、每包CPU约6.95微秒；128流长稳基线以约9 Kpps处理540万包，全部分类为`complete`，两个drop为0、每包CPU约6.24微秒，RSS采样从首到尾保持564 KiB。300流容量测试也精确得到256个完整流和44个`flow_rejected`。完整方法见[单流性能基线](docs/performance_baseline.md)和[多流与长稳基线](docs/multiflow_longrun_baseline.md)。
+提交`740d5ab`的官方SDK ARM64产物已经通过暂存安装打包并部署为systemd服务。程序和配置由root拥有，运行进程使用`netflow-analyzer`专用账户；systemd只授予`CAP_NET_RAW`，不把文件capability永久写入ELF。首次手工启停处理4个完整ICMP包、聚合1条双向流，两个drop字段为0，并在SIGTERM后正常收尾。完整的Linux命令、用户/组、权限、capability、journal、故障定位和回滚见[非root systemd部署手册](docs/systemd_deployment.md)。
+
+开发板上的CTest为3.16.3，低于`--test-dir`参数所需的3.20，因此测试时应先进入构建目录再运行`ctest`。同一确定性6包PCAP此前在x86_64与ARM64原生构建上得到一致标准输出和退出状态；工作树恢复到eMMC后，当前18项板端测试已经重新全部通过。Release单流基线最高约9 Kpps、20万包零drop、每包CPU约6.95微秒；128流长稳基线以约9 Kpps处理540万包，全部分类为`complete`，两个drop为0、每包CPU约6.24微秒，RSS采样从首到尾保持564 KiB。300流容量测试也精确得到256个完整流和44个`flow_rejected`。完整方法见[单流性能基线](docs/performance_baseline.md)和[多流与长稳基线](docs/multiflow_longrun_baseline.md)。
 
 ## 后续迭代
 
 建议按以下顺序推进：
 
-1. 在LubanCat-2N复测当前18项测试和TCP状态输出，并完成非root抓包权限与服务化运行；
+1. 完成数小时或数天的systemd服务方式长稳，并评估journal容量策略；
 2. 处理同一五元组关闭后重新建连，随后增加TCP乱序与字节流重组，再进入DNS、HTTP等应用层解析；
 3. 当前继续保持单线程；只有后续测量证明单线程成为瓶颈，才复审实验中的阻塞队列和线程流水线；
 4. 如果真实负载超过256条活跃流，再根据占用率、探测长度、拒绝和淘汰数据评估可配置容量、重建或动态扩容；
 5. 实现规则异常检测，再准备机器学习特征与模型；
 6. 在稳定的数据接口之上实现Qt上位机，并按需要扩展云端展示。
 
-版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)，技术、环境和硬件选型见[docs/technical_decisions.md](docs/technical_decisions.md)，两种ARM64构建方式见[docs/cross_compilation.md](docs/cross_compilation.md)，首轮板端测量见[docs/performance_baseline.md](docs/performance_baseline.md)。
+版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)，技术、环境和硬件选型见[docs/technical_decisions.md](docs/technical_decisions.md)，两种ARM64构建方式见[docs/cross_compilation.md](docs/cross_compilation.md)，非root服务安装见[docs/systemd_deployment.md](docs/systemd_deployment.md)，首轮板端测量见[docs/performance_baseline.md](docs/performance_baseline.md)。
