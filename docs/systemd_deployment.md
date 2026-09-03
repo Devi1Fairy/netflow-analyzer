@@ -507,7 +507,84 @@ Sep 02 21:44:56 lubancat netflow-analyzer[49933]: Total packets: 4
 
 服务在验收后保持`enabled`和`active`，作为后续服务方式长稳测试的基础。
 
-## 10. systemctl stop为什么能够优雅结束
+## 10. systemd安全评分基线
+
+2026-09-03在目标板执行：
+
+```bash
+sudo systemd-analyze \
+    --no-pager \
+    security \
+    netflow-analyzer.service
+```
+
+目标环境：
+
+```text
+systemd 245 (245.4-4ubuntu3.24)
+编译时启用SECCOMP、APPARMOR、SELINUX、AUDIT和KMOD等支持
+Overall exposure: 5.2 MEDIUM
+```
+
+这个分数是systemd依据单元沙箱属性计算的启发式暴露面，不是C代码漏洞扫描，也不能直接换算成被攻击概率。报告中的叉号表示“该项没有达到评分器最严格的条件”，不自动等于配置错误。
+
+### 10.1 抓包业务必须保留的暴露面
+
+| 报告项 | 权重 | 当前判断 |
+|---|---:|---|
+| `PrivateNetwork=` | 0.5 | 不能启用；独立网络命名空间会使服务看不到宿主机`eth0` |
+| `RestrictAddressFamilies=~AF_PACKET` | 0.2 | 不能禁止；Linux libpcap实时抓包依赖packet socket |
+| `AmbientCapabilities=` | 0.1 | 接受；非root ELF需要动态获得`CAP_NET_RAW` |
+| `CapabilityBoundingSet=~CAP_NET_*` | 0.1 | 接受其中的`CAP_NET_RAW`；当前边界已经排除其他能力 |
+
+这些项目即使让总分下降，也会同时破坏核心业务，不能为了评分变绿而启用。
+
+### 10.2 先保留并通过实验缩小的网络能力
+
+报告还对`AF_INET`、`AF_INET6`、`AF_NETLINK`和`AF_UNIX`扣分。libpcap在激活接口时除了创建`AF_PACKET` socket，还可能通过Internet或netlink socket查询接口状态、索引和其他元数据；未来BPF如果使用主机名，也可能触发名称解析。journal的连接由systemd在`exec`前建立，但应用和库是否另建本地socket仍应以实测为准。
+
+因此下一阶段可以尝试地址族白名单，但必须保留至少：
+
+```text
+AF_PACKET AF_NETLINK AF_INET AF_INET6 AF_UNIX
+```
+
+这能排除未使用的特殊地址族，却不会让评分器把上述业务需要的地址族全部判为安全。每次收紧后必须重新验证启动、静默报告、ICMP和SIGTERM。
+
+### 10.3 第一批低风险加固候选
+
+当前程序不访问物理设备节点、不修改时钟或主机名、不读取内核日志、不创建命名空间、不申请实时调度、不使用JIT，也不使用SysV IPC。第一批候选为：
+
+```ini
+PrivateDevices=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+```
+
+其中`PrivateDevices=yes`预计同时改善设备ACL相关评分；最终仍以systemd 245重新评分为准。`RestrictNamespaces=yes`能同时覆盖用户、cgroup、IPC、网络、mount、PID和UTS命名空间创建权限。systemd在执行程序前建立服务需要的隔离环境，不等于服务进程之后仍可以创建新命名空间。
+
+### 10.4 暂不直接启用的高风险或高成本项
+
+- `SystemCallFilter=`：潜在降分较大，但必须确认libpcap使用的`socket`、`ioctl`、`poll`、`recv`和内存管理调用；后续按系统调用组逐批拒绝；
+- `PrivateUsers=yes`：用户命名空间中的能力语义可能影响初始网络命名空间上的`CAP_NET_RAW`；
+- `IPAddressDeny=any`：依赖目标内核和cgroup网络过滤支持，还要验证是否影响当前抓包路径；
+- `RootDirectory=`或`RootImage=`：需要为动态加载器、libc、libpcap和配置构造完整运行根，当前0.1权重不值得增加部署复杂度。
+
+当前结论不是“5.2已经足够安全”，而是先建立可复现基线，再按风险从低到高逐批加固并回归。下一小步只加入第一批低风险选项；地址族和系统调用限制单独实验，以便失败时能定位具体边界。
+
+对应版本的准确语义以systemd v245官方`systemd.exec`和`systemd-analyze`手册为准：
+
+- <https://github.com/systemd/systemd/blob/v245/man/systemd.exec.xml>
+- <https://github.com/systemd/systemd/blob/v245/man/systemd-analyze.xml>
+
+## 11. systemctl stop为什么能够优雅结束
 
 当前停止链路：
 
@@ -527,7 +604,7 @@ systemctl stop
 
 `Restart=on-failure`只在异常退出时重启。正常处理SIGTERM并返回成功不会形成重启循环。
 
-## 11. 常见故障定位
+## 12. 常见故障定位
 
 先收集三组信息：
 
@@ -559,7 +636,7 @@ sudo systemctl reset-failed netflow-analyzer
 
 它只清除systemd记录的失败和启动限速状态，不修改程序、配置或日志。
 
-## 12. 回滚与更新原则
+## 13. 回滚与更新原则
 
 更新前先`stop`并备份现有三个文件。新程序安装后先手工`start`验证，不要直接覆盖并重启后离开设备。
 
@@ -585,11 +662,12 @@ sudo systemctl start netflow-analyzer
 
 只有确认恢复版本能够启动后，才考虑清理临时解压目录和旧部署包。不要用宽泛的递归删除命令清理`/tmp`、`/home/cat`或系统目录。
 
-## 13. 仍待完成的服务验收
+## 14. 仍待完成的服务验收
 
 首次手工启动、非root身份、能力边界、journal实时日志、真实ICMP、SIGTERM收尾、开机自启和重启恢复已经通过。仍需：
 
-1. 使用`systemd-analyze security`复查目标板systemd实际支持的沙箱项；
-2. 通过受控故障注入验证接口暂不可用时的重启和恢复行为；
-3. 进行数小时或数天服务方式浸泡测试，观察journal占用、内存、CPU和drop；
-4. 根据长期日志需求决定journal采用易失还是持久存储及其容量上限。
+1. 加入第一批低风险systemd限制并重新评分、启动和抓包；
+2. 单独实验地址族白名单和系统调用拒绝组；
+3. 通过受控故障注入验证接口暂不可用时的重启和恢复行为；
+4. 进行数小时或数天服务方式浸泡测试，观察journal占用、内存、CPU和drop；
+5. 根据长期日志需求决定journal采用易失还是持久存储及其容量上限。

@@ -75,7 +75,7 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 - 尚未解析DNS、HTTP等应用层协议；
 - 尚未实现规则异常检测、机器学习、Qt界面或云端展示；
 - ARM Linux开发板已完成原生Debug/Release构建、当前18项CTest、离线跨平台一致性、两种交叉产物、物理网卡抓包、真实TCP完整关闭、单流/多流性能、满载边界、流表探测成本和10分钟长稳基线；最新官方SDK产物又完成单次满表扫描优化复测，300个UDP新流对应300次探测操作、44次最旧流淘汰、256条最终流和零drop。
-- LubanCat-2N已完成非root systemd手工启停和开机自启验收：服务进程使用无登录专用用户，只获得`CAP_NET_RAW`且`NoNewPrivs=1`；静默周期日志、真实ICMP、双向流汇总和SIGTERM收尾均进入journal。受控重启后服务在无人登录和未人工`start`时一次启动成功，服务方式长稳仍待验证。
+- LubanCat-2N已完成非root systemd手工启停和开机自启验收：服务进程使用无登录专用用户，只获得`CAP_NET_RAW`且`NoNewPrivs=1`；静默周期日志、真实ICMP、双向流汇总和SIGTERM收尾均进入journal。受控重启后服务在无人登录和未人工`start`时一次启动成功。systemd 245安全评分基线为`5.2 MEDIUM`，正在区分抓包必需权限与可收紧边界；服务方式长稳仍待验证。
 
 ## 项目目录
 

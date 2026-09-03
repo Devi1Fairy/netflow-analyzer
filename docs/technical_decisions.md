@@ -1187,6 +1187,8 @@ SD卡项目目录：7.2MB
 - 执行`enable`和受控重启后，boot ID发生变化；没有人工`start`时服务已为`enabled`和`active`，`Result=success`、`NRestarts=0`；
 - 新boot中的新PID仍使用专用UID/GID和唯一`CAP_NET_RAW`能力，journal静默报告与再次发送的4个ICMP包均正确；
 - `critical-chain`确认单元排在`network-online.target`之后；该顺序不被解释为互联网或所有接口必然可用，异常网络恢复仍保留单独复审；
+- 目标板systemd 245安全审计基线为`5.2 MEDIUM`；其中宿主网络、`AF_PACKET`和`CAP_NET_RAW`属于抓包必需成本，不能为降低评分而删除；
+- 其余条目已经分为低风险直接候选、需要兼容性实测的地址族/系统调用限制，以及当前收益不足以覆盖复杂度的chroot方案；加固将分批提交和复测，不一次叠加全部选项；
 - 完整命令、Linux概念、故障定位和回滚见[`docs/systemd_deployment.md`](systemd_deployment.md)。
 
 
