@@ -500,7 +500,7 @@ FAT32不保存Linux原生的每文件UID、GID和Unix权限位。分区挂载后
 - `sudo`只能绕过Linux权限检查，不能为FAT32补充其原本不支持的Unix所有权元数据；
 - 排查移动存储权限问题时，应先用`findmnt`或`lsblk -f`确认设备、挂载点、文件系统类型和挂载选项；
 - `dmask`和`fmask`表示“要屏蔽的权限位”，不是最终权限值；
-- 如果需要重启后保持设置，可后续使用分区UUID在`/etc/fstab`中配置挂载选项，避免依赖可能变化的`/dev/mmcblk1p1`设备名；
+- 在普通发行版中可以使用分区UUID和`/etc/fstab`固化挂载，但在厂商镜像上必须先审计`usbmount`、自动扩容和其他启动期存储服务；不能只根据通用Linux经验直接添加条目；
 - 如果项目后续需要符号链接、原生Unix权限或其他Linux文件系统语义，应评估使用ext4；重新格式化会清除数据，不能把它当作无风险的权限修复步骤。
 
 #### 重启后挂载参数丢失导致Git只读
@@ -514,7 +514,53 @@ FAT32不保存Linux原生的每文件UID、GID和Unix权限位。分区挂载后
 
 只执行带`uid`、`gid`、`dmask`和`fmask`的`remount`后，`findmnt`与`stat`仍显示原有参数和`root:root`，因此不能只根据`mount`退出状态判断设置已经生效。本次先离开挂载目录，再完整卸载并按当前`id -u`、`id -g`重新挂载；随后普通用户可以执行`git pull --ff-only`，证明仓库写权限恢复。
 
-本次使用精确仓库例外，没有配置宽泛的`safe.directory '*'`，也没有用`sudo git pull`掩盖权限问题。当前重新挂载只恢复了本次启动中的状态；仍需使用分区UUID把相同选项写入`/etc/fstab`并做重启复测，才能证明挂载权限持久化。
+本次使用精确仓库例外，没有配置宽泛的`safe.directory '*'`，也没有用`sudo git pull`掩盖权限问题。临时重新挂载确实恢复了当前启动中的写权限，但后续实机结果证明：在该厂商镜像上，不能在没有检查启动期存储服务的情况下直接把移动SD卡写入`/etc/fstab`。
+
+#### 固化VFAT挂载时触发厂商自动扩容服务
+
+现象：
+
+为固化SD卡的UID、GID和权限掩码，曾把旧分区UUID `CB8E-AD01`写入`/etc/fstab`并重启。重启后，原项目路径`/media/usb0/Workspace/netflow-analyzer`不存在；同一张卡被自动挂载到`/media/usb1`，文件系统UUID变为`9741-D596`，目录内容为空。用户确认卡上没有项目之外的其他重要数据，项目的权威副本仍在开发电脑和GitHub。
+
+只读排查还发现：
+
+- 镜像中的`usbmount`会为可移动设备选择`/media/usb0`、`/media/usb1`等动态挂载点；
+- 厂商提供的`resize-all.service`在`sysinit.target`启用，执行`/usr/bin/resize-helper`；
+- `resize-helper`不是Debian软件包拥有的标准文件，它逐行读取`/proc/mounts`，而不是只处理板载eMMC根分区；
+- 对该VFAT分区执行调整时，辅助逻辑因缺少`fatresize`进入“备份、`mkfs.vfat`重建、恢复”回退路径；恢复阶段报告无法找到临时备份中的`/media/usb1`，因此新文件系统创建后没有恢复原内容；
+- 脚本使用`set +e`继续执行错误后的命令，末尾又有成功的空命令`:`，所以systemd曾记录`Result=success`。这只表示脚本最终退出码为0，不证明内部备份和恢复成功；
+- 诊断期间还观察到同一设备同时出现在`/media/usb0`和`/media/usb1`。同一文件系统被重复挂载会进一步模糊哪个路径和哪个服务拥有挂载生命周期，不应作为稳定方案。
+
+处置：
+
+1. 删除为旧UUID添加的SD卡`/etc/fstab`条目，不改动系统原有根分区和`/boot`条目；
+2. 完整卸载`/dev/mmcblk1p1`，保持数据卡脱离自动处理链；
+3. 保存`resize-all.service`、`resize-helper`、`disk-helper`和`/tmp/resize-all.log`作为事故证据；
+4. 对当前已经完成扩容的eMMC系统禁用并屏蔽`resize-all.service`；
+5. 后续把Git源码和活动构建树恢复到eMMC的ext4目录，SD卡只在重新初始化和单独验证挂载策略后保存较大的PCAP、CSV或交换数据。
+
+屏蔽后的验证结果：
+
+```text
+systemctl is-enabled resize-all.service
+masked
+
+/etc/systemd/system/resize-all.service -> /dev/null
+sysinit.target.wants/resize-all.service 不存在
+
+systemctl start resize-all.service
+Failed to start resize-all.service: Unit resize-all.service is masked.
+```
+
+这里`disable`和`mask`不是同一层防护：`disable`移除开机目标对服务的依赖链接，`mask`再把管理员层单元名链接到`/dev/null`，使手工启动和其他单元依赖启动也被拒绝。该操作可通过`systemctl unmask`恢复，但在确认厂商脚本只处理精确目标之前不应恢复。
+
+经验：
+
+- 修改`/etc/fstab`前，不仅要确认UUID和挂载选项，还要检查目标镜像是否存在自动挂载、自动格式化或自动扩容服务；
+- 服务名或描述写着“internal partitions”不能替代代码审计，应确认脚本实际枚举的设备范围；
+- Shell脚本中的`set +e`会让中间失败继续执行，最终退出状态可能被后续成功命令覆盖，因此必须结合脚本日志和文件系统结果判断；
+- Git工作树、CMake构建树和可执行文件优先放在ext4；VFAT更适合作为经过隔离的大容量数据交换介质；
+- SD卡重新格式化、分区或恢复属于破坏性操作。即使本次没有其他重要数据，后续仍必须先确认设备名、备份和恢复路径，再执行任何写操作。
 
 ### 5.2 CTest版本与VFAT执行权限导致板上测试无法启动
 
@@ -551,6 +597,8 @@ CTest仍然显示源码根目录为测试目录，并报告`No tests were found`
 ```bash
 ctest --output-on-failure
 ```
+
+以上是当时用于排除VFAT执行权限问题的过渡布局。后续SD卡事故发生后，当前决策已经调整为把源码和活动构建树都放在eMMC ext4；这里保留旧路径是为了完整记录原故障如何被定位。
 
 验证结果：
 

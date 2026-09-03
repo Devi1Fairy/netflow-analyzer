@@ -363,7 +363,7 @@ sudo systemctl enable netflow-analyzer
 | `enable --now` | 立即启动 | 设置自动启动 |
 | `disable --now` | 立即停止 | 取消自动启动 |
 
-首次部署应先`start`完成验收，不要直接`enable --now`。当前已经完成手工启停，开机自动启动和重启恢复留给下一步验证。
+首次部署应先`start`完成验收，不要直接`enable --now`。当前已经依次完成手工启停、开机自动启动和重启恢复；该顺序仍作为后续设备部署时的标准流程。
 
 ## 6. Linux capability权限边界
 
@@ -701,3 +701,78 @@ sudo systemctl start netflow-analyzer
 3. 根据长期日志需求决定journal采用易失还是持久存储及其容量上限。
 
 地址族白名单和系统调用拒绝组不再作为当前必做项；只有在出现明确安全需求时才单独立项，避免为了评分破坏libpcap的数据面。
+
+## 15. 目标板存储服务冲突与隔离
+
+本节处理的是LubanCat镜像自身的启动期存储服务，不是`netflow-analyzer.service`故障。记录在部署手册中，是因为它会影响源码、部署包、PCAP和验证日志的保存位置，也会影响设备重启是否安全。
+
+### 15.1 事故边界
+
+目标板同时存在两套会接触SD卡的机制：
+
+- `usbmount`自动把可移动分区挂到`/media/usb0`、`/media/usb1`等动态路径；
+- 厂商`resize-all.service`在启动阶段执行`/usr/bin/resize-helper`，后者逐行读取`/proc/mounts`并调用`disk-helper`处理已挂载分区。
+
+把SD卡旧UUID写入`/etc/fstab`后重启，VFAT分区进入了辅助脚本的重新创建文件系统回退路径，恢复阶段失败，UUID从`CB8E-AD01`变为`9741-D596`且原目录为空。详细证据链见[`problem_log.md`](problem_log.md)第5.1节。
+
+这次事故有两个容易误判的状态：
+
+1. `resize-all.service`显示`Result=success`，只说明`ExecStart`脚本最终返回0；脚本使用`set +e`且末尾是成功的`:`，中间的备份或恢复失败不会自动成为服务失败状态；
+2. `/media/usb0`目录存在，不代表SD卡挂载在那里。必须用`findmnt -S /dev/mmcblk1p1`或`findmnt -T 路径`确认真实设备与挂载点。
+
+### 15.2 已实施的隔离
+
+当前eMMC根文件系统已经扩展到对应分区容量，不再需要让该一次性扩容脚本在每次启动时扫描所有挂载分区。事故证据保存后执行了：
+
+```bash
+sudo systemctl disable --now resize-all.service
+sudo systemctl mask resize-all.service
+sudo systemctl daemon-reload
+```
+
+三条命令作用不同：
+
+- `disable`移除`sysinit.target.wants/resize-all.service`启动依赖，不再随目标自动启动；
+- `--now`要求同时停止当前服务；该服务是一次性任务，当前通常已经处于`inactive`；
+- `mask`在管理员配置层创建`/etc/systemd/system/resize-all.service -> /dev/null`，连手工`start`或其他单元依赖启动也会被拒绝；
+- `daemon-reload`让PID 1重新加载磁盘上的单元与依赖关系。
+
+验证命令与本次结果：
+
+```bash
+systemctl is-enabled resize-all.service
+# masked
+
+systemctl status --no-pager --full resize-all.service
+# Loaded: masked
+# Active: inactive (dead)
+
+ls -l \
+    /etc/systemd/system/resize-all.service \
+    /etc/systemd/system/sysinit.target.wants/resize-all.service \
+    2>&1
+# resize-all.service -> /dev/null
+# sysinit.target.wants中的链接不存在
+
+sudo systemctl start resize-all.service
+# Failed to start ... Unit resize-all.service is masked.
+```
+
+最后一条故意启动失败是隔离验收，不是新故障：它证明即使管理员误执行`start`，屏蔽层仍会阻止脚本运行。
+
+### 15.3 当前存储布局
+
+- 开发电脑和GitHub继续作为源码权威副本；
+- 板端Git工作树将恢复到`/home/cat/workspace/netflow-analyzer`，活动构建树保留在`/home/cat/build`，二者都位于eMMC ext4；
+- 当前eMMC根文件系统约7.0GB，已用5.4GB、可用1.4GB。项目源码和活动构建树只有MB量级，可以容纳；
+- SD卡保持卸载，重新初始化和验证唯一挂载管理者之前，不在其中恢复Git仓库；
+- 后续SD卡只保存较大的PCAP、CSV、模型数据集或交换文件，不直接运行ELF，也不由`usbmount`、`fstab`和手工命令同时管理。
+
+如未来升级镜像后确实需要恢复厂商扩容逻辑，以下命令只是回滚机制，不是当前步骤：
+
+```bash
+sudo systemctl unmask resize-all.service
+sudo systemctl enable resize-all.service
+```
+
+执行回滚前必须先移除所有数据卡，重新阅读脚本并确认处理目标；不能仅因为操作可逆就直接取消屏蔽。

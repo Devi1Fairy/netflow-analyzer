@@ -57,7 +57,7 @@
 - LubanCat-2N完成受控重启验收：不同boot ID证明系统实际重启，无人工启动时服务已为`enabled`和`active`，一次启动成功且没有失败重试；新进程继续只获得`CAP_NET_RAW`，静默周期日志和重启后的真实ICMP均正确。
 - 记录LubanCat-2N systemd 245的服务安全评分基线`5.2 MEDIUM`，区分宿主网络、`AF_PACKET`和`CAP_NET_RAW`等抓包必需成本，以及命名空间、设备、时钟、内核日志、实时调度、W^X和umask等可继续收紧的边界。
 - LubanCat-2N应用第一批低风险systemd沙箱配置后，非root身份、唯一`CAP_NET_RAW`、静默报告和真实ICMP保持正常，安全评分由`5.2 MEDIUM`降为`3.7 OK`；记录systemd 245对`ProtectClock`的评分限制，不继续为追求分数扩大当前安全工作范围。
-- 记录板端重启后VFAT挂载恢复为`root:root`导致Git先报`dubious ownership`、随后无法写入`FETCH_HEAD`：精确`safe.directory`只解决信任检查，完整按当前UID/GID重新挂载才恢复写权限，持久化`/etc/fstab`仍待完成。
+- 记录板端VFAT权限和启动期存储事故：精确`safe.directory`只解决Git信任检查，重新挂载才能恢复写权限；把旧UUID写入`/etc/fstab`后的重启又暴露`usbmount`与厂商`resize-all.service`的冲突，辅助脚本重建VFAT但恢复失败。事故证据已保存，旧挂载条目已移除，数据卡保持卸载，已完成eMMC扩容的目标板禁用并屏蔽该服务；板端源码改为恢复到eMMC ext4。
 
 ## [0.2.0] - 2026-08-26
 
