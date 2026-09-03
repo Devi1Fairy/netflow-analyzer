@@ -554,6 +554,55 @@ Failed to start resize-all.service: Unit resize-all.service is masked.
 
 这里`disable`和`mask`不是同一层防护：`disable`移除开机目标对服务的依赖链接，`mask`再把管理员层单元名链接到`/dev/null`，使手工启动和其他单元依赖启动也被拒绝。该操作可通过`systemctl unmask`恢复，但在确认厂商脚本只处理精确目标之前不应恢复。
 
+#### 修正usbmount配置并恢复数据盘
+
+隔离厂商扩容服务后，重新插入SD卡时，`usbmount`能够把它挂载到`/media/usb0`，但目录仍显示为`root:root`，普通用户的`test -w /media/usb0`返回1。检查`/etc/usbmount/usbmount.conf`发现，文件中原有三行配置同时存在三个问题：
+
+- 变量名写成了`FS_MOUNTOPATIONS`，缺少`OPTIONS`中的字母`I`；
+- 值使用中文弯引号`“”`，不是Shell配置需要的ASCII双引号`"`；
+- VFAT、NTFS和exFAT分别重复赋值同一个变量，即使拼写正确，也只会保留最后一次赋值。
+
+本机当前只需要为VFAT数据卡设置权限，因此保留通用安全选项，并把文件系统特定选项改为一个ASCII引号包围的赋值：
+
+```bash
+MOUNTOPTIONS="sync,noexec,nodev,noatime,nodiratime"
+FS_MOUNTOPTIONS="-fstype=vfat,uid=1000,gid=1000,dmask=0022,fmask=0133"
+```
+
+这里没有同时恢复`/etc/fstab`条目，也没有再用手工`mount`长期管理同一设备；`usbmount`是当前唯一挂载生命周期所有者。`nodev`禁止把卡内特殊文件解释为设备，`noexec`禁止直接从数据卡执行程序，`uid`和`gid`把VFAT统一映射给登录用户`cat`，`dmask=0022`和`fmask=0133`分别得到目录`0755`与普通文件`0644`。`sync`让写入更及时提交到介质，但会降低性能并增加写放大，后续大流量PCAP写入前需要单独评估。
+
+重启前先离开挂载目录并完整卸载，然后用只读模式检查文件系统：
+
+```bash
+cd /home/cat
+sync
+sudo umount /media/usb0
+sudo fsck.vfat -n /dev/mmcblk1p1
+```
+
+`-n`表示只检查、不执行修复；本次输出为`1 files, 1/1907291 clusters`，退出状态为0。随后保持SD卡插入并重启，验证结果为：
+
+```text
+resize-all.service: masked
+/dev/mmcblk1p1 -> /media/usb0，只有一个挂载记录
+FSTYPE=vfat
+uid=1000,gid=1000,fmask=0133,dmask=0022
+nodev,noexec,sync,errors=remount-ro
+/media/usb0 owner=cat(1000) group=cat(1000) mode=0755
+test -w /media/usb0: 0
+```
+
+最后以普通用户、且不使用`sudo`完成受控写入验证：创建临时文件，写入31字节文本，执行`sync`，用`stat`确认其为`cat:cat`和`0644`，读取内容一致，再删除临时文件并确认不存在。保留的数据目录为：
+
+```text
+/media/usb0/netflow-analyzer-data/pcap
+/media/usb0/netflow-analyzer-data/csv
+/media/usb0/netflow-analyzer-data/datasets
+/media/usb0/netflow-analyzer-data/logs
+```
+
+这证明当前挂载策略同时通过了配置解析、跨重启持久性、唯一挂载、文件系统只读检查和实际读写链路验证。它不改变前面的存储职责决定：Git工作树、CMake构建树和ELF继续留在eMMC ext4，SD卡只作为大容量数据盘。
+
 经验：
 
 - 修改`/etc/fstab`前，不仅要确认UUID和挂载选项，还要检查目标镜像是否存在自动挂载、自动格式化或自动扩容服务；

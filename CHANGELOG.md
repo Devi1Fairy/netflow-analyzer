@@ -60,6 +60,7 @@
 - 记录板端VFAT权限和启动期存储事故：精确`safe.directory`只解决Git信任检查，重新挂载才能恢复写权限；把旧UUID写入`/etc/fstab`后的重启又暴露`usbmount`与厂商`resize-all.service`的冲突，辅助脚本重建VFAT但恢复失败。事故证据已保存，旧挂载条目已移除，数据卡保持卸载，已完成eMMC扩容的目标板禁用并屏蔽该服务；板端源码改为恢复到eMMC ext4。
 - 记录一次真实的systemd启动恢复：第一次进程打开`eth0`时，`ETHTOOL_GET_TS_INFO`查询暂时返回`EBUSY`并非零退出；`Restart=on-failure`等待2秒后启动第二个进程，成功打开接口并持续发布周期报告。`NRestarts=1`保留失败恢复历史，连续失败的启动限速仍待受控验证。
 - 使用Git Bundle和SSH在不依赖板端GitHub连接的情况下恢复完整仓库：`feature/nonroot-service`及提交历史进入eMMC ext4，`origin`恢复为GitHub HTTPS地址；新建Debug构建目录而不复用旧SD卡绝对路径缓存，当前18项ARM64 CTest全部通过。源码与构建树合计约5.6MB，当前1.4GB可用空间足以承载活动开发文件。
+- 完成SD卡数据盘恢复验收：修正`usbmount.conf`中拼错且使用弯引号的`FS_MOUNTOPTIONS`配置，以`usbmount`作为唯一挂载管理者；只读VFAT检查返回0，跨重启后`/dev/mmcblk1p1`唯一挂载到`/media/usb0`，普通用户以`0644/0755`权限完成创建、写入、同步、读取和删除测试。源码与构建继续留在eMMC ext4，SD卡只保存PCAP、CSV、数据集和日志。
 
 ## [0.2.0] - 2026-08-26
 

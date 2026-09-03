@@ -789,8 +789,8 @@ sudo systemctl start resize-all.service
 - 开发电脑和GitHub继续作为源码权威副本；
 - 板端Git工作树已恢复到`/home/cat/workspace/netflow-analyzer`，新Debug构建树位于`/home/cat/build/netflow-analyzer-debug-emmc`，二者都位于eMMC ext4；
 - 当前eMMC根文件系统约7.0GB，已用5.4GB、可用1.4GB。源码约2.4MB，Debug构建树约3.2MB，合计约5.6MB；
-- SD卡保持卸载，重新初始化和验证唯一挂载管理者之前，不在其中恢复Git仓库；
-- 后续SD卡只保存较大的PCAP、CSV、模型数据集或交换文件，不直接运行ELF，也不由`usbmount`、`fstab`和手工命令同时管理。
+- SD卡`/dev/mmcblk1p1`当前由`usbmount`唯一管理，跨重启自动挂载到`/media/usb0`；不再为它添加`/etc/fstab`条目，也不同时保留手工挂载；
+- SD卡只保存较大的PCAP、CSV、模型数据集和日志，不恢复Git仓库、不放活动构建树，也不直接运行ELF。
 
 如未来升级镜像后确实需要恢复厂商扩容逻辑，以下命令只是回滚机制，不是当前步骤：
 
@@ -801,7 +801,60 @@ sudo systemctl enable resize-all.service
 
 执行回滚前必须先移除所有数据卡，重新阅读脚本并确认处理目标；不能仅因为操作可逆就直接取消屏蔽。
 
-### 15.4 eMMC工作树恢复验收
+### 15.4 SD数据盘自动挂载与读写验收
+
+`usbmount`初始配置中的文件系统特定变量被误写为`FS_MOUNTOPATIONS`，值还使用了中文弯引号并分三行重复赋值，因此VFAT权限选项没有生效。当前`/etc/usbmount/usbmount.conf`保留：
+
+```bash
+MOUNTOPTIONS="sync,noexec,nodev,noatime,nodiratime"
+FS_MOUNTOPTIONS="-fstype=vfat,uid=1000,gid=1000,dmask=0022,fmask=0133"
+```
+
+这些参数的作用是：
+
+- `uid=1000,gid=1000`：把不保存Unix所有权的VFAT统一映射给`cat:cat`；
+- `dmask=0022`：目录表现为`0755`；
+- `fmask=0133`：普通文件表现为`0644`，不授予执行位；
+- `noexec,nodev`：把介质约束为数据盘，不从中执行程序，也不接受卡内设备节点；
+- `sync`：每次写入更及时提交到介质，代价是速度和闪存写入量，持续抓取大型PCAP前应另测吞吐和寿命影响。
+
+修改后没有直接假定配置有效。先卸载分区，再执行：
+
+```bash
+sudo fsck.vfat -n /dev/mmcblk1p1
+```
+
+`-n`只读检查返回0。保持卡插入并重启后，用以下三类检查分别验证服务隔离、挂载来源和实际访问能力：
+
+```bash
+systemctl is-enabled resize-all.service
+
+findmnt -n \
+    -S /dev/mmcblk1p1 \
+    -o TARGET,SOURCE,FSTYPE,OPTIONS
+
+stat -c 'path=%n owner=%U(%u) group=%G(%g) mode=%A' \
+    /media/usb0
+
+test -w /media/usb0
+printf 'SD mount writable: %s\n' "$?"
+```
+
+实测`resize-all.service`仍为`masked`；设备只出现一次并挂在`/media/usb0`，包含`uid=1000,gid=1000,fmask=0133,dmask=0022,noexec,nodev`；挂载根目录显示`cat:cat`和`0755`，写权限状态为0。
+
+最终在不使用`sudo`的情况下完成了创建、写入、`sync`、读取和删除临时文件的完整链路。临时文件显示为`cat:cat`和`0644`，读取内容与写入内容一致，删除后`test ! -e`返回0。当前保留以下数据目录：
+
+```text
+/media/usb0/netflow-analyzer-data/
+├── pcap/
+├── csv/
+├── datasets/
+└── logs/
+```
+
+这次验证说明SD卡已经可以重新投入使用，但用途限定为数据存储。`noexec`导致卡内ELF不能直接运行是设计结果，不是权限故障。
+
+### 15.5 eMMC工作树恢复验收
 
 开发电脑通过`git bundle create --all`生成离线Git传输文件，再用`scp`发送到目标板。板端执行：
 

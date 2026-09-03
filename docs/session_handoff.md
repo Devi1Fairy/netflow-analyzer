@@ -1,6 +1,6 @@
 # Netflow Analyzer会话交接文档
 
-最后更新：2026-09-02（Asia/Shanghai）
+最后更新：2026-09-03（Asia/Shanghai）
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
@@ -23,7 +23,7 @@ cmake -E chdir build ctest --output-on-failure
 
 - 当前功能分支：`feature/nonroot-service`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前分支已提交无上限实时模式、验收文档、CMake安装规则、非root systemd单元和服务日志行缓冲；记录本文档时最新已推送提交为`740d5ab fix(output): stream service logs promptly`，实际接手时仍须以`git log`为准；
+- 当前分支已提交无上限实时模式、验收文档、CMake安装规则、非root systemd单元、服务日志行缓冲、沙箱加固和eMMC工作树恢复记录；开始本轮文档更新时最新已推送提交为`7526fcc docs(board): record eMMC repository recovery`，实际接手时仍须以`git log`为准；
 - TCP状态机、流记录接入、终端显示、CSV字段和确定性三次握手验收均已提交；接手时仍须先检查工作区，不能覆盖用户后续未提交改动；
 - 当前正式版本宏为`0.2.0`；
 - 已有标签：`v0.0.1`、`v0.1.0`、`v0.2.0`；
@@ -37,7 +37,7 @@ cmake -E chdir build ctest --output-on-failure
 - 提交`740d5ab`的官方SDK ARM64部署包已在LubanCat-2N完成首次非root systemd手工启停：进程使用专用用户，能力仅为`CAP_NET_RAW`，`NoNewPrivs=1`；真实4包ICMP得到1条双向流且两个drop字段为0，SIGTERM正常收尾。
 - `systemctl enable`后的受控重启也已通过：boot ID变化，无人工`start`时服务已为`enabled`和`active`，一次启动成功且`NRestarts=0`；新PID保持相同专用身份和唯一`CAP_NET_RAW`能力，静默报告与重启后ICMP正确。
 - 目标板systemd版本为`245 (245.4-4ubuntu3.24)`；提交`dc542ad`的第一批低风险沙箱配置保持非root身份、唯一`CAP_NET_RAW`、静默报告和真实ICMP正常，安全评分由`5.2 MEDIUM`降为`3.7 OK`。`ProtectClock=yes`仍被旧评分器扣分，不继续以追求分数作为项目主线。
-- 开发板VFAT持久化实验暴露了厂商存储服务风险：`usbmount`动态挂载数据卡，`resize-all.service`又遍历`/proc/mounts`；辅助脚本重建VFAT后恢复失败，UUID由`CB8E-AD01`变为`9741-D596`，原板端工作树丢失。项目权威副本仍在开发电脑和GitHub；旧`fstab`条目已移除，数据卡已卸载，`resize-all.service`已禁用并屏蔽。工作树随后通过Git Bundle恢复到eMMC ext4，新构建路径下18项板端CTest全部通过。
+- 开发板VFAT持久化实验暴露了厂商存储服务风险：`usbmount`动态挂载数据卡，`resize-all.service`又遍历`/proc/mounts`；辅助脚本重建VFAT后恢复失败，UUID由`CB8E-AD01`变为`9741-D596`，原板端工作树丢失。项目权威副本仍在开发电脑和GitHub；旧`fstab`条目已移除，`resize-all.service`已禁用并屏蔽。工作树随后通过Git Bundle恢复到eMMC ext4，新构建路径下18项板端CTest全部通过；修正`usbmount`配置后，SD卡已跨重启唯一挂载到`/media/usb0`并通过普通用户读写验收，只承担大容量数据存储。
 - 未插入SD卡的后续重启确认屏蔽跨boot保持；同一boot中分析器第一次打开`eth0`时，`ETHTOOL_GET_TS_INFO`暂时返回`EBUSY`，systemd在2秒后自动重启，第二个进程成功运行并持续输出周期报告。`NRestarts=1`是一次真实恢复记录，连续失败与启动限速仍待验证。
 
 如果实际状态与上面不同，应先查看用户是否在新会话开始前继续修改了代码，不要覆盖未提交改动。
@@ -1239,7 +1239,7 @@ LubanCat官方SDK交叉产物实测：
 - 当前boot的静默报告和虚拟机再次产生的4个ICMP包均正常进入journal。
 - systemd 245安全审计基线为`5.2 MEDIUM`；报告已按业务必需、低风险候选和必须实验三类记录，不能为降低分数启用`PrivateNetwork=yes`或禁止`AF_PACKET`；
 
-第一批低风险沙箱加固和评分复测已经完成。其后的VFAT持久化实验已经停止：板端厂商`resize-all.service`会扫描`/proc/mounts`，本次对数据卡进入了重建文件系统但恢复失败的路径。旧`fstab`条目已删除，数据卡已卸载，事故证据已保存；该服务已同时`disable`和`mask`，且后续boot仍为`masked`。同一boot又自然观察到一次接口瞬态繁忙：第一次进程因`ETHTOOL_GET_TS_INFO`返回`EBUSY`退出，systemd在2秒后启动第二个进程并成功恢复。工作树现已通过Git Bundle恢复到eMMC ext4，新Debug构建路径下18项CTest全部通过。下一步验证连续失败的启动限速和服务方式长稳。地址族与系统调用限制不再作为当前必做项。手工启停、开机自启和通用加固已经完成，但在连续异常边界与长稳通过前不能宣称生产级部署完成。
+第一批低风险沙箱加固和评分复测已经完成。其后的VFAT持久化实验触发了厂商`resize-all.service`重建数据卡且恢复失败；旧`fstab`条目已删除，事故证据已保存，该服务已同时`disable`和`mask`，且后续boot仍为`masked`。工作树已经通过Git Bundle恢复到eMMC ext4，新Debug构建路径下18项CTest全部通过。修正`usbmount.conf`后，SD卡又完成只读文件系统检查、跨重启唯一自动挂载和普通用户创建/写入/读取/删除验证，现在只用作PCAP、CSV、数据集和日志的数据盘。同一阶段还自然观察到一次接口瞬态繁忙：第一次进程因`ETHTOOL_GET_TS_INFO`返回`EBUSY`退出，systemd在2秒后启动第二个进程并成功恢复。下一步验证连续失败的启动限速和服务方式长稳。地址族与系统调用限制不再作为当前必做项。手工启停、开机自启和通用加固已经完成，但在连续异常边界与长稳通过前不能宣称生产级部署完成。
 
 ## 19. ARM Linux开发板计划
 
@@ -1252,12 +1252,14 @@ LubanCat官方SDK交叉产物实测：
 
 当前已确认：
 
-- SD卡分区为`/dev/mmcblk1p1`，以`vfat`（FAT32）格式使用；事故前曾挂载在`/media/usb0`，重启后被`usbmount`动态挂到`/media/usb1`；
+- SD卡分区为`/dev/mmcblk1p1`，以`vfat`（FAT32）格式使用；事故期间曾因重复管理出现在`/media/usb0`和`/media/usb1`，当前由`usbmount`唯一挂载到`/media/usb0`；
 - 因VFAT不保存Linux原生UID、GID和权限位，直接对挂载内容执行`chown`返回`Operation not permitted`；
 - 通过挂载时指定当前用户对应的`uid`、`gid`、`dmask`和`fmask`，已经解决项目目录无法创建的问题；
 - 后续尝试把旧UUID写入`/etc/fstab`固化权限时，厂商`resize-all.service`扫描了`/proc/mounts`中的数据卡；其VFAT回退路径重建文件系统但恢复失败，UUID由`CB8E-AD01`变为`9741-D596`，原板端工作树已不在卡中；
-- 用户确认卡上没有项目之外的其他重要数据，开发电脑与GitHub仍保存权威仓库；旧SD卡`fstab`条目已删除，卡已完整卸载；
+- 用户确认卡上没有项目之外的其他重要数据，开发电脑与GitHub仍保存权威仓库；旧SD卡`fstab`条目已删除，不再与`usbmount`重复管理；
 - `resize-all.service`已禁用并屏蔽：`is-enabled`返回`masked`，`/etc/systemd/system/resize-all.service`指向`/dev/null`，启动依赖不存在，手工`start`被拒绝；
+- `usbmount.conf`中拼错、使用弯引号且重复赋值的`FS_MOUNTOPTIONS`已经修正；重启后挂载选项包含`uid=1000,gid=1000,fmask=0133,dmask=0022,noexec,nodev`，根目录为`cat:cat`和`0755`；
+- `fsck.vfat -n /dev/mmcblk1p1`只读检查返回0；普通用户完成临时文件创建、31字节写入、同步、读取和删除，文件呈现`0644`，保留`pcap`、`csv`、`datasets`和`logs`四个数据目录；
 - 板端项目源码已通过Git Bundle恢复到eMMC的`/home/cat/workspace/netflow-analyzer`，不再把Git工作树放在VFAT；
 - 开发板使用CMake/CTest 3.16.3，不支持3.20才加入的`ctest --test-dir`，测试需要先进入构建目录；
 - VFAT构建树中的ELF文件因执行权限被屏蔽而无法启动，现已把构建树改到`/home/cat/build/netflow-analyzer-debug`；
@@ -1318,7 +1320,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`满表策略的单次扫描原位替换，以及TCP握手/关闭基本状态跟踪和终端/CSV输出已经完成。x86_64与LubanCat-2N ARM64原生Debug构建的18项CTest全部通过；板端`lo`真实HTTP/1.0连接以12个`complete`包得到1条`closed` TCP流，两个drop字段均为0。实时`--count`已改为可选，无上限模式的静默报告、ICMP处理和`SIGTERM`正常收尾已完成验收。LubanCat-2N已完成非root systemd手工启停、开机自启和第一批低风险沙箱加固，专用用户只获得`CAP_NET_RAW`，systemd 245安全评分由`5.2 MEDIUM`降为`3.7 OK`。一次VFAT持久化实验触发厂商`resize-all.service`重建数据卡且恢复失败；旧`fstab`条目已移除，数据卡已卸载，该服务已禁用并跨boot保持屏蔽。同一boot中分析器第一次因接口`ETHTOOL_GET_TS_INFO`暂时返回`EBUSY`而退出，2秒后由systemd自动重启成功。板端工作树已通过Git Bundle恢复到eMMC ext4，新Debug构建目录中的18项CTest全部通过。下一步验证连续失败启动限速和服务长稳。
+周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`满表策略的单次扫描原位替换，以及TCP握手/关闭基本状态跟踪和终端/CSV输出已经完成。x86_64与LubanCat-2N ARM64原生Debug构建的18项CTest全部通过；板端`lo`真实HTTP/1.0连接以12个`complete`包得到1条`closed` TCP流，两个drop字段均为0。实时`--count`已改为可选，无上限模式的静默报告、ICMP处理和`SIGTERM`正常收尾已完成验收。LubanCat-2N已完成非root systemd手工启停、开机自启和第一批低风险沙箱加固，专用用户只获得`CAP_NET_RAW`，systemd 245安全评分由`5.2 MEDIUM`降为`3.7 OK`。一次VFAT持久化实验触发厂商`resize-all.service`重建数据卡且恢复失败；旧`fstab`条目已移除，该服务已禁用并跨boot保持屏蔽。板端工作树已通过Git Bundle恢复到eMMC ext4，新Debug构建目录中的18项CTest全部通过；SD卡已由修正配置后的`usbmount`唯一自动挂载，并通过只读文件系统检查和普通用户读写验证，只承担PCAP、CSV、数据集和日志存储。同一阶段分析器第一次因接口`ETHTOOL_GET_TS_INFO`暂时返回`EBUSY`而退出，2秒后由systemd自动重启成功。下一步验证连续失败启动限速和服务长稳。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1360,4 +1362,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流现在按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及CSV中使用统一名称；确定性3包握手PCAP与状态不变量测试已纳入18项CTest，x86_64与LubanCat-2N ARM64原生Debug构建均全部通过。板端`lo`真实HTTP/1.0连接进一步证明12个完整TCP包能正确聚合为1条双向流并最终进入`closed`，两个drop字段均为0。实时`--count`已改为可选，无上限模式已通过静默、ICMP和`SIGTERM`正常收尾验收，为systemd服务化提供了正确的持续运行语义。CMake安装规则、专用用户systemd单元、默认参数模板和stdout行缓冲已经完成；LubanCat-2N非root手工启停、开机自启和第一批低风险沙箱加固已验证专用账户、仅`CAP_NET_RAW`、journal实时日志、真实ICMP和SIGTERM正常收尾，systemd 245评分由`5.2 MEDIUM`降为`3.7 OK`。两种既有ARM64交叉构建和单次扫描优化版官方SDK产物均通过此前板端实际运行，Python验收脚本兼容板端Python 3.8.10。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳。SD卡事故的证据与隔离结果已记录，后续boot中一次接口`EBUSY`也由systemd在2秒后自动恢复；板端工作树已通过Git Bundle恢复到eMMC ext4，新Debug构建目录中的18项CTest全部通过。下一步验证连续失败启动限速与服务长稳，当前仍没有接入`labs/thread_pipeline`。
+应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流现在按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及CSV中使用统一名称；确定性3包握手PCAP与状态不变量测试已纳入18项CTest，x86_64与LubanCat-2N ARM64原生Debug构建均全部通过。板端`lo`真实HTTP/1.0连接进一步证明12个完整TCP包能正确聚合为1条双向流并最终进入`closed`，两个drop字段均为0。实时`--count`已改为可选，无上限模式已通过静默、ICMP和`SIGTERM`正常收尾验收，为systemd服务化提供了正确的持续运行语义。CMake安装规则、专用用户systemd单元、默认参数模板和stdout行缓冲已经完成；LubanCat-2N非root手工启停、开机自启和第一批低风险沙箱加固已验证专用账户、仅`CAP_NET_RAW`、journal实时日志、真实ICMP和SIGTERM正常收尾，systemd 245评分由`5.2 MEDIUM`降为`3.7 OK`。两种既有ARM64交叉构建和单次扫描优化版官方SDK产物均通过此前板端实际运行，Python验收脚本兼容板端Python 3.8.10。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳。SD卡事故的证据、隔离结果和最终恢复验收均已记录；`resize-all.service`跨重启保持屏蔽，SD数据盘由`usbmount`唯一管理并通过普通用户完整读写链路。后续boot中一次接口`EBUSY`也由systemd在2秒后自动恢复；板端工作树已通过Git Bundle恢复到eMMC ext4，新Debug构建目录中的18项CTest全部通过。下一步验证连续失败启动限速与服务长稳，当前仍没有接入`labs/thread_pipeline`。

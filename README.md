@@ -76,7 +76,7 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 - 尚未实现规则异常检测、机器学习、Qt界面或云端展示；
 - ARM Linux开发板已完成原生Debug/Release构建、当前18项CTest、离线跨平台一致性、两种交叉产物、物理网卡抓包、真实TCP完整关闭、单流/多流性能、满载边界、流表探测成本和10分钟长稳基线；最新官方SDK产物又完成单次满表扫描优化复测，300个UDP新流对应300次探测操作、44次最旧流淘汰、256条最终流和零drop。
 - LubanCat-2N已完成非root systemd手工启停、开机自启和第一批低风险沙箱加固：服务进程使用无登录专用用户，只获得`CAP_NET_RAW`且`NoNewPrivs=1`；静默周期日志、真实ICMP、双向流汇总和SIGTERM收尾均进入journal。一次重启中接口时间戳能力查询短暂返回`EBUSY`，`Restart=on-failure`等待2秒后成功恢复并持续运行；systemd 245安全评分由`5.2 MEDIUM`降为`3.7 OK`，连续失败边界和服务长稳仍待验证。
-- 目标镜像的`resize-all.service`会扫描`/proc/mounts`中的已挂载分区；一次SD卡持久化挂载实验触发VFAT重建且恢复失败。该服务现已禁用、屏蔽并通过跨boot验证；板端Git工作树已通过Git Bundle恢复到eMMC ext4，新构建目录中的18项CTest全部通过。
+- 目标镜像的`resize-all.service`会扫描`/proc/mounts`中的已挂载分区；一次SD卡持久化挂载实验触发VFAT重建且恢复失败。该服务现已禁用、屏蔽并通过跨boot验证；板端Git工作树已通过Git Bundle恢复到eMMC ext4，新构建目录中的18项CTest全部通过。修正`usbmount`配置后，数据卡由唯一挂载管理者以`uid=1000,gid=1000,fmask=0133,dmask=0022,noexec`自动挂载，普通用户读写测试通过；SD卡只承担PCAP、CSV、数据集和日志存储。
 
 ## 项目目录
 
