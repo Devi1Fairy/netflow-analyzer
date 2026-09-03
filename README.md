@@ -76,7 +76,7 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 - 尚未实现规则异常检测、机器学习、Qt界面或云端展示；
 - ARM Linux开发板已完成原生Debug/Release构建、当前18项CTest、离线跨平台一致性、两种交叉产物、物理网卡抓包、真实TCP完整关闭、单流/多流性能、满载边界、流表探测成本和10分钟长稳基线；最新官方SDK产物又完成单次满表扫描优化复测，300个UDP新流对应300次探测操作、44次最旧流淘汰、256条最终流和零drop。
 - LubanCat-2N已完成非root systemd手工启停、开机自启和第一批低风险沙箱加固：服务进程使用无登录专用用户，只获得`CAP_NET_RAW`且`NoNewPrivs=1`；静默周期日志、真实ICMP、双向流汇总和SIGTERM收尾均进入journal。一次重启中接口时间戳能力查询短暂返回`EBUSY`，`Restart=on-failure`等待2秒后成功恢复并持续运行；systemd 245安全评分由`5.2 MEDIUM`降为`3.7 OK`，连续失败边界和服务长稳仍待验证。
-- 目标镜像的`resize-all.service`会扫描`/proc/mounts`中的已挂载分区；一次SD卡持久化挂载实验触发VFAT重建且恢复失败。该服务现已禁用并屏蔽，板端Git工作树将恢复到eMMC ext4，SD卡在重新初始化和隔离挂载策略前保持卸载。
+- 目标镜像的`resize-all.service`会扫描`/proc/mounts`中的已挂载分区；一次SD卡持久化挂载实验触发VFAT重建且恢复失败。该服务现已禁用、屏蔽并通过跨boot验证；板端Git工作树已通过Git Bundle恢复到eMMC ext4，新构建目录中的18项CTest全部通过。
 
 ## 项目目录
 
@@ -351,19 +351,19 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 
 LubanCat-2N已经完成ARM64原生Debug/Release构建、当前18项板端CTest、确定性离线PCAP端到端验收，以及来自VMware NAT虚拟机的物理网卡ICMP实时抓包。新增TCP状态功能也已在`lo`上通过真实HTTP/1.0连接验收：应用处理12个完整TCP包，聚合为1条双向流并最终输出`tcp_state=closed`，两个drop字段均为0。板端Python 3.8.10最初无法解释Python 3.9才支持的`list[tuple[...]]`类型注解；验收脚本改用`typing.List`和`typing.Tuple`后，目标测试及全量18项CTest均通过。
 
-板载系统位于容量8GB的eMMC；当前根文件系统约7.0GB，已用5.4GB、可用1.4GB。一次为VFAT SD卡固化挂载权限的实验暴露了目标镜像中`usbmount`与`resize-all.service`的冲突：扩容辅助脚本扫描已挂载分区并重建了VFAT，但恢复失败。该服务现已禁用并屏蔽；源码权威副本仍在开发电脑和GitHub，板端工作树下一步恢复到`/home/cat/workspace/netflow-analyzer`的ext4目录。项目源码与活动构建树只有MB量级，可以放入eMMC；PCAP、CSV和模型数据集等大文件在SD卡重新初始化并验证唯一挂载策略后再迁入。
+板载系统位于容量8GB的eMMC；当前根文件系统约7.0GB，已用5.4GB、可用1.4GB。一次为VFAT SD卡固化挂载权限的实验暴露了目标镜像中`usbmount`与`resize-all.service`的冲突：扩容辅助脚本扫描已挂载分区并重建了VFAT，但恢复失败。该服务现已禁用、屏蔽并通过跨boot验证；源码权威副本仍在开发电脑和GitHub，板端工作树已通过Git Bundle恢复到`/home/cat/workspace/netflow-analyzer`的ext4目录。源码约2.4MB，新Debug构建树约3.2MB，当前18项板端CTest全部通过。PCAP、CSV和模型数据集等大文件在SD卡重新初始化并验证唯一挂载策略后再迁入。
 
 开发电脑已经完成两条ARM64交叉编译和板端运行链：一条使用鲁班猫官方Buildroot GCC 9.3及隔离的板端libpcap overlay，另一条使用Ubuntu GCC 13、从板端导出的完整sysroot和GCC `-B`启动文件前缀。两种产物均为AArch64 ELF、只要求`GLIBC_2.17`，并在板端通过`ldd`、`--help`和实时ICMP抓包。完整Shell环境变量、CMake参数、ABI检查与故障记录见[交叉编译手册](docs/cross_compilation.md)。
 
 提交`740d5ab`的官方SDK ARM64产物已经通过暂存安装打包并部署为systemd服务。程序和配置由root拥有，运行进程使用`netflow-analyzer`专用账户；systemd只授予`CAP_NET_RAW`，不把文件capability永久写入ELF。首次手工启停处理4个完整ICMP包、聚合1条双向流，两个drop字段为0，并在SIGTERM后正常收尾。完整的Linux命令、用户/组、权限、capability、journal、故障定位和回滚见[非root systemd部署手册](docs/systemd_deployment.md)。
 
-开发板上的CTest为3.16.3，低于`--test-dir`参数所需的3.20，因此测试时应先进入构建目录再运行`ctest`。同一确定性6包PCAP此前在x86_64与ARM64原生构建上得到一致标准输出和退出状态；SD卡事故前，当前18项测试也已在两侧全部通过，工作树恢复到eMMC后需要重新验证板端基线。Release单流基线最高约9 Kpps、20万包零drop、每包CPU约6.95微秒；128流长稳基线以约9 Kpps处理540万包，全部分类为`complete`，两个drop为0、每包CPU约6.24微秒，RSS采样从首到尾保持564 KiB。300流容量测试也精确得到256个完整流和44个`flow_rejected`。完整方法见[单流性能基线](docs/performance_baseline.md)和[多流与长稳基线](docs/multiflow_longrun_baseline.md)。
+开发板上的CTest为3.16.3，低于`--test-dir`参数所需的3.20，因此测试时应先进入构建目录再运行`ctest`。同一确定性6包PCAP此前在x86_64与ARM64原生构建上得到一致标准输出和退出状态；工作树恢复到eMMC后，当前18项板端测试已经重新全部通过。Release单流基线最高约9 Kpps、20万包零drop、每包CPU约6.95微秒；128流长稳基线以约9 Kpps处理540万包，全部分类为`complete`，两个drop为0、每包CPU约6.24微秒，RSS采样从首到尾保持564 KiB。300流容量测试也精确得到256个完整流和44个`flow_rejected`。完整方法见[单流性能基线](docs/performance_baseline.md)和[多流与长稳基线](docs/multiflow_longrun_baseline.md)。
 
 ## 后续迭代
 
 建议按以下顺序推进：
 
-1. 把板端Git工作树恢复到eMMC ext4并复跑18项CTest，随后验证systemd连续失败的启动限速边界和服务方式长稳；
+1. 验证systemd连续失败的启动限速边界，并完成服务方式长稳；
 2. 处理同一五元组关闭后重新建连，随后增加TCP乱序与字节流重组，再进入DNS、HTTP等应用层解析；
 3. 当前继续保持单线程；只有后续测量证明单线程成为瓶颈，才复审实验中的阻塞队列和线程流水线；
 4. 如果真实负载超过256条活跃流，再根据占用率、探测长度、拒绝和淘汰数据评估可配置容量、重建或动态扩容；

@@ -787,8 +787,8 @@ sudo systemctl start resize-all.service
 ### 15.3 当前存储布局
 
 - 开发电脑和GitHub继续作为源码权威副本；
-- 板端Git工作树将恢复到`/home/cat/workspace/netflow-analyzer`，活动构建树保留在`/home/cat/build`，二者都位于eMMC ext4；
-- 当前eMMC根文件系统约7.0GB，已用5.4GB、可用1.4GB。项目源码和活动构建树只有MB量级，可以容纳；
+- 板端Git工作树已恢复到`/home/cat/workspace/netflow-analyzer`，新Debug构建树位于`/home/cat/build/netflow-analyzer-debug-emmc`，二者都位于eMMC ext4；
+- 当前eMMC根文件系统约7.0GB，已用5.4GB、可用1.4GB。源码约2.4MB，Debug构建树约3.2MB，合计约5.6MB；
 - SD卡保持卸载，重新初始化和验证唯一挂载管理者之前，不在其中恢复Git仓库；
 - 后续SD卡只保存较大的PCAP、CSV、模型数据集或交换文件，不直接运行ELF，也不由`usbmount`、`fstab`和手工命令同时管理。
 
@@ -800,3 +800,24 @@ sudo systemctl enable resize-all.service
 ```
 
 执行回滚前必须先移除所有数据卡，重新阅读脚本并确认处理目标；不能仅因为操作可逆就直接取消屏蔽。
+
+### 15.4 eMMC工作树恢复验收
+
+开发电脑通过`git bundle create --all`生成离线Git传输文件，再用`scp`发送到目标板。板端执行：
+
+```bash
+git clone \
+    --branch feature/nonroot-service \
+    /home/cat/netflow-analyzer.bundle \
+    /home/cat/workspace/netflow-analyzer
+```
+
+克隆后把`origin`从本地Bundle路径改回GitHub HTTPS地址。最终HEAD为`8a0c5fe`，分支及上游均为`feature/nonroot-service`，工作区干净。
+
+旧构建目录保存了SD卡源码的绝对路径，因此没有尝试复用或就地修补`CMakeCache.txt`。新建：
+
+```text
+/home/cat/build/netflow-analyzer-debug-emmc
+```
+
+并在该目录重新配置、构建和执行CTest。目标板当前18项测试全部通过，证明恢复结果不仅包含完整Git历史，也能从新的eMMC源码路径重新生成并运行全部测试目标。Bundle保留到本轮恢复文档提交完成后再清理。

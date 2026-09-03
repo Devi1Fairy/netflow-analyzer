@@ -562,6 +562,41 @@ Failed to start resize-all.service: Unit resize-all.service is masked.
 - Git工作树、CMake构建树和可执行文件优先放在ext4；VFAT更适合作为经过隔离的大容量数据交换介质；
 - SD卡重新格式化、分区或恢复属于破坏性操作。即使本次没有其他重要数据，后续仍必须先确认设备名、备份和恢复路径，再执行任何写操作。
 
+#### 使用Git Bundle把仓库恢复到eMMC
+
+由于目标板此前直接访问GitHub出现超时，恢复时没有再次依赖板端互联网连接，也没有递归复制包含旧构建缓存的整个目录。开发电脑上的工作区已干净，当前分支`feature/nonroot-service`及提交`8a0c5fe`均已推送；随后创建包含全部已提交引用和Git对象的Bundle：
+
+```bash
+NFA_BUNDLE_DIR="$(mktemp -d /tmp/nfa-bundle.XXXXXX)"
+NFA_BUNDLE="$NFA_BUNDLE_DIR/netflow-analyzer.bundle"
+
+git bundle create "$NFA_BUNDLE" --all
+git bundle verify "$NFA_BUNDLE"
+scp "$NFA_BUNDLE" cat@192.168.1.102:/home/cat/netflow-analyzer.bundle
+```
+
+`git bundle`和普通压缩源码不同：它保存已提交的分支、标签和对象，可以作为本地只读Git传输源；它不会把`build/`、未跟踪文件或未提交修改混入恢复结果。板端从Bundle显式选择功能分支克隆，再把临时本地远程地址改回公开GitHub地址：
+
+```bash
+git clone \
+    --branch feature/nonroot-service \
+    /home/cat/netflow-analyzer.bundle \
+    /home/cat/workspace/netflow-analyzer
+
+git -C /home/cat/workspace/netflow-analyzer \
+    remote set-url origin \
+    https://github.com/Devi1Fairy/netflow-analyzer.git
+```
+
+恢复结果：
+
+- 板端HEAD为`8a0c5fe`，当前分支及上游均为`feature/nonroot-service`，工作区干净；
+- 源码目录位于eMMC ext4的`/home/cat/workspace/netflow-analyzer`，大小约2.4MB；
+- 没有复用记录旧SD卡绝对源码路径的CMake缓存，而是新建`/home/cat/build/netflow-analyzer-debug-emmc`；
+- 新Debug构建树约3.2MB，板端当前18项CTest全部通过；
+- eMMC根文件系统约7.0GB，已用5.4GB、可用1.4GB，使用率81%；源码和活动Debug构建合计约5.6MB，不构成当前容量压力；
+- Bundle暂时保留到恢复验收结束，不在确认前提前删除唯一的板端离线恢复介质。
+
 ### 5.2 CTest版本与VFAT执行权限导致板上测试无法启动
 
 现象：

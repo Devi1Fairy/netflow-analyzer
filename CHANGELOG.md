@@ -59,6 +59,7 @@
 - LubanCat-2N应用第一批低风险systemd沙箱配置后，非root身份、唯一`CAP_NET_RAW`、静默报告和真实ICMP保持正常，安全评分由`5.2 MEDIUM`降为`3.7 OK`；记录systemd 245对`ProtectClock`的评分限制，不继续为追求分数扩大当前安全工作范围。
 - 记录板端VFAT权限和启动期存储事故：精确`safe.directory`只解决Git信任检查，重新挂载才能恢复写权限；把旧UUID写入`/etc/fstab`后的重启又暴露`usbmount`与厂商`resize-all.service`的冲突，辅助脚本重建VFAT但恢复失败。事故证据已保存，旧挂载条目已移除，数据卡保持卸载，已完成eMMC扩容的目标板禁用并屏蔽该服务；板端源码改为恢复到eMMC ext4。
 - 记录一次真实的systemd启动恢复：第一次进程打开`eth0`时，`ETHTOOL_GET_TS_INFO`查询暂时返回`EBUSY`并非零退出；`Restart=on-failure`等待2秒后启动第二个进程，成功打开接口并持续发布周期报告。`NRestarts=1`保留失败恢复历史，连续失败的启动限速仍待受控验证。
+- 使用Git Bundle和SSH在不依赖板端GitHub连接的情况下恢复完整仓库：`feature/nonroot-service`及提交历史进入eMMC ext4，`origin`恢复为GitHub HTTPS地址；新建Debug构建目录而不复用旧SD卡绝对路径缓存，当前18项ARM64 CTest全部通过。源码与构建树合计约5.6MB，当前1.4GB可用空间足以承载活动开发文件。
 
 ## [0.2.0] - 2026-08-26
 
