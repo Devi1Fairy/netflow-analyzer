@@ -75,7 +75,7 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 - 尚未解析DNS、HTTP等应用层协议；
 - 尚未实现规则异常检测、机器学习、Qt界面或云端展示；
 - ARM Linux开发板已完成原生Debug/Release构建、当前18项CTest、离线跨平台一致性、两种交叉产物、物理网卡抓包、真实TCP完整关闭、单流/多流性能、满载边界、流表探测成本和10分钟长稳基线；最新官方SDK产物又完成单次满表扫描优化复测，300个UDP新流对应300次探测操作、44次最旧流淘汰、256条最终流和零drop。
-- LubanCat-2N已完成非root systemd手工启停、开机自启和第一批低风险沙箱加固：服务进程使用无登录专用用户，只获得`CAP_NET_RAW`且`NoNewPrivs=1`；静默周期日志、真实ICMP、双向流汇总和SIGTERM收尾均进入journal。受控重启后服务在无人登录和未人工`start`时一次启动成功，systemd 245安全评分由`5.2 MEDIUM`降为`3.7 OK`；服务方式异常恢复和长稳仍待验证。
+- LubanCat-2N已完成非root systemd手工启停、开机自启和第一批低风险沙箱加固：服务进程使用无登录专用用户，只获得`CAP_NET_RAW`且`NoNewPrivs=1`；静默周期日志、真实ICMP、双向流汇总和SIGTERM收尾均进入journal。一次重启中接口时间戳能力查询短暂返回`EBUSY`，`Restart=on-failure`等待2秒后成功恢复并持续运行；systemd 245安全评分由`5.2 MEDIUM`降为`3.7 OK`，连续失败边界和服务长稳仍待验证。
 - 目标镜像的`resize-all.service`会扫描`/proc/mounts`中的已挂载分区；一次SD卡持久化挂载实验触发VFAT重建且恢复失败。该服务现已禁用并屏蔽，板端Git工作树将恢复到eMMC ext4，SD卡在重新初始化和隔离挂载策略前保持卸载。
 
 ## 项目目录
@@ -363,7 +363,7 @@ LubanCat-2N已经完成ARM64原生Debug/Release构建、当前18项板端CTest�
 
 建议按以下顺序推进：
 
-1. 把板端Git工作树恢复到eMMC ext4并复跑18项CTest，随后进行systemd接口故障恢复和服务方式长稳验收；
+1. 把板端Git工作树恢复到eMMC ext4并复跑18项CTest，随后验证systemd连续失败的启动限速边界和服务方式长稳；
 2. 处理同一五元组关闭后重新建连，随后增加TCP乱序与字节流重组，再进入DNS、HTTP等应用层解析；
 3. 当前继续保持单线程；只有后续测量证明单线程成为瓶颈，才复审实验中的阻塞队列和线程流水线；
 4. 如果真实负载超过256条活跃流，再根据占用率、探测长度、拒绝和淘汰数据评估可配置容量、重建或动态扩容；

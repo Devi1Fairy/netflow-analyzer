@@ -38,6 +38,7 @@ cmake -E chdir build ctest --output-on-failure
 - `systemctl enable`后的受控重启也已通过：boot ID变化，无人工`start`时服务已为`enabled`和`active`，一次启动成功且`NRestarts=0`；新PID保持相同专用身份和唯一`CAP_NET_RAW`能力，静默报告与重启后ICMP正确。
 - 目标板systemd版本为`245 (245.4-4ubuntu3.24)`；提交`dc542ad`的第一批低风险沙箱配置保持非root身份、唯一`CAP_NET_RAW`、静默报告和真实ICMP正常，安全评分由`5.2 MEDIUM`降为`3.7 OK`。`ProtectClock=yes`仍被旧评分器扣分，不继续以追求分数作为项目主线。
 - 开发板VFAT持久化实验暴露了厂商存储服务风险：`usbmount`动态挂载数据卡，`resize-all.service`又遍历`/proc/mounts`；辅助脚本重建VFAT后恢复失败，UUID由`CB8E-AD01`变为`9741-D596`，原板端工作树丢失。项目权威副本仍在开发电脑和GitHub；旧`fstab`条目已移除，数据卡已卸载，`resize-all.service`已禁用并屏蔽，下一步把板端工作树恢复到eMMC ext4。
+- 未插入SD卡的后续重启确认屏蔽跨boot保持；同一boot中分析器第一次打开`eth0`时，`ETHTOOL_GET_TS_INFO`暂时返回`EBUSY`，systemd在2秒后自动重启，第二个进程成功运行并持续输出周期报告。`NRestarts=1`是一次真实恢复记录，连续失败与启动限速仍待验证。
 
 如果实际状态与上面不同，应先查看用户是否在新会话开始前继续修改了代码，不要覆盖未提交改动。
 
@@ -1238,7 +1239,7 @@ LubanCat官方SDK交叉产物实测：
 - 当前boot的静默报告和虚拟机再次产生的4个ICMP包均正常进入journal。
 - systemd 245安全审计基线为`5.2 MEDIUM`；报告已按业务必需、低风险候选和必须实验三类记录，不能为降低分数启用`PrivateNetwork=yes`或禁止`AF_PACKET`；
 
-第一批低风险沙箱加固和评分复测已经完成。其后的VFAT持久化实验已经停止：板端厂商`resize-all.service`会扫描`/proc/mounts`，本次对数据卡进入了重建文件系统但恢复失败的路径。旧`fstab`条目已删除，数据卡已卸载，事故证据已保存；该服务已同时`disable`和`mask`，验证结果为`masked`、启动依赖不存在且手工`start`被拒绝。下一步先从开发电脑把工作树恢复到eMMC ext4并复跑基线，再进行接口缺失故障恢复和服务方式长稳。地址族与系统调用限制不再作为当前必做项。手工启停、开机自启和通用加固已经完成，但在异常恢复与长稳通过前不能宣称生产级部署完成。
+第一批低风险沙箱加固和评分复测已经完成。其后的VFAT持久化实验已经停止：板端厂商`resize-all.service`会扫描`/proc/mounts`，本次对数据卡进入了重建文件系统但恢复失败的路径。旧`fstab`条目已删除，数据卡已卸载，事故证据已保存；该服务已同时`disable`和`mask`，且后续boot仍为`masked`。同一boot又自然观察到一次接口瞬态繁忙：第一次进程因`ETHTOOL_GET_TS_INFO`返回`EBUSY`退出，systemd在2秒后启动第二个进程并成功恢复。下一步先从开发电脑把工作树恢复到eMMC ext4并复跑基线，再验证连续失败的启动限速和服务方式长稳。地址族与系统调用限制不再作为当前必做项。手工启停、开机自启和通用加固已经完成，但在连续异常边界与长稳通过前不能宣称生产级部署完成。
 
 ## 19. ARM Linux开发板计划
 
@@ -1281,7 +1282,7 @@ LubanCat官方SDK交叉产物实测：
 - TCP状态版ARM64原生Debug构建的18项CTest全部通过；板端`lo`的HTTP/1.0实测处理12个`complete` TCP包，双向各6包并聚合为1条流，最终为`tcp_state=closed`，两个drop字段均为0；后端`received=24`与应用处理12包属于回环捕获的不同统计层级。
 - 仓库已提交CMake安装规则、非root systemd单元和默认参数模板；板端已安装提交`740d5ab`对应的官方SDK产物，并通过专用用户、`CAP_NET_RAW`、journal实时日志、真实ICMP和SIGTERM手工启停验收。
 
-不要宣称完整开发板验证已经结束。历史上已经完成源码获取、原生Debug/Release构建、当前18项板端CTest、确定性PCAP跨平台输出对比、两种交叉编译、跨设备ICMP实时抓包、TCP完整关闭状态、单流/多流性能、满载边界、流表探测成本、整机软中断、10分钟长稳，以及非root systemd手工启停、开机自启和第一批安全加固。当前板端工作树因SD卡事故待从开发电脑恢复到eMMC并复跑基线；随后仍需完成双向直连网络验证、接口异常恢复和生产级数小时/数天浸泡测试。当前仓库提供环境检查脚本：
+不要宣称完整开发板验证已经结束。历史上已经完成源码获取、原生Debug/Release构建、当前18项板端CTest、确定性PCAP跨平台输出对比、两种交叉编译、跨设备ICMP实时抓包、TCP完整关闭状态、单流/多流性能、满载边界、流表探测成本、整机软中断、10分钟长稳，以及非root systemd手工启停、开机自启和第一批安全加固；后续一次启动期`EBUSY`也已由systemd自动恢复。当前板端工作树因SD卡事故待从开发电脑恢复到eMMC并复跑基线；随后仍需完成双向直连网络验证、连续失败启动限速和生产级数小时/数天浸泡测试。当前仓库提供环境检查脚本：
 
 ```bash
 sh scripts/check_target_env.sh
@@ -1317,7 +1318,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`满表策略的单次扫描原位替换，以及TCP握手/关闭基本状态跟踪和终端/CSV输出已经完成。x86_64与LubanCat-2N ARM64原生Debug构建的18项CTest历史上全部通过；板端`lo`真实HTTP/1.0连接以12个`complete`包得到1条`closed` TCP流，两个drop字段均为0。实时`--count`已改为可选，无上限模式的静默报告、ICMP处理和`SIGTERM`正常收尾已完成验收。LubanCat-2N已完成非root systemd手工启停、开机自启和第一批低风险沙箱加固，专用用户只获得`CAP_NET_RAW`，新boot一次启动成功且journal实时日志、真实ICMP和SIGTERM收尾正确；systemd 245安全评分由`5.2 MEDIUM`降为`3.7 OK`。一次VFAT持久化实验触发厂商`resize-all.service`重建数据卡且恢复失败；旧`fstab`条目已移除，数据卡已卸载，该服务已禁用并屏蔽。下一步先把板端工作树恢复到eMMC ext4并复跑基线，再进行接口异常恢复和服务长稳。
+周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`满表策略的单次扫描原位替换，以及TCP握手/关闭基本状态跟踪和终端/CSV输出已经完成。x86_64与LubanCat-2N ARM64原生Debug构建的18项CTest历史上全部通过；板端`lo`真实HTTP/1.0连接以12个`complete`包得到1条`closed` TCP流，两个drop字段均为0。实时`--count`已改为可选，无上限模式的静默报告、ICMP处理和`SIGTERM`正常收尾已完成验收。LubanCat-2N已完成非root systemd手工启停、开机自启和第一批低风险沙箱加固，专用用户只获得`CAP_NET_RAW`，systemd 245安全评分由`5.2 MEDIUM`降为`3.7 OK`。一次VFAT持久化实验触发厂商`resize-all.service`重建数据卡且恢复失败；旧`fstab`条目已移除，数据卡已卸载，该服务已禁用并跨boot保持屏蔽。同一boot中分析器第一次因接口`ETHTOOL_GET_TS_INFO`暂时返回`EBUSY`而退出，2秒后由systemd自动重启成功。下一步先把板端工作树恢复到eMMC ext4并复跑基线，再验证连续失败启动限速和服务长稳。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1359,4 +1360,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流现在按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及CSV中使用统一名称；确定性3包握手PCAP与状态不变量测试已纳入18项CTest，x86_64与LubanCat-2N ARM64原生Debug构建历史上均全部通过。板端`lo`真实HTTP/1.0连接进一步证明12个完整TCP包能正确聚合为1条双向流并最终进入`closed`，两个drop字段均为0。实时`--count`已改为可选，无上限模式已通过静默、ICMP和`SIGTERM`正常收尾验收，为systemd服务化提供了正确的持续运行语义。CMake安装规则、专用用户systemd单元、默认参数模板和stdout行缓冲已经完成；LubanCat-2N非root手工启停、开机自启和第一批低风险沙箱加固已验证专用账户、仅`CAP_NET_RAW`、journal实时日志、真实ICMP和SIGTERM正常收尾，systemd 245评分由`5.2 MEDIUM`降为`3.7 OK`。两种既有ARM64交叉构建和单次扫描优化版官方SDK产物均通过此前板端实际运行，Python验收脚本兼容板端Python 3.8.10。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳。SD卡事故的证据与隔离结果已记录；下一步把板端工作树恢复到eMMC ext4并复跑18项CTest，再进行服务异常恢复与长稳，当前仍没有接入`labs/thread_pipeline`。
+应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流现在按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及CSV中使用统一名称；确定性3包握手PCAP与状态不变量测试已纳入18项CTest，x86_64与LubanCat-2N ARM64原生Debug构建历史上均全部通过。板端`lo`真实HTTP/1.0连接进一步证明12个完整TCP包能正确聚合为1条双向流并最终进入`closed`，两个drop字段均为0。实时`--count`已改为可选，无上限模式已通过静默、ICMP和`SIGTERM`正常收尾验收，为systemd服务化提供了正确的持续运行语义。CMake安装规则、专用用户systemd单元、默认参数模板和stdout行缓冲已经完成；LubanCat-2N非root手工启停、开机自启和第一批低风险沙箱加固已验证专用账户、仅`CAP_NET_RAW`、journal实时日志、真实ICMP和SIGTERM正常收尾，systemd 245评分由`5.2 MEDIUM`降为`3.7 OK`。两种既有ARM64交叉构建和单次扫描优化版官方SDK产物均通过此前板端实际运行，Python验收脚本兼容板端Python 3.8.10。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳。SD卡事故的证据与隔离结果已记录，后续boot中一次接口`EBUSY`也由systemd在2秒后自动恢复；下一步把板端工作树恢复到eMMC ext4并复跑18项CTest，再验证连续失败启动限速与服务长稳，当前仍没有接入`labs/thread_pipeline`。

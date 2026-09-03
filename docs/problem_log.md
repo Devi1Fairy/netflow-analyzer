@@ -1182,3 +1182,45 @@ sudo journalctl -u netflow-analyzer -n 100 --no-pager
 - 改用`YYYY-MM-DD HH:MM:SS`后能够查看本轮服务日志；
 - 静默周期报告、4个ICMP包和SIGTERM后的最终汇总均完整存在；
 - 完整命令兼容性已经写入[`docs/systemd_deployment.md`](systemd_deployment.md)。
+
+### 5.17 启动期ETHTOOL查询暂时繁忙触发systemd自动恢复
+
+现象：
+
+屏蔽厂商`resize-all.service`并在未插入SD卡的情况下受控重启后，`netflow-analyzer.service`最终为`active (running)`，但：
+
+```text
+NRestarts=1
+```
+
+本次boot的journal显示第一次进程PID 665在19:06:40失败：
+
+```text
+Application failed: failed to open interface 'eth0':
+eth0: SIOCETHTOOL(ETHTOOL_GET_TS_INFO) ioctl failed:
+Device or resource busy
+```
+
+随后systemd记录`Failed with result 'exit-code'`。单元配置了：
+
+```ini
+Restart=on-failure
+RestartSec=2s
+```
+
+第二次进程PID 845在19:06:42进入活动状态，并从19:06:43开始成功报告`Capture interface: eth0`。此后每约5秒持续输出零流量指标；检查时`eth0`已经为`UP,LOWER_UP`，服务保持运行，`Result=success`。
+
+判断：
+
+- 失败发生在libpcap打开接口期间的`ETHTOOL_GET_TS_INFO`查询，不是BPF编译、协议解析、流表或权限错误；
+- 错误码`EBUSY`表示内核或网卡驱动当时暂时无法完成该查询。结合2秒后相同程序、相同接口和相同配置成功，证据符合启动期驱动或网络初始化的瞬态繁忙；现有日志不能进一步确定具体由哪个内核组件占用，因此不把推断写成已证明的驱动缺陷；
+- `After=network-online.target`只定义systemd启动顺序，不保证每一种驱动ioctl在目标到达时都已可用；
+- `NRestarts=1`是恢复路径生效的证据，不表示应用重复处理了数据包；`Result=success`描述当前恢复后的活动实例，不能抹去journal里第一次失败的历史。
+
+处理决定：
+
+当前不修改C源码，也不在应用内部再增加一套并行重试循环。进程在接口打开失败时明确返回非零，由systemd统一等待2秒并重新创建干净进程，符合现有服务生命周期设计。本次单次瞬态错误已经自动恢复；后续生产级验收仍需观察连续失败时的启动限速，以及恢复后数小时或数天的稳定性。
+
+附带现象：
+
+普通用户执行`systemctl status`时出现`some journal files were not opened due to insufficient permissions`，只是当前账户不能读取所有系统journal文件；使用`sudo journalctl -b -u netflow-analyzer.service`已经取得目标单元完整日志，不是服务故障。

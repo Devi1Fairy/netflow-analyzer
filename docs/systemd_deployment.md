@@ -503,7 +503,31 @@ Sep 02 21:44:56 lubancat netflow-analyzer[49933]: Total packets: 4
 
 `enable`本身只创建启动依赖，不证明服务能够跨重启运行。本轮通过不同boot ID、无人工`start`、新PID、运行状态、权限集合和真实流量共同证明开机自启成立。
 
-`After=network-online.target`只保证systemd声明的启动顺序，不等于互联网一定可达，也不保证每种网络管理器都采用相同的“在线”标准。当前物理`eth0`在服务启动时已经可供libpcap打开；网络延迟、接口缺失和恢复过程仍可在后续故障注入中单独验证。
+`After=network-online.target`只保证systemd声明的启动顺序，不等于互联网一定可达，也不保证每种网络管理器都采用相同的“在线”标准。上面这次boot中物理`eth0`已经可供libpcap一次打开，但后续重启又实际观察到驱动查询的短暂繁忙，因此不能把一次成功推广为所有启动都一次成功。
+
+### 启动期瞬态繁忙与自动恢复
+
+2026-09-03在移除SD卡并验证存储服务屏蔽的重启中，第一次分析器进程PID 665打开`eth0`失败：
+
+```text
+SIOCETHTOOL(ETHTOOL_GET_TS_INFO) ioctl failed: Device or resource busy
+```
+
+systemd把该非零退出记录为`exit-code`。由于单元配置`Restart=on-failure`和`RestartSec=2s`，第二次进程PID 845在约2秒后成功打开相同接口，随后持续输出5秒周期报告。检查结果为：
+
+```text
+Restart=on-failure
+RestartUSec=2s
+NRestarts=1
+Result=success
+ActiveState=active
+SubState=running
+eth0: UP,LOWER_UP
+```
+
+这次结果证明进程级恢复链能够处理一次启动期瞬态错误：应用明确失败，systemd等待后创建全新进程，新进程重新初始化libpcap并成功运行。现有证据只支持“启动期驱动或网络状态暂时繁忙”，不能确定哪个内核组件导致`EBUSY`，也不能证明连续失败一定可以无限恢复。
+
+这里不立即在C代码中增加内部循环，因为systemd已经统一管理失败退出、等待、重启次数和日志。后续若重复出现，需要检查默认启动限速，并根据实测决定是否显式配置`StartLimitIntervalSec`、`StartLimitBurst`或调整`RestartSec`。
 
 服务在验收后保持`enabled`和`active`，作为后续服务方式长稳测试的基础。
 
@@ -694,9 +718,9 @@ sudo systemctl start netflow-analyzer
 
 ## 14. 仍待完成的服务验收
 
-首次手工启动、非root身份、能力边界、journal实时日志、真实ICMP、SIGTERM收尾、开机自启、重启恢复和第一批低风险沙箱加固已经通过。加固后安全评分由`5.2 MEDIUM`降为`3.7 OK`。仍需：
+首次手工启动、非root身份、能力边界、journal实时日志、真实ICMP、SIGTERM收尾、开机自启、重启恢复和第一批低风险沙箱加固已经通过。另一次真实重启已经观察到`ETHTOOL_GET_TS_INFO`暂时返回`EBUSY`，随后`Restart=on-failure`等待2秒并自动恢复。加固后安全评分由`5.2 MEDIUM`降为`3.7 OK`。仍需：
 
-1. 通过受控故障注入验证接口暂不可用时的重启和恢复行为；
+1. 通过受控、可重复故障验证连续失败时的启动限速和恢复边界；
 2. 进行数小时或数天服务方式浸泡测试，观察journal占用、内存、CPU和drop；
 3. 根据长期日志需求决定journal采用易失还是持久存储及其容量上限。
 

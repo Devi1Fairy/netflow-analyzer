@@ -1190,6 +1190,8 @@ Release构建树：456KB
 - 执行`enable`和受控重启后，boot ID发生变化；没有人工`start`时服务已为`enabled`和`active`，`Result=success`、`NRestarts=0`；
 - 新boot中的新PID仍使用专用UID/GID和唯一`CAP_NET_RAW`能力，journal静默报告与再次发送的4个ICMP包均正确；
 - `critical-chain`确认单元排在`network-online.target`之后；该顺序不被解释为互联网或所有接口必然可用，异常网络恢复仍保留单独复审；
+- 后续一次真实重启中，第一次进程打开`eth0`时因`ETHTOOL_GET_TS_INFO`返回`EBUSY`而非零退出；`Restart=on-failure`等待2秒后创建第二个进程，后者成功打开接口并持续发布周期报告，`NRestarts=1`准确保留了恢复历史；
+- 当前继续让接口打开失败结束进程并由systemd统一重启，不在C应用中叠加第二套重试状态；如果连续失败触发启动限速，再根据可重复实验明确`StartLimitIntervalSec`、`StartLimitBurst`和退避策略；
 - 目标板systemd 245安全审计基线为`5.2 MEDIUM`；其中宿主网络、`AF_PACKET`和`CAP_NET_RAW`属于抓包必需成本，不能为降低评分而删除；
 - 其余条目已经分为低风险直接候选、需要兼容性实测的地址族/系统调用限制，以及当前收益不足以覆盖复杂度的chroot方案；加固将分批提交和复测，不一次叠加全部选项；
 - 提交`dc542ad`的第一批低风险沙箱配置在目标板保持非root身份、唯一`CAP_NET_RAW`、静默报告和真实ICMP正常，安全评分由`5.2 MEDIUM`降为`3.7 OK`；
