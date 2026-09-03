@@ -3,6 +3,8 @@ Description=Netflow Analyzer live capture service
 Documentation=https://github.com/Devi1Fairy/netflow-analyzer
 Wants=network-online.target
 After=network-online.target
+StartLimitIntervalSec=30s
+StartLimitBurst=5
 
 [Service]
 Type=exec
