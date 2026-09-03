@@ -579,6 +579,35 @@ UMask=0077
 
 当前结论不是“5.2已经足够安全”，而是先建立可复现基线，再按风险从低到高逐批加固并回归。下一小步只加入第一批低风险选项；地址族和系统调用限制单独实验，以便失败时能定位具体边界。
 
+### 10.5 第一批加固的目标板结果
+
+提交`dc542ad`在LubanCat-2N部署后，服务使用新进程重新启动；专用用户、唯一`CAP_NET_RAW`能力、`NoNewPrivs=1`、静默周期报告和真实ICMP抓包均保持正常。目标板再次执行安全审计，命令状态为0，结果由：
+
+```text
+5.2 MEDIUM
+```
+
+降低到：
+
+```text
+3.7 OK
+```
+
+评分降低1.5。以下限制在报告中已经显示为通过：
+
+- `PrivateDevices=yes`；
+- `ProtectKernelLogs=yes`和`ProtectHostname=yes`；
+- `RestrictNamespaces=yes`覆盖七类命名空间创建；
+- `RestrictRealtime=yes`和`SystemCallArchitectures=native`；
+- `MemoryDenyWriteExecute=yes`、`RemoveIPC=yes`和`UMask=0077`。
+
+报告仍对两处相关属性扣分：
+
+- `DeviceAllow=`由基线的0.2降为0.1；`PrivateDevices=yes`已经通过，但systemd为服务保留的最小设备集合仍被评分器视为设备ACL，并不表示服务重新获得任意硬件访问；
+- 单元已经配置`ProtectClock=yes`，能力边界也排除了`CAP_SYS_TIME`，但systemd 245的评分仍显示0.2。systemd上游已有同代版本中显式配置仍不改变该评分的报告，因此本文把它记录为旧版评分器限制，不通过叠加未知限制来追求绿项：<https://github.com/systemd/systemd/issues/15758>。
+
+剩余的宿主网络、`AF_PACKET`和`CAP_NET_RAW`扣分是实时抓包的业务成本。第一批通用加固完成后，本项目不继续以降低评分为主线；地址族白名单和系统调用过滤仅在后续出现明确威胁模型时单独实验。
+
 对应版本的准确语义以systemd v245官方`systemd.exec`和`systemd-analyze`手册为准：
 
 - <https://github.com/systemd/systemd/blob/v245/man/systemd.exec.xml>
@@ -624,6 +653,7 @@ systemctl show netflow-analyzer \
 | `Permission denied`打开接口 | capability | `CapEff`、`CapBnd`、`CapAmb`与`CAP_NET_RAW` |
 | BPF参数错误 | 配置展开 | `/etc/default`引号和`ps ... args` |
 | 修改单元后行为不变 | systemd缓存 | 是否执行`daemon-reload` |
+| `systemd-analyze verify`报告其他单元 | 验证器加载系统环境 | 先看是否点名本单元，再用`daemon-reload`、`systemctl show`和真实启动复核 |
 | `journalctl`时间解析失败 | 工具版本 | 使用`YYYY-MM-DD HH:MM:SS`或`-b` |
 | 日志直到退出才出现 | stdio缓冲 | 当前ELF是否包含`setvbuf`改动，是否部署了旧产物 |
 | 服务反复重启 | 退出状态 | journal、`NRestarts`和`Restart=on-failure` |
@@ -664,10 +694,10 @@ sudo systemctl start netflow-analyzer
 
 ## 14. 仍待完成的服务验收
 
-首次手工启动、非root身份、能力边界、journal实时日志、真实ICMP、SIGTERM收尾、开机自启和重启恢复已经通过。仍需：
+首次手工启动、非root身份、能力边界、journal实时日志、真实ICMP、SIGTERM收尾、开机自启、重启恢复和第一批低风险沙箱加固已经通过。加固后安全评分由`5.2 MEDIUM`降为`3.7 OK`。仍需：
 
-1. 加入第一批低风险systemd限制并重新评分、启动和抓包；
-2. 单独实验地址族白名单和系统调用拒绝组；
-3. 通过受控故障注入验证接口暂不可用时的重启和恢复行为；
-4. 进行数小时或数天服务方式浸泡测试，观察journal占用、内存、CPU和drop；
-5. 根据长期日志需求决定journal采用易失还是持久存储及其容量上限。
+1. 通过受控故障注入验证接口暂不可用时的重启和恢复行为；
+2. 进行数小时或数天服务方式浸泡测试，观察journal占用、内存、CPU和drop；
+3. 根据长期日志需求决定journal采用易失还是持久存储及其容量上限。
+
+地址族白名单和系统调用拒绝组不再作为当前必做项；只有在出现明确安全需求时才单独立项，避免为了评分破坏libpcap的数据面。

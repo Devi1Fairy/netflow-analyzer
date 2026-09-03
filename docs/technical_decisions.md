@@ -1189,6 +1189,8 @@ SD卡项目目录：7.2MB
 - `critical-chain`确认单元排在`network-online.target`之后；该顺序不被解释为互联网或所有接口必然可用，异常网络恢复仍保留单独复审；
 - 目标板systemd 245安全审计基线为`5.2 MEDIUM`；其中宿主网络、`AF_PACKET`和`CAP_NET_RAW`属于抓包必需成本，不能为降低评分而删除；
 - 其余条目已经分为低风险直接候选、需要兼容性实测的地址族/系统调用限制，以及当前收益不足以覆盖复杂度的chroot方案；加固将分批提交和复测，不一次叠加全部选项；
+- 提交`dc542ad`的第一批低风险沙箱配置在目标板保持非root身份、唯一`CAP_NET_RAW`、静默报告和真实ICMP正常，安全评分由`5.2 MEDIUM`降为`3.7 OK`；
+- `ProtectClock=yes`在systemd 245评分中仍被扣0.2，与上游同代版本的已知报告一致；不为追求绿项叠加未经业务验证的限制。第一批完成后不继续以评分优化为项目主线；
 - 完整命令、Linux概念、故障定位和回滚见[`docs/systemd_deployment.md`](systemd_deployment.md)。
 
 

@@ -503,6 +503,19 @@ FAT32不保存Linux原生的每文件UID、GID和Unix权限位。分区挂载后
 - 如果需要重启后保持设置，可后续使用分区UUID在`/etc/fstab`中配置挂载选项，避免依赖可能变化的`/dev/mmcblk1p1`设备名；
 - 如果项目后续需要符号链接、原生Unix权限或其他Linux文件系统语义，应评估使用ext4；重新格式化会清除数据，不能把它当作无风险的权限修复步骤。
 
+#### 重启后挂载参数丢失导致Git只读
+
+开发板完成受控重启后，SD卡再次显示为`root:root`。Git先以`detected dubious ownership`拒绝读取仓库；为自己确认可信的精确仓库路径加入`safe.directory`后，`git status`能够只读运行，但`git pull`仍因无法写入`.git/FETCH_HEAD`而返回`Permission denied`。
+
+这两个错误属于不同边界：
+
+- `safe.directory`只表示Git信任该仓库，不授予文件系统写权限；
+- `.git/FETCH_HEAD`需要在`fetch`阶段更新，最终仍受VFAT挂载时模拟的UID、GID和权限位控制。
+
+只执行带`uid`、`gid`、`dmask`和`fmask`的`remount`后，`findmnt`与`stat`仍显示原有参数和`root:root`，因此不能只根据`mount`退出状态判断设置已经生效。本次先离开挂载目录，再完整卸载并按当前`id -u`、`id -g`重新挂载；随后普通用户可以执行`git pull --ff-only`，证明仓库写权限恢复。
+
+本次使用精确仓库例外，没有配置宽泛的`safe.directory '*'`，也没有用`sudo git pull`掩盖权限问题。当前重新挂载只恢复了本次启动中的状态；仍需使用分区UUID把相同选项写入`/etc/fstab`并做重启复测，才能证明挂载权限持久化。
+
 ### 5.2 CTest版本与VFAT执行权限导致板上测试无法启动
 
 现象：
