@@ -58,9 +58,10 @@
 - 记录LubanCat-2N systemd 245的服务安全评分基线`5.2 MEDIUM`，区分宿主网络、`AF_PACKET`和`CAP_NET_RAW`等抓包必需成本，以及命名空间、设备、时钟、内核日志、实时调度、W^X和umask等可继续收紧的边界。
 - LubanCat-2N应用第一批低风险systemd沙箱配置后，非root身份、唯一`CAP_NET_RAW`、静默报告和真实ICMP保持正常，安全评分由`5.2 MEDIUM`降为`3.7 OK`；记录systemd 245对`ProtectClock`的评分限制，不继续为追求分数扩大当前安全工作范围。
 - 记录板端VFAT权限和启动期存储事故：精确`safe.directory`只解决Git信任检查，重新挂载才能恢复写权限；把旧UUID写入`/etc/fstab`后的重启又暴露`usbmount`与厂商`resize-all.service`的冲突，辅助脚本重建VFAT但恢复失败。事故证据已保存，旧挂载条目已移除，数据卡保持卸载，已完成eMMC扩容的目标板禁用并屏蔽该服务；板端源码改为恢复到eMMC ext4。
-- 记录一次真实的systemd启动恢复：第一次进程打开`eth0`时，`ETHTOOL_GET_TS_INFO`查询暂时返回`EBUSY`并非零退出；`Restart=on-failure`等待2秒后启动第二个进程，成功打开接口并持续发布周期报告。`NRestarts=1`保留失败恢复历史，连续失败的启动限速仍待受控验证。
+- 记录一次真实的systemd启动恢复：第一次进程打开`eth0`时，`ETHTOOL_GET_TS_INFO`查询暂时返回`EBUSY`并非零退出；`Restart=on-failure`等待2秒后启动第二个进程，成功打开接口并持续发布周期报告。`NRestarts=1`保留失败恢复历史，并据此继续验证连续失败边界。
 - 使用Git Bundle和SSH在不依赖板端GitHub连接的情况下恢复完整仓库：`feature/nonroot-service`及提交历史进入eMMC ext4，`origin`恢复为GitHub HTTPS地址；新建Debug构建目录而不复用旧SD卡绝对路径缓存，当前18项ARM64 CTest全部通过。源码与构建树合计约5.6MB，当前1.4GB可用空间足以承载活动开发文件。
 - 完成SD卡数据盘恢复验收：修正`usbmount.conf`中拼错且使用弯引号的`FS_MOUNTOPTIONS`配置，以`usbmount`作为唯一挂载管理者；只读VFAT检查返回0，跨重启后`/dev/mmcblk1p1`唯一挂载到`/media/usb0`，普通用户以`0644/0755`权限完成创建、写入、同步、读取和删除测试。源码与构建继续留在eMMC ext4，SD卡只保存PCAP、CSV、数据集和日志。
+- 为systemd单元显式增加`StartLimitIntervalSec=30s`和`StartLimitBurst=5`：LubanCat-2N使用不存在接口连续失败5次后，第6次启动请求被`Start request repeated too quickly`拒绝；清除运行时drop-in和`reset-failed`后服务恢复。提交`903edd4`的正式单元摘要一致、静态检查状态为0，有效参数为`30s/5`且无drop-in，真实2次ping继续处理为4个完整ICMP包。
 
 ## [0.2.0] - 2026-08-26
 

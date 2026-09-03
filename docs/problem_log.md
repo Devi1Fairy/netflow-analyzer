@@ -1308,3 +1308,39 @@ RestartSec=2s
 附带现象：
 
 普通用户执行`systemctl status`时出现`some journal files were not opened due to insufficient permissions`，只是当前账户不能读取所有系统journal文件；使用`sudo journalctl -b -u netflow-analyzer.service`已经取得目标单元完整日志，不是服务故障。
+
+### 5.18 默认启动窗口与重启间隔处在边界
+
+现象：
+
+目标板最初没有在单元中显式设置启动限速，继承systemd 245管理器默认值：
+
+```text
+StartLimitIntervalUSec=10s
+StartLimitBurst=5
+RestartUSec=2s
+```
+
+五次快速失败大约占满10秒，第六次启动时第一次记录可能刚好滑出窗口，因此默认参数不能稳定表达“连续故障后必须停止”的项目策略。
+
+验证：
+
+在`/run/systemd/system/netflow-analyzer.service.d`建立当前boot有效的临时drop-in，把窗口改为30秒，并用不存在的接口`nfa-start-limit-test0`产生确定性失败。五个不同PID均返回`No such device exists`，随后journal出现：
+
+```text
+Start request repeated too quickly.
+Failed to start Netflow Analyzer live capture service.
+```
+
+第六次启动被拒绝，之后没有继续创建进程。systemd 245同时仍记录`Failed with result 'exit-code'`，说明该版本不能仅根据`Result`是否等于`start-limit`判断限速；必须结合重复失败PID、拒绝日志和后续是否继续启动。
+
+处理：
+
+- 删除临时`/run` drop-in，执行`daemon-reload`和`reset-failed`后，服务以`eth0`恢复为`active/running`，`NRestarts=0`且`DropInPaths=`为空；
+- 提交`903edd4`在正式单元的`[Unit]`中增加`StartLimitIntervalSec=30s`和`StartLimitBurst=5`，继续保留`RestartSec=2s`；
+- 正式文件SHA-256为`68ad2d07d1597486a539435b2918e9ff8b20b9ff426059ae66454d93ea6803ba`，板端静态解析状态为0；系统自带`snapd.service`的`RestartMode`警告与本项目无关；
+- 正式加载后有效值为`30s/5`，没有drop-in；服务保持`enabled`和`active`，真实2次ping处理为4个`complete` ICMP包和392字节。
+
+恢复语义：
+
+达到启动上限后，服务不会只因30秒过去就自动恢复。管理员修正接口、配置或硬件问题后，需要执行`systemctl reset-failed`清除失败状态和频率计数，再执行`systemctl start`。该边界比永久高速重启更适合当前固定`eth0`的设备，但如果以后支持热插拔接口，需要重新评估退避与延迟重试策略。

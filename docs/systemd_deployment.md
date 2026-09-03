@@ -525,11 +525,70 @@ SubState=running
 eth0: UP,LOWER_UP
 ```
 
-这次结果证明进程级恢复链能够处理一次启动期瞬态错误：应用明确失败，systemd等待后创建全新进程，新进程重新初始化libpcap并成功运行。现有证据只支持“启动期驱动或网络状态暂时繁忙”，不能确定哪个内核组件导致`EBUSY`，也不能证明连续失败一定可以无限恢复。
+这次结果证明进程级恢复链能够处理一次启动期瞬态错误：应用明确失败，systemd等待后创建全新进程，新进程重新初始化libpcap并成功运行。现有证据只支持“启动期驱动或网络状态暂时繁忙”，不能确定哪个内核组件导致`EBUSY`。
 
-这里不立即在C代码中增加内部循环，因为systemd已经统一管理失败退出、等待、重启次数和日志。后续若重复出现，需要检查默认启动限速，并根据实测决定是否显式配置`StartLimitIntervalSec`、`StartLimitBurst`或调整`RestartSec`。
+这里不在C代码中增加内部循环，因为systemd已经统一管理失败退出、等待、重启次数和日志。连续失败的边界通过下一节的受控实验单独验证。
 
 服务在验收后保持`enabled`和`active`，作为后续服务方式长稳测试的基础。
+
+### 连续失败启动限速
+
+目标板systemd 245的管理器默认值和原单元有效值均为：
+
+```text
+StartLimitIntervalUSec=10s
+StartLimitBurst=5
+RestartUSec=2s
+```
+
+五次启动大约发生在0、2、4、6和8秒；第六次到达时，第一次启动可能已经滑出10秒窗口，因此默认值与2秒重启间隔处在不利边界。为了确定验证限速链路，先在`/run/systemd/system/netflow-analyzer.service.d/90-start-limit-test.conf`建立只对当前boot有效的drop-in：
+
+```ini
+[Unit]
+StartLimitIntervalSec=30s
+StartLimitBurst=5
+
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/netflow-analyzer --interface nfa-start-limit-test0 --filter icmp --flow-full-policy reject
+```
+
+空的`ExecStart=`先清除主单元继承的命令，下一行再使用确定不存在的接口制造可重复失败；它不关闭`eth0`，因此不影响SSH管理链路。`/run`中的drop-in在重启后会消失，也降低了实验配置意外持久化的风险。
+
+实验中五个不同PID分别在20:08:27、20:08:29、20:08:32、20:08:34和20:08:37因`No such device exists`退出；20:08:39的第六次请求被拒绝：
+
+```text
+netflow-analyzer.service: Start request repeated too quickly.
+netflow-analyzer.service: Failed with result 'exit-code'.
+Failed to start Netflow Analyzer live capture service.
+```
+
+systemd 245在这次实测中仍把最终`Result`呈现为`exit-code`，所以不能把是否出现字面量`Result=start-limit`作为唯一判据。连续五个失败进程、随后不再产生新PID，以及`Start request repeated too quickly`共同证明限速生效。
+
+收集证据后删除精确drop-in，执行`daemon-reload`、`reset-failed`和`start`。服务恢复为`active/running`，`Result=success`、`NRestarts=0`、`DropInPaths=`为空，并重新使用`eth0`。
+
+提交`903edd4`把经过实验的两项策略写入正式单元：
+
+```ini
+[Unit]
+StartLimitIntervalSec=30s
+StartLimitBurst=5
+
+[Service]
+Restart=on-failure
+RestartSec=2s
+```
+
+部署文件SHA-256为`68ad2d07d1597486a539435b2918e9ff8b20b9ff426059ae66454d93ea6803ba`。板端`systemd-analyze verify`状态为0；唯一输出是系统自带`snapd.service`使用旧版systemd不认识的`RestartMode`，没有点名本项目单元。正式加载后有效值为`30s/5`且无drop-in，PID 3477保持`active/running`和`NRestarts=0`。虚拟机发送2次ping后，服务处理2个Echo Request和2个Echo Reply，周期报告为`packets=4 complete=4`、392字节、1条活动流，证明生命周期策略没有破坏抓包数据面。
+
+达到限速后服务停在失败状态，不会仅因30秒窗口过去就自行再次启动。管理员排除接口或配置故障后执行：
+
+```bash
+sudo systemctl reset-failed netflow-analyzer.service
+sudo systemctl start netflow-analyzer.service
+```
+
+这项选择以固定物理接口为前提：一次短暂繁忙可以自动恢复，持续不存在的接口更像配置或硬件故障，应停止日志风暴并等待明确处置。如果未来接口会长期热插拔，需要重新评估退避时间或增加独立的延迟重试机制。
 
 ## 10. systemd安全评分基线
 
@@ -680,7 +739,7 @@ systemctl show netflow-analyzer \
 | `systemd-analyze verify`报告其他单元 | 验证器加载系统环境 | 先看是否点名本单元，再用`daemon-reload`、`systemctl show`和真实启动复核 |
 | `journalctl`时间解析失败 | 工具版本 | 使用`YYYY-MM-DD HH:MM:SS`或`-b` |
 | 日志直到退出才出现 | stdio缓冲 | 当前ELF是否包含`setvbuf`改动，是否部署了旧产物 |
-| 服务反复重启 | 退出状态 | journal、`NRestarts`和`Restart=on-failure` |
+| 服务反复重启 | 退出状态 | journal、`NRestarts`、`Restart=on-failure`和`StartLimit*` |
 
 排除故障后可使用：
 
@@ -718,11 +777,10 @@ sudo systemctl start netflow-analyzer
 
 ## 14. 仍待完成的服务验收
 
-首次手工启动、非root身份、能力边界、journal实时日志、真实ICMP、SIGTERM收尾、开机自启、重启恢复和第一批低风险沙箱加固已经通过。另一次真实重启已经观察到`ETHTOOL_GET_TS_INFO`暂时返回`EBUSY`，随后`Restart=on-failure`等待2秒并自动恢复。加固后安全评分由`5.2 MEDIUM`降为`3.7 OK`。仍需：
+首次手工启动、非root身份、能力边界、journal实时日志、真实ICMP、SIGTERM收尾、开机自启、瞬态恢复、连续失败限速和第一批低风险沙箱加固已经通过。一次真实重启观察到`ETHTOOL_GET_TS_INFO`暂时返回`EBUSY`并在2秒后自动恢复；确定性不存在接口实验又证明正式`30s/5次`策略会在连续五次失败后拒绝第六次启动。加固后安全评分由`5.2 MEDIUM`降为`3.7 OK`。仍需：
 
-1. 通过受控、可重复故障验证连续失败时的启动限速和恢复边界；
-2. 进行数小时或数天服务方式浸泡测试，观察journal占用、内存、CPU和drop；
-3. 根据长期日志需求决定journal采用易失还是持久存储及其容量上限。
+1. 进行数小时或数天服务方式浸泡测试，观察journal占用、内存、CPU和drop；
+2. 根据长期日志需求决定journal采用易失还是持久存储及其容量上限。
 
 地址族白名单和系统调用拒绝组不再作为当前必做项；只有在出现明确安全需求时才单独立项，避免为了评分破坏libpcap的数据面。
 
