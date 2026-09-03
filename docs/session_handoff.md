@@ -35,6 +35,7 @@ cmake -E chdir build ctest --output-on-failure
 - 实时`--count`已改为可选上限；本机`lo`在省略上限后能于静默期正常报告，随后处理4个`complete` ICMP包，并在`SIGTERM`后完成统计、流汇总与清理。
 - 主程序已在stdout首次I/O前显式启用行缓冲；严格普通文件重定向测试在进程结束前读到5秒周期报告，避免systemd journal日志延迟到缓冲区填满或服务退出。
 - 提交`740d5ab`的官方SDK ARM64部署包已在LubanCat-2N完成首次非root systemd手工启停：进程使用专用用户，能力仅为`CAP_NET_RAW`，`NoNewPrivs=1`；真实4包ICMP得到1条双向流且两个drop字段为0，SIGTERM正常收尾。
+- `systemctl enable`后的受控重启也已通过：boot ID变化，无人工`start`时服务已为`enabled`和`active`，一次启动成功且`NRestarts=0`；新PID保持相同专用身份和唯一`CAP_NET_RAW`能力，静默报告与重启后ICMP正确。
 
 如果实际状态与上面不同，应先查看用户是否在新会话开始前继续修改了代码，不要覆盖未提交改动。
 
@@ -1210,7 +1211,7 @@ LubanCat官方SDK交叉产物实测：
 - 云平台作为后续扩展，用于远程设备、长期历史和多节点汇总；
 - 不需要现在同时实现完整Qt和云平台。
 
-### 18.11 非root systemd服务化（第一轮板端手工验收完成）
+### 18.11 非root systemd服务化（手工启停与开机自启完成）
 
 当前已经完成：
 
@@ -1229,8 +1230,12 @@ LubanCat官方SDK交叉产物实测：
 - `systemctl stop`发送SIGTERM后输出最终汇总并正常退出；`Flow 1`是4包聚合得到的第一条流记录，不是额外包；
 - 板端`journalctl`不能解析`date --iso-8601=seconds`产生的带`T`和时区偏移格式，已改用`date '+%Y-%m-%d %H:%M:%S'`或`-b`查询；
 - 完整Linux命令、权限模型、journal用法、故障定位与回滚见[`docs/systemd_deployment.md`](systemd_deployment.md)。
+- `enable`在`multi-user.target.wants`下建立启动依赖；受控重启后boot ID变化，无人工`start`时服务已为`enabled`和`active`；
+- 新boot一次启动成功，`Result=success`、`NRestarts=0`，新PID继续使用专用用户和唯一`CAP_NET_RAW`能力；
+- `critical-chain`显示服务排在`network-online.target`之后，当前物理`eth0`成功打开；该顺序不等价于互联网必然可达，异常网络恢复仍待单独验证；
+- 当前boot的静默报告和虚拟机再次产生的4个ICMP包均正常进入journal。
 
-下一步先执行`systemctl enable`和受控重启，验证开机自启、网络就绪、进程身份、能力边界和journal；随后进行服务方式长稳。首次手工启停已经完成，但在重启与长稳通过前不能宣称生产级部署完成。
+下一步使用目标板的`systemd-analyze security`审计实际生效的沙箱边界，再规划服务方式长稳。手工启停和开机自启已经完成，但在安全审计、异常恢复与长稳通过前不能宣称生产级部署完成。
 
 ## 19. ARM Linux开发板计划
 
@@ -1270,7 +1275,7 @@ LubanCat官方SDK交叉产物实测：
 - TCP状态版ARM64原生Debug构建的18项CTest全部通过；板端`lo`的HTTP/1.0实测处理12个`complete` TCP包，双向各6包并聚合为1条流，最终为`tcp_state=closed`，两个drop字段均为0；后端`received=24`与应用处理12包属于回环捕获的不同统计层级。
 - 仓库已提交CMake安装规则、非root systemd单元和默认参数模板；板端已安装提交`740d5ab`对应的官方SDK产物，并通过专用用户、`CAP_NET_RAW`、journal实时日志、真实ICMP和SIGTERM手工启停验收。
 
-不要宣称完整开发板验证已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、当前18项板端CTest、确定性PCAP跨平台输出对比、两种交叉编译、跨设备ICMP实时抓包、TCP完整关闭状态、单流/多流性能、满载边界、流表探测成本、整机软中断、10分钟长稳和非root systemd手工启停；尚未完成双向直连网络验证、systemd开机自启/重启恢复和生产级数小时/数天浸泡测试。当前仓库提供环境检查脚本：
+不要宣称完整开发板验证已经结束。目前已经完成存储写权限、源码获取、原生Debug/Release构建、当前18项板端CTest、确定性PCAP跨平台输出对比、两种交叉编译、跨设备ICMP实时抓包、TCP完整关闭状态、单流/多流性能、满载边界、流表探测成本、整机软中断、10分钟长稳，以及非root systemd手工启停和开机自启；尚未完成双向直连网络验证、systemd安全审计/异常恢复和生产级数小时/数天浸泡测试。当前仓库提供环境检查脚本：
 
 ```bash
 sh scripts/check_target_env.sh
@@ -1306,7 +1311,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`满表策略的单次扫描原位替换，以及TCP握手/关闭基本状态跟踪和终端/CSV输出已经完成。x86_64与LubanCat-2N ARM64原生Debug构建的18项CTest全部通过；板端`lo`真实HTTP/1.0连接以12个`complete`包得到1条`closed` TCP流，两个drop字段均为0。实时`--count`已改为可选，无上限模式的静默报告、ICMP处理和`SIGTERM`正常收尾已完成验收。LubanCat-2N已完成非root systemd首次手工启停，专用用户只获得`CAP_NET_RAW`，journal实时日志、4包ICMP聚合和SIGTERM收尾正确；下一步验证开机自启、重启恢复和服务方式长稳。
+周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`满表策略的单次扫描原位替换，以及TCP握手/关闭基本状态跟踪和终端/CSV输出已经完成。x86_64与LubanCat-2N ARM64原生Debug构建的18项CTest全部通过；板端`lo`真实HTTP/1.0连接以12个`complete`包得到1条`closed` TCP流，两个drop字段均为0。实时`--count`已改为可选，无上限模式的静默报告、ICMP处理和`SIGTERM`正常收尾已完成验收。LubanCat-2N已完成非root systemd手工启停与开机自启，专用用户只获得`CAP_NET_RAW`，新boot一次启动成功且journal实时日志、真实ICMP和SIGTERM收尾正确；下一步进行systemd安全审计、异常恢复和服务方式长稳。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1348,4 +1353,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流现在按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及CSV中使用统一名称；确定性3包握手PCAP与状态不变量测试已纳入18项CTest，x86_64与LubanCat-2N ARM64原生Debug构建均全部通过。板端`lo`真实HTTP/1.0连接进一步证明12个完整TCP包能正确聚合为1条双向流并最终进入`closed`，两个drop字段均为0。实时`--count`已改为可选，无上限模式已通过静默、ICMP和`SIGTERM`正常收尾验收，为systemd服务化提供了正确的持续运行语义。CMake安装规则、专用用户systemd单元、默认参数模板和stdout行缓冲已经完成；LubanCat-2N首次非root手工启停已验证专用账户、仅`CAP_NET_RAW`、journal实时日志、真实ICMP和SIGTERM正常收尾，下一步是开机自启、重启恢复和服务方式长稳。两种既有ARM64交叉构建和单次扫描优化版官方SDK产物均通过此前板端实际运行，Python验收脚本兼容板端Python 3.8.10。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳；当前仍没有接入`labs/thread_pipeline`。
+应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流现在按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及CSV中使用统一名称；确定性3包握手PCAP与状态不变量测试已纳入18项CTest，x86_64与LubanCat-2N ARM64原生Debug构建均全部通过。板端`lo`真实HTTP/1.0连接进一步证明12个完整TCP包能正确聚合为1条双向流并最终进入`closed`，两个drop字段均为0。实时`--count`已改为可选，无上限模式已通过静默、ICMP和`SIGTERM`正常收尾验收，为systemd服务化提供了正确的持续运行语义。CMake安装规则、专用用户systemd单元、默认参数模板和stdout行缓冲已经完成；LubanCat-2N非root手工启停和开机自启已验证专用账户、仅`CAP_NET_RAW`、journal实时日志、真实ICMP和SIGTERM正常收尾，下一步是systemd安全审计、异常恢复和服务方式长稳。两种既有ARM64交叉构建和单次扫描优化版官方SDK产物均通过此前板端实际运行，Python验收脚本兼容板端Python 3.8.10。性能基线已经覆盖空闲、单流、多流、满载边界、探测成本、整机软中断和10分钟长稳；当前仍没有接入`labs/thread_pipeline`。

@@ -54,6 +54,7 @@
 - 主程序在任何stdout I/O之前显式启用行缓冲，使周期指标和生命周期日志在普通文件、Shell管道及systemd journal中及时发布，不再要求服务通过外部`stdbuf`包装；严格普通文件重定向测试在进程结束前读到了第一条周期报告。
 - 官方SDK为提交`740d5ab`生成ARM64服务部署包，并在LubanCat-2N完成首次非root systemd手工启停：专用用户只获得`CAP_NET_RAW`、`NoNewPrivs=1`，journal在运行中显示静默周期报告，2次外部ping对应4个完整ICMP包和1条双向流，两个drop字段为0，SIGTERM正常输出最终汇总。
 - 新增非root systemd部署手册，详细记录暂存安装、打包传输、Linux系统用户、文件权限、capability、journal查询、服务生命周期、故障定位和回滚；记录目标板`journalctl`不接受带时区偏移ISO时间并改用兼容时间格式。
+- LubanCat-2N完成受控重启验收：不同boot ID证明系统实际重启，无人工启动时服务已为`enabled`和`active`，一次启动成功且没有失败重试；新进程继续只获得`CAP_NET_RAW`，静默周期日志和重启后的真实ICMP均正确。
 
 ## [0.2.0] - 2026-08-26
 

@@ -915,7 +915,7 @@ eMMC容量：待填写
 - VMware NAT虚拟机能够向开发板发起ICMP，Release程序已在开发板物理网卡完成跨设备实时抓包；
 - 官方Buildroot GCC 9.3与隔离libpcap overlay已经生成只要求`GLIBC_2.17`的AArch64程序，并通过板端运行；
 - Ubuntu GCC 13配合板端完整sysroot和GCC `-B`启动文件前缀也已经生成只要求`GLIBC_2.17`的AArch64程序，并通过板端运行；
-- Release单流、多流、整机软中断和10分钟长稳已经测量；非root systemd手工启停也已通过。后续仍需完成桥接网络双向连通、开机自启/重启恢复和服务方式长稳。
+- Release单流、多流、整机软中断和10分钟长稳已经测量；非root systemd手工启停、开机自启和重启恢复也已通过。后续仍需完成桥接网络双向连通、systemd安全审计/异常恢复和服务方式长稳。
 
 ### TD-024：按文件系统语义和容量分配eMMC与SD卡职责
 
@@ -1150,7 +1150,7 @@ SD卡项目目录：7.2MB
 
 ### TD-035：使用专用系统用户和systemd动态能力边界运行抓包服务
 
-状态：已采用第一版，手工启停验收通过，开机自启待验证。
+状态：已采用第一版，手工启停和开机自启验收通过，服务长稳待验证。
 
 决定：
 
@@ -1184,6 +1184,9 @@ SD卡项目目录：7.2MB
 - 进程实际UID/GID为`netflow-analyzer`，有效、边界和ambient capability只包含`0x2000`，即`CAP_NET_RAW`，`NoNewPrivs=1`；
 - 虚拟机发送2次ping后，服务完整处理4个ICMP包并聚合为1条双向流；4次流表操作均只检查1槽，两个drop字段为0；
 - `systemctl stop`触发SIGTERM正常收尾，最终活动流汇总进入journal，没有异常重启；
+- 执行`enable`和受控重启后，boot ID发生变化；没有人工`start`时服务已为`enabled`和`active`，`Result=success`、`NRestarts=0`；
+- 新boot中的新PID仍使用专用UID/GID和唯一`CAP_NET_RAW`能力，journal静默报告与再次发送的4个ICMP包均正确；
+- `critical-chain`确认单元排在`network-online.target`之后；该顺序不被解释为互联网或所有接口必然可用，异常网络恢复仍保留单独复审；
 - 完整命令、Linux概念、故障定位和回滚见[`docs/systemd_deployment.md`](systemd_deployment.md)。
 
 

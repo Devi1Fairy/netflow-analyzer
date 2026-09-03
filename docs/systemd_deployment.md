@@ -487,7 +487,27 @@ Sep 02 21:44:56 lubancat netflow-analyzer[49933]: Total packets: 4
 
 后端6包与应用4包属于已经记录的libpcap统计层级差异，不能用差值推导丢包；本轮两个专用drop字段均为0。
 
-## 9. systemctl stop为什么能够优雅结束
+## 9. 开机自启与重启恢复验收
+
+2026-09-03完成受控重启验收：
+
+- 重启前执行`systemctl enable netflow-analyzer`，在`multi-user.target.wants`下建立指向正式单元的符号链接；
+- 重启前后`/proc/sys/kernel/random/boot_id`不同，证明观察到的是新的内核boot，而不是原服务进程重启；
+- 重新登录后没有人工执行`systemctl start`，单元已经同时处于`enabled`和`active`；
+- `Result=success`且`NRestarts=0`，证明本次boot一次启动成功，没有依赖失败重试恢复；
+- `systemd-analyze critical-chain`显示分析器排在`network-online.target`之后；
+- 新boot中的主进程拥有新的PID，但用户和组仍为`netflow-analyzer`；
+- 有效、边界和ambient能力仍只包含`CAP_NET_RAW`对应的`0x2000`，`NoNewPrivs=1`；
+- 当前boot的journal在无人登录启动后持续收到静默周期报告；
+- 虚拟机再次发送2次ping后，journal中的周期报告正确出现4个完整ICMP包和1条活动流。
+
+`enable`本身只创建启动依赖，不证明服务能够跨重启运行。本轮通过不同boot ID、无人工`start`、新PID、运行状态、权限集合和真实流量共同证明开机自启成立。
+
+`After=network-online.target`只保证systemd声明的启动顺序，不等于互联网一定可达，也不保证每种网络管理器都采用相同的“在线”标准。当前物理`eth0`在服务启动时已经可供libpcap打开；网络延迟、接口缺失和恢复过程仍可在后续故障注入中单独验证。
+
+服务在验收后保持`enabled`和`active`，作为后续服务方式长稳测试的基础。
+
+## 10. systemctl stop为什么能够优雅结束
 
 当前停止链路：
 
@@ -507,7 +527,7 @@ systemctl stop
 
 `Restart=on-failure`只在异常退出时重启。正常处理SIGTERM并返回成功不会形成重启循环。
 
-## 10. 常见故障定位
+## 11. 常见故障定位
 
 先收集三组信息：
 
@@ -539,7 +559,7 @@ sudo systemctl reset-failed netflow-analyzer
 
 它只清除systemd记录的失败和启动限速状态，不修改程序、配置或日志。
 
-## 11. 回滚与更新原则
+## 12. 回滚与更新原则
 
 更新前先`stop`并备份现有三个文件。新程序安装后先手工`start`验证，不要直接覆盖并重启后离开设备。
 
@@ -565,13 +585,11 @@ sudo systemctl start netflow-analyzer
 
 只有确认恢复版本能够启动后，才考虑清理临时解压目录和旧部署包。不要用宽泛的递归删除命令清理`/tmp`、`/home/cat`或系统目录。
 
-## 12. 仍待完成的服务验收
+## 13. 仍待完成的服务验收
 
-首次手工启动、非root身份、能力边界、journal实时日志、真实ICMP和SIGTERM收尾已经通过。仍需：
+首次手工启动、非root身份、能力边界、journal实时日志、真实ICMP、SIGTERM收尾、开机自启和重启恢复已经通过。仍需：
 
-1. `systemctl enable`后重启开发板，验证开机自动启动；
-2. 验证网络尚未就绪时`network-online.target`和重启策略的行为；
-3. 使用`systemd-analyze security`复查不同systemd版本实际支持的沙箱项；
-4. 进行数小时或数天服务方式浸泡测试，观察journal占用、内存、CPU和drop；
-5. 根据长期日志需求决定journal采用易失还是持久存储及其容量上限。
-
+1. 使用`systemd-analyze security`复查目标板systemd实际支持的沙箱项；
+2. 通过受控故障注入验证接口暂不可用时的重启和恢复行为；
+3. 进行数小时或数天服务方式浸泡测试，观察journal占用、内存、CPU和drop；
+4. 根据长期日志需求决定journal采用易失还是持久存储及其容量上限。
