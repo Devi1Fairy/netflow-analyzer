@@ -1,6 +1,6 @@
-# Netflow Analyzer
+_# Netflow Analyzer
 
-基于Linux C11的网络流量分析与异常检测学习项目。项目面向嵌入式Linux应用开发和网络协议分析岗位，逐步实现数据包采集、协议解析、双向流量聚合、异常检测、可视化与ARM Linux部署。
+基于Linux C11的网络流量分析与异常检测学习项目。项目面向嵌入式Linux应用开发和边缘AI开发岗位，逐步实现数据包采集、协议解析、双向流量聚合、异常检测、可视化与ARM Linux部署。
 
 ## 当前版本
 
@@ -371,3 +371,4 @@ LubanCat-2N已经完成ARM64原生Debug/Release构建、当前18项板端CTest�
 6. 在稳定的数据接口之上实现Qt上位机，并按需要扩展云端展示。
 
 版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)，技术、环境和硬件选型见[docs/technical_decisions.md](docs/technical_decisions.md)，两种ARM64构建方式见[docs/cross_compilation.md](docs/cross_compilation.md)，非root服务安装见[docs/systemd_deployment.md](docs/systemd_deployment.md)，首轮板端测量见[docs/performance_baseline.md](docs/performance_baseline.md)。
+_
