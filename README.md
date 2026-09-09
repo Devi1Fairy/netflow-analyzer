@@ -1,4 +1,4 @@
-_# Netflow Analyzer
+# Netflow Analyzer
 
 基于Linux C11的网络流量分析与异常检测学习项目。项目面向嵌入式Linux应用开发和边缘AI开发岗位，逐步实现数据包采集、协议解析、双向流量聚合、异常检测、可视化与ARM Linux部署。
 
