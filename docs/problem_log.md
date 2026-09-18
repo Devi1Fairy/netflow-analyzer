@@ -1344,3 +1344,60 @@ Failed to start Netflow Analyzer live capture service.
 恢复语义：
 
 达到启动上限后，服务不会只因30秒过去就自动恢复。管理员修正接口、配置或硬件问题后，需要执行`systemctl reset-failed`清除失败状态和频率计数，再执行`systemctl start`。该边界比永久高速重启更适合当前固定`eth0`的设备，但如果以后支持热插拔接口，需要重新评估退避与延迟重试策略。
+
+### 5.19 长期服务日志与多个VS Code Server版本共同写满目标板根分区
+
+现象：
+
+LubanCat-2N连续运行数天后无法通过SSH登录。本地终端检查发现，位于8GB eMMC上的根分区已经没有可用空间：
+
+```text
+/dev/mmcblk0p3  ext4  7.0G  7.0G  0  100%  /
+```
+
+30GB数据SD卡仍只使用约208KB，因此故障发生在eMMC根文件系统，不是SD卡容量耗尽。根分区写满会影响SSH会话、临时文件、日志和其他需要创建文件的系统操作，能够解释本次SSH不可用现象。
+
+服务生命周期方面，此前部署的`netflow-analyzer.service`为`enabled`和`active`，`ExecStart`没有传入`--count`。因此“一小时观察结束”只表示人工观察窗口结束，不会自动停止服务；服务会继续运行，并在重启后自动启动。程序不会自动保存全部数据包，也只预览前5包，但会每5秒向systemd journal输出一条运行指标。
+
+只读排查结果：
+
+- `du -xsh /`同样得到7.0GB，说明空间主要由仍然存在的文件占用，而不是只存在于`df`中的大量已删除文件；
+- `lsof +L1`只显示约64MB的PulseAudio `memfd`，该对象位于内存文件系统，不能解释eMMC占满；
+- `/usr`约2.9GB，主要为系统程序、共享数据和动态库，不作为本次清理目标；
+- `journalctl --disk-usage`报告归档和活动journal共587.8MB，`/var/log`约576MB；同时出现`system.journal is truncated, ignoring file`，说明日志文件已经不完整，但仅凭该提示不能确定具体损坏时刻；
+- `/home/cat`约3.2GB，几乎全部来自`/home/cat/.vscode-server`；
+- `.vscode-server/cli/servers`约3.1GB，包含4个约644至660MB的完整`Stable-<commit>`目录，以及1个约545MB的`.staging`目录；
+- 版本目录修改时间分布在8月28日至9月11日，排查时没有VS Code Server进程正在使用这些目录。
+
+判断：
+
+这不是单一的“抓包程序把磁盘写满”问题，而是小容量根分区上的组合容量事故：
+
+1. 多次VS Code客户端版本变化在远端留下多个VS Code Server版本，是最大的可回收占用；
+2. 未完成的`.staging`目录与磁盘不足期间的安装中断相符，是最后阶段的额外占用；
+3. 无上限systemd服务每5秒写入周期指标，使journal在数天内持续增长到约588MB；
+4. 7GB根分区缺少足够余量，最终同时影响journal完整性和SSH可用性。
+
+处理与结果：
+
+- 确认没有活动VS Code Server进程后，删除未完成的`.staging`目录和不再使用的旧`Stable-<commit>`目录；
+- 保留最新的一个完整VS Code Server版本，避免立即失去Remote-SSH运行环境；
+- 清理后根分区新增约2.6GB可用空间，证明旧VS Code Server版本是本次事故的主要磁盘占用；
+- 当前仍选择使用VS Code Remote-SSH开发，但已经在客户端关闭VS Code自动更新，减少服务端commit版本的自动累积；
+- 该选择会延后编辑器更新，需要由使用者主动安排安全更新，并在更新后关注远端是否生成新版本；它降低增长频率，但不是目录容量的硬上限。
+
+后续防护边界：
+
+- 测试步骤必须明确区分“观察命令结束”和“systemd服务停止”；不再需要常驻运行时应显式执行`systemctl disable --now netflow-analyzer.service`；
+- journal应增加`SystemMaxUse`和`SystemKeepFree`硬限制，避免长期服务日志再次吃掉根分区余量；该配置尚未完成，不能写成已生效；
+- 当前SD卡为带`noexec`的VFAT，不具备完整Linux权限和符号链接语义，不能直接作为VS Code Server运行目录；如以后要迁移，应先准备固定挂载的ext4分区，再配置`remote.SSH.serverInstallPath`；
+- 如果继续把开发板作为Remote-SSH主机，应在每次主动升级VS Code后检查远端安装结果，尤其关注未完成的`.staging`目录；
+- 更符合嵌入式部署边界的长期替代方案仍是虚拟机开发和交叉构建、普通SSH或`scp`部署、开发板只承担运行与验证。
+
+本次事故还出现：
+
+```text
+sudo: unable to resolve host lubancat: Temporary failure in name resolution
+```
+
+该提示通常表示本机主机名与`/etc/hosts`映射不一致，不是根分区被占满的直接原因。待空间恢复后应单独核对`hostname`、`/etc/hostname`和`/etc/hosts`，不要把两个问题混为同一根因。
