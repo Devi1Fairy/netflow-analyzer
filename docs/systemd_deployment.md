@@ -462,6 +462,71 @@ Sep 02 21:44:56 lubancat netflow-analyzer[49933]: Total packets: 4
 
 方括号中的49933是本轮服务主进程PID，不是包数或流编号。
 
+### 7.1 小容量根分区的journal容量边界
+
+LubanCat-2N的根分区只有7.0GB。服务长期运行时，每5秒周期报告会持续进入journal；默认按文件系统比例计算的上限对于该设备仍然过大。一次数天运行与多个VS Code Server版本共同耗尽根分区后，板端增加独立drop-in：
+
+```ini
+# /etc/systemd/journald.conf.d/20-storage-limits.conf
+[Journal]
+SystemMaxUse=100M
+SystemKeepFree=1G
+SystemMaxFileSize=20M
+MaxRetentionSec=7day
+```
+
+参数职责：
+
+- `SystemMaxUse=100M`限制`/var/log/journal`中的持久日志总量；
+- `SystemKeepFree=1G`要求journald为根文件系统的其他使用者保留至少1GB空间；
+- `SystemMaxFileSize=20M`缩小单个journal文件，使轮转和回收粒度更细；
+- `MaxRetentionSec=7day`限制最长保留时间，实际日志也可能因100MB上限更早淘汰。
+
+创建和加载：
+
+```bash
+sudo install \
+    -d \
+    -o root \
+    -g root \
+    -m 0755 \
+    /etc/systemd/journald.conf.d
+
+sudo tee \
+    /etc/systemd/journald.conf.d/20-storage-limits.conf \
+    >/dev/null <<'EOF'
+[Journal]
+SystemMaxUse=100M
+SystemKeepFree=1G
+SystemMaxFileSize=20M
+MaxRetentionSec=7day
+EOF
+
+sudo chown \
+    root:root \
+    /etc/systemd/journald.conf.d/20-storage-limits.conf
+
+sudo chmod \
+    0644 \
+    /etc/systemd/journald.conf.d/20-storage-limits.conf
+
+sudo systemctl restart systemd-journald.service
+sudo journalctl --rotate
+sudo journalctl --vacuum-size=100M
+```
+
+`restart`让journald重新读取配置，`rotate`把当前活动文件切换为可回收的归档文件，`vacuum`再按总量删除旧归档。三者职责不同；`vacuum`显示释放0B不代表配置无效，因为损坏文件恢复或空间回收可能已经发生在重启和轮转阶段。
+
+验证：
+
+```bash
+sudo journalctl --disk-usage
+sudo journalctl --verify
+df -hT /
+```
+
+本次实测中，journal由118.1MB降为28.0MB，活动和归档文件均通过校验；根分区恢复为4.7GB已用、2.0GB可用和71%使用率。容量限制只约束journal，不能限制`~/.vscode-server`或其他目录，因此仍需把根分区使用者分开诊断。
+
 ## 8. 首次板端验收结果
 
 2026-09-02在LubanCat-2N物理接口`eth0`完成首次非root手工启停验收：
@@ -529,7 +594,7 @@ eth0: UP,LOWER_UP
 
 这里不在C代码中增加内部循环，因为systemd已经统一管理失败退出、等待、重启次数和日志。连续失败的边界通过下一节的受控实验单独验证。
 
-服务在验收后保持`enabled`和`active`，作为后续服务方式长稳测试的基础。
+服务曾在验收后保持`enabled`和`active`，作为服务方式长稳观察的基础。后续磁盘事故证明“观察窗口结束”不等于服务停止；清理和恢复后已经执行`disable --now`与`reset-failed`，当前为`inactive/dead/disabled`。未来浸泡测试必须同时设计自动结束条件和验收后的显式停止步骤。
 
 ### 连续失败启动限速
 
@@ -777,10 +842,10 @@ sudo systemctl start netflow-analyzer
 
 ## 14. 仍待完成的服务验收
 
-首次手工启动、非root身份、能力边界、journal实时日志、真实ICMP、SIGTERM收尾、开机自启、瞬态恢复、连续失败限速和第一批低风险沙箱加固已经通过。一次真实重启观察到`ETHTOOL_GET_TS_INFO`暂时返回`EBUSY`并在2秒后自动恢复；确定性不存在接口实验又证明正式`30s/5次`策略会在连续五次失败后拒绝第六次启动。加固后安全评分由`5.2 MEDIUM`降为`3.7 OK`。仍需：
+首次手工启动、非root身份、能力边界、journal实时日志、真实ICMP、SIGTERM收尾、开机自启、瞬态恢复、连续失败限速、第一批低风险沙箱加固和journal容量边界已经通过。一次真实重启观察到`ETHTOOL_GET_TS_INFO`暂时返回`EBUSY`并在2秒后自动恢复；确定性不存在接口实验又证明正式`30s/5次`策略会在连续五次失败后拒绝第六次启动。加固后安全评分由`5.2 MEDIUM`降为`3.7 OK`。仍需：
 
-1. 进行数小时或数天服务方式浸泡测试，观察journal占用、内存、CPU和drop；
-2. 根据长期日志需求决定journal采用易失还是持久存储及其容量上限。
+1. 使用明确自动结束条件进行数小时服务方式浸泡测试，观察journal占用、内存、CPU和drop，并在验收后显式停止服务；
+2. 在下一次受控重启后复核journal drop-in仍被读取，且分析器保持预期的禁用状态。
 
 地址族白名单和系统调用拒绝组不再作为当前必做项；只有在出现明确安全需求时才单独立项，避免为了评分破坏libpcap的数据面。
 

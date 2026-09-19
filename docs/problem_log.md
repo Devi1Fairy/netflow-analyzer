@@ -1384,12 +1384,16 @@ LubanCat-2N连续运行数天后无法通过SSH登录。本地终端检查发现
 - 保留最新的一个完整VS Code Server版本，避免立即失去Remote-SSH运行环境；
 - 清理后根分区新增约2.6GB可用空间，证明旧VS Code Server版本是本次事故的主要磁盘占用；
 - 当前仍选择使用VS Code Remote-SSH开发，但已经在客户端关闭VS Code自动更新，减少服务端commit版本的自动累积；
-- 该选择会延后编辑器更新，需要由使用者主动安排安全更新，并在更新后关注远端是否生成新版本；它降低增长频率，但不是目录容量的硬上限。
+- 该选择会延后编辑器更新，需要由使用者主动安排安全更新，并在更新后关注远端是否生成新版本；它降低增长频率，但不是目录容量的硬上限；
+- 检查发现`/etc/hostname`为`lubancat`，但`/etc/hosts`为空；恢复`localhost`、`127.0.1.1 lubancat`和标准IPv6本机映射后，`getent hosts "$(hostname)"`返回0，`sudo true`也不再报告主机名解析错误；
+- 新建`/etc/systemd/journald.conf.d/20-storage-limits.conf`，设置`SystemMaxUse=100M`、`SystemKeepFree=1G`、`SystemMaxFileSize=20M`和`MaxRetentionSec=7day`；
+- 重启journald并执行rotate和vacuum后，journal占用由118.1MB降至28.0MB；`journalctl --verify`对当前活动文件和归档文件均返回`PASS`，此前的截断提示消失；
+- 最终根分区为7.0GB总量、4.7GB已用、2.0GB可用和71%使用率；执行`systemctl reset-failed`后，分析器为`inactive/dead/disabled`，不会继续运行或随开机启动。
 
 后续防护边界：
 
 - 测试步骤必须明确区分“观察命令结束”和“systemd服务停止”；不再需要常驻运行时应显式执行`systemctl disable --now netflow-analyzer.service`；
-- journal应增加`SystemMaxUse`和`SystemKeepFree`硬限制，避免长期服务日志再次吃掉根分区余量；该配置尚未完成，不能写成已生效；
+- journal的100MB占用上限和1GB空闲预留已经生效，不需要依赖人工定期清理；仍需在下次受控重启后复核drop-in被正常读取；
 - 当前SD卡为带`noexec`的VFAT，不具备完整Linux权限和符号链接语义，不能直接作为VS Code Server运行目录；如以后要迁移，应先准备固定挂载的ext4分区，再配置`remote.SSH.serverInstallPath`；
 - 如果继续把开发板作为Remote-SSH主机，应在每次主动升级VS Code后检查远端安装结果，尤其关注未完成的`.staging`目录；
 - 更符合嵌入式部署边界的长期替代方案仍是虚拟机开发和交叉构建、普通SSH或`scp`部署、开发板只承担运行与验证。
@@ -1400,4 +1404,4 @@ LubanCat-2N连续运行数天后无法通过SSH登录。本地终端检查发现
 sudo: unable to resolve host lubancat: Temporary failure in name resolution
 ```
 
-该提示通常表示本机主机名与`/etc/hosts`映射不一致，不是根分区被占满的直接原因。待空间恢复后应单独核对`hostname`、`/etc/hostname`和`/etc/hosts`，不要把两个问题混为同一根因。
+该提示由空的`/etc/hosts`导致，不是根分区被占满的直接原因。补回本机映射后，名称解析和`sudo`均恢复正常；两个问题已经分别定位和处理，不能混为同一根因。

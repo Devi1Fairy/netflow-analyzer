@@ -1267,7 +1267,7 @@ LubanCat官方SDK交叉产物实测：
 - 板端Python为3.8.10；验收脚本将Python 3.9内置泛型注解改为`typing.List`和`typing.Tuple`后，`offline_flow_acceptance`与全量测试均通过；
 - 板上Release原生构建和确定性6包PCAP端到端验收已经通过；
 - 系统位于容量8GB的eMMC，根分区实际为7.0GB ext4，已用5.4GB、可用1.4GB；恢复后的源码约2.4MB，新Debug构建树约3.2MB，不在其中长期累积大型PCAP、模型数据集、日志和大量旧构建；
-- 后续一次数天运行使根分区达到7.0GB/100%并影响SSH登录；只读排查发现`/home/cat/.vscode-server/cli/servers`约3.1GB，包含4个完整版本和1个未完成的`.staging`，journal约587.8MB且报告截断文件。删除未完成安装和旧版本后释放约2.6GB，证明VS Code Server多版本是主要可回收占用，长期服务指标日志是次要持续增长项；当前继续使用Remote-SSH，但已关闭客户端VS Code自动更新。journal容量硬限制尚未配置，后续不能把该风险写成已根治；详细证据见`docs/problem_log.md`第5.19节；
+- 后续一次数天运行使根分区达到7.0GB/100%并影响SSH登录；只读排查发现`/home/cat/.vscode-server/cli/servers`约3.1GB，包含4个完整版本和1个未完成的`.staging`，journal约587.8MB且报告截断文件。删除未完成安装和旧版本后释放约2.6GB，证明VS Code Server多版本是主要可回收占用，长期服务指标日志是次要持续增长项；当前继续使用Remote-SSH，但已关闭客户端VS Code自动更新。journald现已设置100MB占用上限、1GB空闲预留、20MB单文件上限和7天保留期，重启、轮转和清理后占用为28.0MB且`journalctl --verify`全部通过；空的`/etc/hosts`也已恢复本机映射，最终根分区使用率为71%，分析器为`inactive/dead/disabled`；详细证据见`docs/problem_log.md`第5.19节；
 - 新构建树位于`/home/cat/build/netflow-analyzer-debug-emmc`，没有复用保存旧SD卡绝对源码路径的CMake缓存；当前18项板端CTest全部通过；
 - VMware NAT虚拟机`192.168.78.130`能够`ping`开发板`192.168.1.102`，开发板不能反向`ping`虚拟机；这是NAT与路由边界，不是程序故障；
 - Release程序已在开发板物理网卡完成来自虚拟机的ICMP实时抓包和双向流聚合；开发板实际观察到NAT后对端`192.168.1.100`；
