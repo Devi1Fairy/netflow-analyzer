@@ -2312,6 +2312,40 @@ static int app_run_capture_analysis(app_context_t *context, FILE *feature_csv_ou
                 return error_code;
             }
 
+            /*
+             * evicted_flow_record是流表覆盖旧槽位前生成的值副本。
+             *
+             * 旧记录已经不在流表中，必须在这里立即导出；
+             * 退出时遍历最终流表无法再次取得它。
+             */
+            if (feature_csv_output != NULL) {
+                error_code =
+                    app_write_flow_feature_csv_record(
+                        feature_csv_output,
+                        &evicted_flow_record
+                    );
+
+                if (error_code != 0) {
+                    (void)snprintf(
+                        context->error_message,
+                        sizeof(context->error_message),
+                        "failed to write evicted flow features "
+                        "for packet %zu: %s",
+                        total_packet_count,
+                        strerror(error_code)
+                    );
+
+                    /*
+                     * 输出流由外层包装函数拥有。
+                     * 本层清理流表与capture，但不能调用fclose。
+                     */
+                    context->active_capture = NULL;
+                    flow_table_cleanup(&flow_table);
+                    capture_close(&capture);
+                    return error_code;
+                }
+            }
+
             total_evicted_flow_count += 1U;
 
             error_code =
