@@ -84,6 +84,7 @@ add_library(
     src/protocol/ipv4_dispatch.c
     src/flow/flow_key.c
     src/flow/flow_record.c
+    src/flow/flow_features.c
     src/flow/flow_table.c
     src/output/flow_export.c
     src/flow/flow_expiration.c
@@ -658,6 +659,34 @@ if(BUILD_TESTING)
 
     set_tests_properties(
         tcp_flow_state_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+    # 创建流特征提取单元测试程序。
+    add_executable(
+        flow_features_tests
+        tests/unit/test_flow_features.c
+    )
+
+    # 特征提取实现位于核心静态库中。
+    target_link_libraries(
+        flow_features_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    # 测试使用与正式代码相同的严格警告。
+    enable_project_warnings(flow_features_tests)
+
+    # 注册为CTest测试。
+    add_test(
+        NAME flow_features_tests
+        COMMAND flow_features_tests
+    )
+
+    set_tests_properties(
+        flow_features_tests
         PROPERTIES
             TIMEOUT 5
     )
