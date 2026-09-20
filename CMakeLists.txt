@@ -558,6 +558,27 @@ if(BUILD_TESTING)
             TIMEOUT 10
     )
 
+    # 使用确定性合成CSV验证CTU-13标签审计工具。
+    #
+    # 测试不依赖仓库外的公开数据集文件，因此开发机、
+    # 目标板和未来CI环境都可以重复运行。
+    add_test(
+        NAME ctu13_label_audit_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_ctu13_label_audit.py
+            --script
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/inspect_ctu13_labels.py
+            --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}
+    )
+
+    set_tests_properties(
+        ctu13_label_audit_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
     # 创建CSV流记录导出单元测试程序。
     add_executable(
         flow_export_tests
