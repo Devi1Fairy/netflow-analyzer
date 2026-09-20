@@ -87,6 +87,7 @@ add_library(
     src/flow/flow_features.c
     src/flow/flow_table.c
     src/output/flow_export.c
+    src/output/flow_feature_export.c
     src/flow/flow_expiration.c
     src/metrics/runtime_metrics.c
     src/flow/tcp_flow_state.c
@@ -687,6 +688,32 @@ if(BUILD_TESTING)
 
     set_tests_properties(
         flow_features_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+    # 创建版本化流特征CSV导出单元测试程序。
+    add_executable(
+        flow_feature_export_tests
+        tests/unit/test_flow_feature_export.c
+    )
+
+    # 特征CSV导出器位于核心静态库中。
+    target_link_libraries(
+        flow_feature_export_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    enable_project_warnings(flow_feature_export_tests)
+
+    add_test(
+        NAME flow_feature_export_tests
+        COMMAND flow_feature_export_tests
+    )
+
+    set_tests_properties(
+        flow_feature_export_tests
         PROPERTIES
             TIMEOUT 5
     )
