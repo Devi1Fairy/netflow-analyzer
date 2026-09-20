@@ -2858,6 +2858,42 @@ int app_run(app_context_t *context)
             return EINVAL;
         }
 
+        /*
+         * NULL表示不导出特征；非NULL路径不能为空字符串。
+         *
+         * app_context_t只借用路径字符串，不负责释放它。
+         */
+        if (context->feature_csv_output_path != NULL &&
+            context->feature_csv_output_path[0] == '\0') {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "feature CSV output path is empty"
+            );
+
+            return EINVAL;
+        }
+
+        /*
+         * 两种CSV格式不能写入同一个文件。
+         *
+         * strcmp比较路径内容，而不是比较两个指针地址。
+         */
+        if (context->csv_output_path != NULL &&
+            context->feature_csv_output_path != NULL &&
+            strcmp(
+                context->csv_output_path,
+                context->feature_csv_output_path
+            ) == 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "flow CSV and feature CSV output paths must differ"
+            );
+
+            return EINVAL;
+        }
+
         if (context->flow_full_policy !=
             APP_FLOW_FULL_POLICY_REJECT) {
             (void)snprintf(
@@ -2898,7 +2934,49 @@ int app_run(app_context_t *context)
             return EINVAL;
         }
 
-            if (context->flow_full_policy != APP_FLOW_FULL_POLICY_REJECT &&
+        /*
+         * 普通流记录CSV仍然只支持离线模式。
+         *
+         * 这里防止调用者绕过app_parse_arguments手工构造非法状态。
+         */
+        if (context->csv_output_path != NULL) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "flow CSV output is only supported for offline capture"
+            );
+
+            return EINVAL;
+        }
+
+        if (context->feature_csv_output_path != NULL &&
+            context->feature_csv_output_path[0] == '\0') {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "feature CSV output path is empty"
+            );
+
+            return EINVAL;
+        }
+
+        /*
+         * packet_limit为0表示实时模式没有包数上限。
+         *
+         * 第一版不允许无上限实时任务持续增长特征文件。
+         */
+        if (context->feature_csv_output_path != NULL &&
+            context->packet_limit == 0U) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "live feature CSV output requires a packet limit"
+            );
+
+            return EINVAL;
+        }
+
+        if (context->flow_full_policy != APP_FLOW_FULL_POLICY_REJECT &&
                 context->flow_full_policy != APP_FLOW_FULL_POLICY_EVICT_OLDEST) {
             (void)snprintf(
                 context->error_message,

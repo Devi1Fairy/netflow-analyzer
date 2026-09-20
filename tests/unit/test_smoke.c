@@ -575,6 +575,123 @@ static int test_invalid_feature_csv_arguments(void)
 }
 
 /**
+ * @brief 验证app_run拒绝手工构造的非法CSV输出状态。
+ *
+ * 所有场景都应在打开PCAP或网卡之前返回，
+ * 因此测试不依赖抓包权限、真实接口或测试文件。
+ */
+static int test_feature_csv_run_validation(void)
+{
+    app_context_t context;
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    /*
+     * 非NULL空字符串不是“未配置输出”，而是非法路径。
+     */
+    context.command = APP_COMMAND_READ_CAPTURE;
+    context.capture_path = "sample.pcap";
+    context.feature_csv_output_path = "";
+
+    TEST_CHECK(app_run(&context) == EINVAL);
+
+    TEST_CHECK(
+        strstr(
+            context.error_message,
+            "feature CSV output path is empty"
+        ) != NULL
+    );
+
+    app_cleanup(&context);
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    /*
+     * 即使两个指针来自不同位置，只要路径文本相同也必须拒绝。
+     */
+    context.command = APP_COMMAND_READ_CAPTURE;
+    context.capture_path = "sample.pcap";
+    context.csv_output_path = "same.csv";
+    context.feature_csv_output_path = "same.csv";
+
+    TEST_CHECK(app_run(&context) == EINVAL);
+
+    TEST_CHECK(
+        strstr(
+            context.error_message,
+            "output paths must differ"
+        ) != NULL
+    );
+
+    app_cleanup(&context);
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    /*
+     * 空特征路径必须在尝试打开实时接口之前被拒绝。
+     */
+    context.command = APP_COMMAND_CAPTURE_INTERFACE;
+    context.interface_name = "lo";
+    context.packet_limit = 1U;
+    context.feature_csv_output_path = "";
+
+    TEST_CHECK(app_run(&context) == EINVAL);
+
+    TEST_CHECK(
+        strstr(
+            context.error_message,
+            "feature CSV output path is empty"
+        ) != NULL
+    );
+
+    app_cleanup(&context);
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    /*
+     * packet_limit为0表示持续运行，不能启用第一版实时文件导出。
+     */
+    context.command = APP_COMMAND_CAPTURE_INTERFACE;
+    context.interface_name = "lo";
+    context.packet_limit = 0U;
+    context.feature_csv_output_path = "features.csv";
+
+    TEST_CHECK(app_run(&context) == EINVAL);
+
+    TEST_CHECK(
+        strstr(
+            context.error_message,
+            "requires a packet limit"
+        ) != NULL
+    );
+
+    app_cleanup(&context);
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    /*
+     * 普通流CSV仍然只能用于离线模式。
+     */
+    context.command = APP_COMMAND_CAPTURE_INTERFACE;
+    context.interface_name = "lo";
+    context.packet_limit = 1U;
+    context.csv_output_path = "flows.csv";
+
+    TEST_CHECK(app_run(&context) == EINVAL);
+
+    TEST_CHECK(
+        strstr(
+            context.error_message,
+            "only supported for offline capture"
+        ) != NULL
+    );
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 验证实时网卡和数据包数量能够保存到应用上下文。
  */
 static int test_live_interface_command(void)
@@ -1430,6 +1547,13 @@ int main(void)
     }
 
     printf("[PASS] invalid feature CSV arguments\n");
+
+    if (test_feature_csv_run_validation() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] feature CSV run validation\n");
 
     if (test_live_interface_with_filter_command() != EXIT_SUCCESS) {
         return EXIT_FAILURE;
