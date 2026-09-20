@@ -827,6 +827,44 @@ static int app_write_flow_feature_csv_record(
 }
 
 /**
+ * @brief 把连续数组中的流记录依次写入特征CSV。
+ *
+ * records中的每个元素都是独立的值副本，不依赖流表槽位。
+ *
+ * output由外层拥有，本函数只借用，不关闭。
+ * record_count为0时不写入任何内容并返回成功。
+ */
+static int app_write_flow_feature_csv_records(
+    FILE *output,
+    const flow_record_t *records,
+    size_t record_count)
+{
+    size_t index;
+    int error_code;
+
+    if (output == NULL ||
+        (records == NULL && record_count != 0U)) {
+        return EINVAL;
+    }
+
+    for (index = 0U;
+         index < record_count;
+         index += 1U) {
+        error_code =
+            app_write_flow_feature_csv_record(
+                output,
+                &records[index]
+            );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+    }
+
+    return 0;
+}
+
+/**
  * @brief 把流表中当前保留的全部记录写入特征CSV。
  *
  * 本函数不写表头，也不关闭output。
@@ -2160,6 +2198,40 @@ static int app_run_capture_analysis(app_context_t *context, FILE *feature_csv_ou
                 flow_table_cleanup(&flow_table);
                 capture_close(&capture);
                 return error_code;
+            }
+
+            /*
+             * flow_table_expire_before已经在删除槽位前把记录按值
+             * 复制到expired_flow_records中。
+             *
+             * 因此这些记录必须在这里导出；退出时遍历剩余流表
+             * 已经无法再次找到它们。
+             */
+            if (feature_csv_output != NULL) {
+                error_code =
+                    app_write_flow_feature_csv_records(
+                        feature_csv_output,
+                        expired_flow_records,
+                        expired_flow_count
+                    );
+
+                if (error_code != 0) {
+                    (void)snprintf(
+                        context->error_message,
+                        sizeof(context->error_message),
+                        "failed to write expired flow features: %s",
+                        strerror(error_code)
+                    );
+
+                    /*
+                     * feature_csv_output由外层包装函数拥有。
+                     * 返回后外层仍会调用fclose，本层不能重复关闭。
+                     */
+                    context->active_capture = NULL;
+                    flow_table_cleanup(&flow_table);
+                    capture_close(&capture);
+                    return error_code;
+                }
             }
 
             total_expired_flow_count += expired_flow_count;
