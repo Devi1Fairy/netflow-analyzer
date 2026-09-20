@@ -62,6 +62,12 @@
 - 使用Git Bundle和SSH在不依赖板端GitHub连接的情况下恢复完整仓库：`feature/nonroot-service`及提交历史进入eMMC ext4，`origin`恢复为GitHub HTTPS地址；新建Debug构建目录而不复用旧SD卡绝对路径缓存，当前18项ARM64 CTest全部通过。源码与构建树合计约5.6MB，当前1.4GB可用空间足以承载活动开发文件。
 - 完成SD卡数据盘恢复验收：修正`usbmount.conf`中拼错且使用弯引号的`FS_MOUNTOPTIONS`配置，以`usbmount`作为唯一挂载管理者；只读VFAT检查返回0，跨重启后`/dev/mmcblk1p1`唯一挂载到`/media/usb0`，普通用户以`0644/0755`权限完成创建、写入、同步、读取和删除测试。源码与构建继续留在eMMC ext4，SD卡只保存PCAP、CSV、数据集和日志。
 - 为systemd单元显式增加`StartLimitIntervalSec=30s`和`StartLimitBurst=5`：LubanCat-2N使用不存在接口连续失败5次后，第6次启动请求被`Start request repeated too quickly`拒绝；清除运行时drop-in和`reset-failed`后服务恢复。提交`903edd4`的正式单元摘要一致、静态检查状态为0，有效参数为`30s/5`且无drop-in，真实2次ping继续处理为4个完整ICMP包。
+- 新增`flow_features_t`和`flow_features_from_record()`，从已完成的双向流记录提取协议、持续时间、双向包/字节总量、平均包长、方向不平衡度、TCP阶段和握手完成状态；使用溢出检查、协议状态不变量和“局部构造后发布”保证失败时不产生半初始化结果。
+- 新增版本化特征CSV格式`flow_features_v1`和独立导出模块；`schema_version`只作为格式元数据，协议号与TCP阶段属于类别特征，输出有意不包含IP、端口、内部初始化标志或异常标签。
+- CLI新增`--feature-csv FILE`：离线模式可以和普通`--csv`同时使用但路径必须不同；有限实时模式必须同时提供`--count`，防止长期服务持续扩张文件并耗尽目标板存储；目标文件使用C11 `wx`模式拒绝覆盖。
+- 特征导出覆盖完整流生命周期：过期流在删除时写出，被淘汰流在槽位覆盖前写出，采集结束后写出最终剩余流。三组互不重叠，避免只遍历最终流表而丢失已经离开的记录。
+- 单元测试新增流特征计算与特征CSV两个测试目标，Python离线端到端验收新增精确特征行和已有文件不覆盖检查；x86_64 Debug全量CTest增加到20项并全部通过。
+- Ubuntu实时手工验收确认：过期场景输出2包旧流和4包最终剩余流两行特征；300个单包UDP流的`evict-oldest`场景输出44条淘汰流与256条最终剩余流，共300条数据行且没有`flow_rejected`。
 
 ## [0.2.0] - 2026-08-26
 
