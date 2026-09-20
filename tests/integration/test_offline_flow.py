@@ -478,6 +478,11 @@ def run_acceptance_test(
             / "offline-flow-result.csv"
         )
 
+        feature_csv_path = (
+            Path(temporary_directory)
+            / "offline-flow-features.csv"
+        )
+
         write_test_pcap(pcap_path)
 
         completed_process = subprocess.run(
@@ -487,6 +492,8 @@ def run_acceptance_test(
                 str(pcap_path),
                 "--csv",
                 str(csv_path),
+                "--feature-csv",
+                str(feature_csv_path),
             ],
             capture_output=True,
             text=True,
@@ -615,9 +622,56 @@ def run_acceptance_test(
                 f"actual: {csv_lines!r}"
             )
 
+        require_text(
+            output,
+            f"Feature CSV output: {feature_csv_path}",
+        )
+
+        if not feature_csv_path.is_file():
+            raise RuntimeError(
+                "feature CSV output was not created: "
+                f"{feature_csv_path}"
+            )
+
+        feature_csv_lines = feature_csv_path.read_text(
+            encoding="utf-8"
+        ).splitlines()
+
+        expected_feature_csv_lines = [
+            (
+                "schema_version,"
+                "protocol,"
+                "duration_microseconds,"
+                "total_packet_count,"
+                "total_captured_byte_count,"
+                "total_wire_byte_count,"
+                "mean_captured_bytes_per_packet,"
+                "mean_wire_bytes_per_packet,"
+                "packet_count_imbalance_ratio,"
+                "wire_byte_count_imbalance_ratio,"
+                "tcp_state_applicable,"
+                "tcp_phase,"
+                "tcp_handshake_completed"
+            ),
+            (
+                "flow_features_v1,1,2000100,6,"
+                "276,276,46,46,0,0,"
+                "0,not-applicable,0"
+            ),
+        ]
+
+        if feature_csv_lines != expected_feature_csv_lines:
+            raise RuntimeError(
+                "feature CSV output does not match expected records\n"
+                f"expected: {expected_feature_csv_lines!r}\n"
+                f"actual: {feature_csv_lines!r}"
+            )
+
         # 保存第一次成功生成的CSV内容。
         original_csv_content = csv_path.read_bytes()
 
+        original_feature_csv_content = (feature_csv_path.read_bytes())
+        
         # 再次使用相同CSV路径运行程序。
         # 因为输出文件已经存在，本次运行必须失败。
         repeated_process = subprocess.run(
@@ -627,6 +681,8 @@ def run_acceptance_test(
                 str(pcap_path),
                 "--csv",
                 str(csv_path),
+                "--feature-csv",
+                str(feature_csv_path),
             ],
             capture_output=True,
             text=True,
@@ -643,6 +699,12 @@ def run_acceptance_test(
         if csv_path.read_bytes() != original_csv_content:
             raise RuntimeError(
                 "existing CSV content changed after overwrite rejection"
+            )
+
+        if feature_csv_path.read_bytes()!= original_feature_csv_content:
+            raise RuntimeError(
+                "existing feature CSV content changed "
+                "after overwrite rejection"
             )
 
 def run_tcp_state_output_test(

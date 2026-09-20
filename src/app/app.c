@@ -9,6 +9,7 @@
 #include "analyzer/ipv4_dispatch.h"
 #include "analyzer/flow_table.h"
 #include "analyzer/flow_export.h"
+#include "analyzer/flow_features.h"
 #include "analyzer/flow_feature_export.h"
 #include "analyzer/flow_expiration.h"
 #include "analyzer/runtime_metrics.h"
@@ -793,6 +794,85 @@ static int app_export_flow_table_csv(
     return close_error;
 }
 
+/**
+ * @brief 从一条流记录提取特征并写入已打开的CSV流。
+ *
+ * output由外层调用者拥有，本函数只借用，不调用fclose。
+ * record同样只读借用，不保存其地址。
+ */
+static int app_write_flow_feature_csv_record(
+    FILE *output,
+    const flow_record_t *record)
+{
+    flow_features_t features = {0};
+    int error_code;
+
+    if (output == NULL || record == NULL) {
+        return EINVAL;
+    }
+
+    error_code = flow_features_from_record(
+        record,
+        &features
+    );
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    return flow_feature_export_write_csv_record(
+        output,
+        &features
+    );
+}
+
+/**
+ * @brief 把流表中当前保留的全部记录写入特征CSV。
+ *
+ * 本函数不写表头，也不关闭output。
+ */
+static int app_write_flow_table_feature_csv(
+    FILE *output,
+    const flow_table_t *table)
+{
+    const flow_record_t *record;
+
+    size_t flow_count;
+    size_t index;
+    int error_code;
+
+    if (output == NULL ||
+        table == NULL ||
+        !table->initialized) {
+        return EINVAL;
+    }
+
+    flow_count = flow_table_count(table);
+
+    for (index = 0U; index < flow_count; index += 1U) {
+        error_code = flow_table_get(
+            table,
+            index,
+            &record
+        );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+
+        error_code =
+            app_write_flow_feature_csv_record(
+                output,
+                record
+            );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+    }
+
+    return 0;
+}
 
 /**
  * @brief 解析一条捕获数据包，更新流表，并按需输出数据包概要。
@@ -1380,8 +1460,10 @@ static int app_process_packet(
  *
  * 离线模式读取到文件末尾；
  * 实时模式读取到context->packet_limit指定的包数。
+ * feature_csv_output为可选的特征CSV输出流。
+ * NULL表示不导出特征；非NULL时本函数只借用，不负责关闭。
  */
-static int app_run_capture_analysis(app_context_t *context)
+static int app_run_capture_analysis(app_context_t *context, FILE *feature_csv_output)
 {
     char capture_error[CAPTURE_ERROR_BUFFER_SIZE] = {0};
 
@@ -2285,6 +2367,33 @@ static int app_run_capture_analysis(app_context_t *context)
     context->active_capture = NULL;
     capture_close(&capture);
 
+    /*
+     * 采集结束后，流表中剩余记录不会再发生变化。
+     *
+     * 离线模式下，这就是整个PCAP的最终流集合。
+     * 实时模式下，后续还需要把运行期间提前过期或被淘汰的流
+     * 分别接入同一个输出流。
+     */
+    if (feature_csv_output != NULL) {
+        error_code =
+            app_write_flow_table_feature_csv(
+                feature_csv_output,
+                &flow_table
+            );
+
+        if (error_code != 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to write remaining flow features: %s",
+                strerror(error_code)
+            );
+
+            flow_table_cleanup(&flow_table);
+            return error_code;
+        }
+    }
+
     if (printf(
             "Total packets: %zu\n"
             "Previewed packets: %zu\n"
@@ -2522,7 +2631,7 @@ static int app_run_capture_analysis_with_feature_csv(
      */
     if (operation_error == 0) {
         operation_error =
-            app_run_capture_analysis(context);
+            app_run_capture_analysis(context, feature_csv_output);
     }
 
     /*
