@@ -38,7 +38,9 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 
 当前`Unreleased`还为每条TCP流增加了旁路连接状态跟踪。状态机根据规范化流方向和TCP标志识别`unobserved`、`syn-seen`、`syn-ack-seen`、`established`、`midstream`、`fin-seen`、`fin-bidirectional`、`closed`和`reset`。终端流汇总与离线CSV复用同一组稳定名称；UDP和ICMP的`tcp_state`明确写为`not-applicable`。该状态机描述分析器实际观察到的报文过程，不等同于Linux内核socket状态，也尚未执行序列号确认、乱序处理或TCP字节流重组。
 
-当前`Unreleased`已经建立第一版机器学习数据接口：`flow_features_t`把聚合完成的双向流转换为持续时间、包/字节总量、平均包长、方向不平衡度和TCP生命周期特征，`--feature-csv FILE`按`flow_features_v1`固定模式导出。离线模式可以直接生成数据集；实时模式必须同时提供`--count`，并把运行期间过期、被容量策略淘汰以及停止时仍留在流表中的三类互斥记录写入同一个文件。该能力只完成特征生成和数据契约，尚未实现标签对齐、模型训练、异常判定或板端推理。
+当前`Unreleased`已经建立第一版机器学习数据接口：`flow_features_t`把聚合完成的双向流转换为持续时间、包/字节总量、平均包长、方向不平衡度和TCP生命周期特征，`--feature-csv FILE`按`flow_features_v1`固定模式导出。离线模式可以直接生成数据集；实时模式必须同时提供`--count`，并把运行期间过期、被容量策略淘汰以及停止时仍留在流表中的三类互斥记录写入同一个文件。该能力只完成特征生成和数据契约，尚未完成公开PCAP流与标签样本连接、模型训练、异常判定或板端推理。
+
+公开数据集试点选择CTU-13 Scenario 7。仓库提供只依赖Python标准库的标签审计工具，把官方`From-Botnet`保守映射为`malicious`、`From-Normal`映射为`benign`，其余未知方向和Background标签统一排除；真实标签文件得到63条恶意、1669条正常和112345条排除记录。该步骤只建立可重复的标签来源与审计规则，尚未完成PCAP流与`flow_features_v1`样本连接，也没有训练或评估模型。
 
 ## v0.2.0新增
 
@@ -75,7 +77,7 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 - 实时流过期暂时固定为空闲30秒、每5秒事件时间扫描一次，尚未开放CLI配置；
 - 流过期的事件时间只随实际收到的数据包推进，接口完全静默时要等下一包到来才判断旧流；周期运行指标使用单调时钟，因此静默时仍会按时输出；
 - 尚未解析DNS、HTTP等应用层协议；
-- 已实现版本化流特征提取与CSV导出，但尚未实现规则异常检测、公开数据集标签对齐、机器学习训练/推理、Qt界面或云端展示；
+- 已实现版本化流特征提取、CSV导出和CTU-13标签审计，但尚未完成PCAP流与标签样本连接、规则异常检测、机器学习训练/推理、Qt界面或云端展示；
 - ARM Linux开发板已完成原生Debug/Release构建、当前18项CTest、离线跨平台一致性、两种交叉产物、物理网卡抓包、真实TCP完整关闭、单流/多流性能、满载边界、流表探测成本和10分钟长稳基线；最新官方SDK产物又完成单次满表扫描优化复测，300个UDP新流对应300次探测操作、44次最旧流淘汰、256条最终流和零drop。
 - LubanCat-2N已完成非root systemd手工启停、开机自启、异常恢复、连续失败限速和第一批低风险沙箱加固：服务进程使用无登录专用用户，只获得`CAP_NET_RAW`且`NoNewPrivs=1`；静默周期日志、真实ICMP、双向流汇总和SIGTERM收尾均进入journal。一次重启中接口时间戳能力查询短暂返回`EBUSY`，`Restart=on-failure`等待2秒后成功恢复；持续使用不存在接口时，显式的`30s/5次`策略在5次失败后拒绝第6次启动。systemd 245安全评分由`5.2 MEDIUM`降为`3.7 OK`，服务长稳仍待验证。
 - 目标镜像的`resize-all.service`会扫描`/proc/mounts`中的已挂载分区；一次SD卡持久化挂载实验触发VFAT重建且恢复失败。该服务现已禁用、屏蔽并通过跨boot验证；板端Git工作树已通过Git Bundle恢复到eMMC ext4，新构建目录中的18项CTest全部通过。修正`usbmount`配置后，数据卡由唯一挂载管理者以`uid=1000,gid=1000,fmask=0133,dmask=0022,noexec`自动挂载，普通用户读写测试通过；SD卡只承担PCAP、CSV、数据集和日志存储。
@@ -348,12 +350,13 @@ cmake --build build
 cmake -E chdir build ctest --output-on-failure
 ```
 
-当前x86_64 Debug构建共20项测试：
+当前x86_64 Debug构建共21项测试：
 
 - 19项C语言单元测试，分别验证字节读取、抓包与BPF及非阻塞等待封装、数据模型、各层协议解析、分发、流键、流记录、TCP状态机、流表、流过期调度、周期运行指标、普通CSV、流特征计算和版本化特征CSV格式化；
-- 1项Python端到端测试内部运行确定性PCAP场景，并额外验证6包ICMP聚合得到的精确特征行以及已有特征文件不会被覆盖。
+- 1项Python端到端测试内部运行确定性PCAP场景，并额外验证6包ICMP聚合得到的精确特征行以及已有特征文件不会被覆盖；
+- 1项Python标签审计测试使用临时合成CSV验证三类映射、字段契约、空标签、缺失字段、空文件和不存在文件，不依赖仓库外的公开数据集。
 
-同一组20项测试已经在Release优化构建以及启用AddressSanitizer、UndefinedBehaviorSanitizer的独立Debug构建中通过；当前没有出现Sanitizer诊断或泄漏报告。Sanitizer参数暂时通过独立构建目录传入，尚未固化为CMake Preset。
+新增标签审计测试前的20项测试已经在Release优化构建以及启用AddressSanitizer、UndefinedBehaviorSanitizer的独立Debug构建中通过；当前没有出现Sanitizer诊断或泄漏报告。新增的第21项是只使用Python标准库的外部数据契约测试，目前已经在x86_64 Debug测试树通过，尚未随Release和Sanitizer构建重新配置执行。Sanitizer参数暂时通过独立构建目录传入，尚未固化为CMake Preset。
 
 只运行端到端验收：
 

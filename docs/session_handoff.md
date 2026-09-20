@@ -31,9 +31,10 @@ cmake -E chdir build ctest --output-on-failure
 - 本地主程序：`build/bin/netflow-analyzer`；
 - 官方SDK交叉构建目录：`/home/zcb/build/netflow-analyzer-lubancat-sdk-release-v2`；
 - 通用GCC交叉构建目录：`/home/zcb/build/netflow-analyzer-generic-sysroot-release`；
-- 当前`feature/flow-features`分支的x86_64 Debug构建共有20项CTest并全部通过；LubanCat-2N ARM64原生Debug仍以此前18项基线为已验证状态，新增特征模块尚未上板回归，不能写成板端20项已通过。此前单次扫描优化已完成Ubuntu `lo`和LubanCat-2N物理网卡300流手工验收；优化版官方SDK ARM64产物只要求`GLIBC_2.17`，板端得到300次操作、44次淘汰、256条最终流和零drop；TCP状态功能也已在`lo`真实HTTP/1.0连接中处理12包并最终输出`closed`，两个drop字段均为0。
-- 第一版流特征链已经完成：`flow_features_t`从双向流记录提取版本化模型输入，`--feature-csv`支持离线和带`--count`的有限实时模式；运行期间的过期流与淘汰流立即导出，停止时再导出最终剩余流。Ubuntu手工验收分别得到“2包过期流+4包剩余流”以及“44条淘汰流+256条剩余流=300条数据行”。当前没有标签对齐、模型训练、异常检测或在线推理。
-- 当前分支已经通过x86_64 Release优化构建的20项CTest；独立`build-sanitize`以ASan和UBSan插桩重新构建并通过相同20项测试，没有Sanitizer或泄漏报告。该配置通过CMake命令行参数临时建立，尚未成为仓库Preset。
+- 当前`feature/flow-features`分支的x86_64 Debug构建共有21项CTest并全部通过；LubanCat-2N ARM64原生Debug仍以此前18项基线为已验证状态，新增特征与数据集审计模块尚未上板回归，不能写成板端21项已通过。此前单次扫描优化已完成Ubuntu `lo`和LubanCat-2N物理网卡300流手工验收；优化版官方SDK ARM64产物只要求`GLIBC_2.17`，板端得到300次操作、44次淘汰、256条最终流和零drop；TCP状态功能也已在`lo`真实HTTP/1.0连接中处理12包并最终输出`closed`，两个drop字段均为0。
+- 第一版流特征链已经完成：`flow_features_t`从双向流记录提取版本化模型输入，`--feature-csv`支持离线和带`--count`的有限实时模式；运行期间的过期流与淘汰流立即导出，停止时再导出最终剩余流。Ubuntu手工验收分别得到“2包过期流+4包剩余流”以及“44条淘汰流+256条剩余流=300条数据行”。CTU-13标签审计规则已经固化，但当前没有公开PCAP流与特征样本连接、模型训练、异常检测或在线推理。
+- 新增标签审计测试前，当前分支已经通过x86_64 Release优化构建的20项CTest；独立`build-sanitize`以ASan和UBSan插桩重新构建并通过相同20项测试，没有Sanitizer或泄漏报告。新增的第21项Python数据契约测试目前只在x86_64 Debug测试树执行；Release和Sanitizer构建尚未重新配置。Sanitizer配置通过CMake命令行参数临时建立，尚未成为仓库Preset。
+- CTU-13 Scenario 7已选为第一轮公开数据集对齐试点。标准库Python工具严格审计官方双向`.binetflow`标签，真实114077条记录按保守规则得到63条`malicious`、1669条`benign`和112345条`exclude`；确定性合成CSV测试不依赖外部数据文件。当前仍未下载截断PCAP、连接标签与`flow_features_v1`样本、训练模型或执行在线推理。
 - 实时`--count`已改为可选上限；本机`lo`在省略上限后能于静默期正常报告，随后处理4个`complete` ICMP包，并在`SIGTERM`后完成统计、流汇总与清理。
 - 主程序已在stdout首次I/O前显式启用行缓冲；严格普通文件重定向测试在进程结束前读到5秒周期报告，避免systemd journal日志延迟到缓冲区填满或服务退出。
 - 提交`740d5ab`的官方SDK ARM64部署包已在LubanCat-2N完成首次非root systemd手工启停：进程使用专用用户，能力仅为`CAP_NET_RAW`，`NoNewPrivs=1`；真实4包ICMP得到1条双向流且两个drop字段为0，SIGTERM正常收尾。
@@ -198,7 +199,7 @@ Release主程序位于`build-release/bin/netflow-analyzer`。
 - 官方Buildroot GCC 9.3、SDK内置glibc 2.29 sysroot和隔离的板端libpcap overlay；
 - Ubuntu `aarch64-linux-gnu-gcc` 13、板端完整sysroot和GCC `-B`启动文件前缀。
 
-两种产物均为AArch64 ELF，动态加载器为`/lib/ld-linux-aarch64.so.1`，最终只要求`GLIBC_2.17`。交叉配置使用`BUILD_TESTING=OFF`；既有逻辑回归由当时x86_64与ARM64板端原生构建的18项CTest负责，交叉产物加载和真实采集由板端`ldd`、`--help`和ICMP测试负责。当前特征分支已扩展到20项x86_64测试，新增模块仍需重新交叉构建并执行板端原生测试和运行验收。
+两种产物均为AArch64 ELF，动态加载器为`/lib/ld-linux-aarch64.so.1`，最终只要求`GLIBC_2.17`。交叉配置使用`BUILD_TESTING=OFF`；既有逻辑回归由当时x86_64与ARM64板端原生构建的18项CTest负责，交叉产物加载和真实采集由板端`ldd`、`--help`和ICMP测试负责。当前分支已扩展到21项x86_64 Debug测试，新增模块仍需重新交叉构建并执行板端原生测试和运行验收。
 
 完整目录、环境变量、CMake命令和故障处理见[`docs/cross_compilation.md`](cross_compilation.md)。
 
@@ -771,7 +772,7 @@ sudo ./build/bin/netflow-analyzer \
 
 ## 12. 当前测试体系
 
-当前`feature/flow-features`分支的x86_64 Debug构建共有20项CTest，最近一次全量执行全部通过，总耗时约0.15秒。LubanCat-2N板端最新已验证基线仍为特征模块加入前的18项，后续上板时必须重新配置并运行新增测试：
+当前`feature/flow-features`分支的x86_64 Debug构建共有21项CTest，最近一次全量执行全部通过，总耗时约0.34秒。LubanCat-2N板端最新已验证基线仍为特征模块加入前的18项，后续上板时必须重新配置并运行新增测试：
 
 | 编号 | CTest名称 | 主要覆盖 |
 |---:|---|---|
@@ -789,12 +790,13 @@ sudo ./build/bin/netflow-analyzer \
 | 12 | `flow_record_tests` | 两个方向统计、首末时间、错误和溢出保护，以及TCP状态随首包和后续包推进、非TCP无状态 |
 | 13 | `flow_table_tests` | 哈希冲突、线性探测、回绕、删除标记、复用、遍历、过期、探测统计、查询隔离、饱和保护，以及单次满表扫描选择并原位替换最旧流的成功/失败契约 |
 | 14 | `offline_flow_acceptance` | 6包ICMP PCAP验证聚合、预览、普通CSV、精确特征行和已有特征文件不覆盖；3包TCP握手验证终端与CSV的`established`；260包PCAP验证四类异常/拒绝、256槽满载、完整扫描和继续运行 |
-| 15 | `flow_export_tests` | CSV表头、TCP状态字段、协议/状态不变量、记录顺序、格式化和无效参数 |
-| 16 | `flow_expiration_tests` | 事件时间高水位、扫描边界、乱序时间戳、参数验证和截止时间下溢 |
-| 17 | `runtime_metrics_tests` | 累计值差分、PPS/Mbps、流表占用率、零流量、时间边界和溢出保护 |
-| 18 | `tcp_flow_state_tests` | 初始化、稳定名称、双向握手、重传、中途捕获、无效输入、FIN关闭、RST和终止状态 |
-| 19 | `flow_features_tests` | 流特征总量、均值、持续时间、方向不平衡度、TCP状态关系、错误边界和失败不修改输出 |
-| 20 | `flow_feature_export_tests` | `flow_features_v1`表头、TCP/非TCP行、布尔编码、浮点精度、状态不变量和写入错误 |
+| 15 | `ctu13_label_audit_tests` | 合成CSV验证保守三类标签映射、字段契约、空标签、缺失字段、空文件、不存在文件和CLI退出码 |
+| 16 | `flow_export_tests` | CSV表头、TCP状态字段、协议/状态不变量、记录顺序、格式化和无效参数 |
+| 17 | `flow_expiration_tests` | 事件时间高水位、扫描边界、乱序时间戳、参数验证和截止时间下溢 |
+| 18 | `runtime_metrics_tests` | 累计值差分、PPS/Mbps、流表占用率、零流量、时间边界和溢出保护 |
+| 19 | `tcp_flow_state_tests` | 初始化、稳定名称、双向握手、重传、中途捕获、无效输入、FIN关闭、RST和终止状态 |
+| 20 | `flow_features_tests` | 流特征总量、均值、持续时间、方向不平衡度、TCP状态关系、错误边界和失败不修改输出 |
+| 21 | `flow_feature_export_tests` | `flow_features_v1`表头、TCP/非TCP行、布尔编码、浮点精度、状态不变量和写入错误 |
 
 只运行重点测试示例：
 
@@ -969,14 +971,14 @@ cmake -E chdir build ctest \
 - `protocol`和`tcp_phase`必须按类别特征处理，`schema_version`不能进入模型；
 - 训练集与实时推理必须对齐列名、顺序、单位、方向定义、类别编码和归一化参数；
 - 优先选择能够取得原始PCAP的公开数据集，让相同C提取器生成特征；只有预聚合表格时，需要逐项记录可映射、需换算和无法复现的字段；
-- 新增特征模块尚未在LubanCat-2N运行，板端不能宣称20项CTest或特征实时导出已经验证。
+- 新增特征和数据集审计模块尚未在LubanCat-2N运行，板端不能宣称21项CTest或特征实时导出已经验证。
 
 ### 16.5 工程质量
 
 - 当前严格警告和全部测试通过；
 - 源码存在少量不影响功能的格式不一致，用户已要求暂不专门处理格式问题；
 - 实时路径只有手工验收，没有环境独立的端到端自动化；
-- ASan与UBSan独立构建已通过20项CTest，但还没有正式接入主项目构建预设；TSan也未配置，不能把本次单线程测试解释为已经完成并发竞态验证。
+- ASan与UBSan独立构建已通过新增标签审计测试前的20项CTest，但还没有正式接入主项目构建预设；第21项Python测试尚未在该构建树重新配置执行。TSan也未配置，不能把本次单线程测试解释为已经完成并发竞态验证。
 
 ## 17. 已完成阶段：BPF过滤
 
@@ -1392,7 +1394,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`单次扫描原位替换、TCP生命周期，以及普通流CSV和`flow_features_v1`特征CSV已经完成。当前`feature/flow-features`分支在x86_64 Debug、Release和ASan/UBSan构建中的20项CTest全部通过；LubanCat-2N最新已验证基线仍为新增特征前的18项，不能宣称板端20项已通过。特征CSV覆盖过期、淘汰和最终剩余三类互斥流记录，离线模式可直接使用，实时模式必须配合`--count`；当前没有标签对齐、模型训练、异常判定或在线推理。板端此前已经完成真实TCP关闭、非root systemd、`CAP_NET_RAW`最小能力、连续失败限速、SD卡事故恢复、性能和10分钟长稳等验证。下一步选择公开数据集设计字段/标签对齐，再重新交叉构建并验证ARM64特征导出。
+周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`单次扫描原位替换、TCP生命周期，以及普通流CSV和`flow_features_v1`特征CSV已经完成。当前`feature/flow-features`分支的x86_64 Debug构建共有21项CTest并全部通过；Release和ASan/UBSan仍为新增标签审计测试前的20项通过基线。LubanCat-2N最新已验证基线仍为新增特征前的18项，不能宣称板端21项已通过。特征CSV覆盖过期、淘汰和最终剩余三类互斥流记录，离线模式可直接使用，实时模式必须配合`--count`；CTU-13标签审计与保守三类映射已经完成，但尚未连接公开PCAP流与特征样本，也没有模型训练、异常判定或在线推理。板端此前已经完成真实TCP关闭、非root systemd、`CAP_NET_RAW`最小能力、连续失败限速、SD卡事故恢复、性能和10分钟长稳等验证。下一步下载并校验场景7截断PCAP、设计标签连接规则，再重新交叉构建并验证ARM64特征导出。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1435,4 +1437,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及普通CSV中使用统一名称。第一版流特征链又把完整流记录转换为版本化模型输入；过期、淘汰和最终剩余记录分别在离开生命周期的位置写出，Ubuntu手工验收已经证明2+4与44+256两组数量闭合。当前x86_64 Debug、Release和ASan/UBSan构建的20项CTest全部通过，LubanCat-2N仍保留此前18项与真实TCP、systemd、性能和存储恢复验收，新增特征功能尚未上板。项目现在具备机器学习所需的数据生成基础，但没有标签、训练、评估或推理；下一步是对齐公开数据集并补做ARM64特征链验证。`labs/thread_pipeline`仍因现有性能数据未显示单线程瓶颈而不接入正式路径。
+应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及普通CSV中使用统一名称。第一版流特征链又把完整流记录转换为版本化模型输入；过期、淘汰和最终剩余记录分别在离开生命周期的位置写出，Ubuntu手工验收已经证明2+4与44+256两组数量闭合。CTU-13 Scenario 7的标签来源、保守映射、审计脚本和确定性测试已经完成，x86_64 Debug构建现有21项CTest全部通过；Release和ASan/UBSan仍保留新增该测试前的20项基线。LubanCat-2N仍保留此前18项与真实TCP、systemd、性能和存储恢复验收，新增特征功能尚未上板。项目现在具备机器学习所需的数据生成和标签审计基础，但尚未完成PCAP样本连接、训练、评估或推理；下一步下载并校验截断PCAP、定义连接规则并补做ARM64特征链验证。`labs/thread_pipeline`仍因现有性能数据未显示单线程瓶颈而不接入正式路径。
