@@ -9,6 +9,7 @@
 #include "analyzer/ipv4_dispatch.h"
 #include "analyzer/flow_table.h"
 #include "analyzer/flow_export.h"
+#include "analyzer/flow_feature_export.h"
 #include "analyzer/flow_expiration.h"
 #include "analyzer/runtime_metrics.h"
 #include "analyzer/tcp_flow_state.h"
@@ -2438,6 +2439,143 @@ static int app_run_capture_analysis(app_context_t *context)
     return 0;
 }
 
+/**
+ * @brief 在可选的特征CSV文件生命周期内执行采集分析。
+ *
+ * feature_csv_output_path为NULL时直接运行分析，不创建文件。
+ *
+ * 配置了输出路径时，本函数拥有FILE对象：
+ *
+ * 1. 使用"wx"独占创建文件；
+ * 2. 写入一次版本化表头；
+ * 3. 执行采集分析；
+ * 4. 无论分析成功或失败都调用fclose。
+ *
+ * 路径字符串仍由app_context_t借用，本函数不释放路径。
+ *
+ * 当前步骤只建立文件生命周期。流特征记录将在后续步骤中
+ * 从分析循环写入这个文件。
+ */
+static int app_run_capture_analysis_with_feature_csv(
+    app_context_t *context)
+{
+    FILE *feature_csv_output = NULL;
+
+    int operation_error;
+    int close_error = 0;
+
+    if (context == NULL) {
+        return EINVAL;
+    }
+
+    if (context->feature_csv_output_path != NULL) {
+        /*
+         * errno只有在库函数报告失败时才有意义。
+         */
+        errno = 0;
+
+        /*
+         * "wx"表示创建新文件，并拒绝覆盖已经存在的文件。
+         */
+        feature_csv_output = fopen(
+            context->feature_csv_output_path,
+            "wx"
+        );
+
+        if (feature_csv_output == NULL) {
+            operation_error =
+                errno != 0 ? errno : EIO;
+
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to create feature CSV '%s': %s",
+                context->feature_csv_output_path,
+                strerror(operation_error)
+            );
+
+            return operation_error;
+        }
+
+        operation_error =
+            flow_feature_export_write_csv_header(
+                feature_csv_output
+            );
+
+        if (operation_error != 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to write feature CSV header '%s': %s",
+                context->feature_csv_output_path,
+                strerror(operation_error)
+            );
+        }
+    } else {
+        operation_error = 0;
+    }
+
+    /*
+     * 表头成功后才进入分析。
+     *
+     * 后续步骤会把feature_csv_output作为借用的输出流传入分析函数。
+     */
+    if (operation_error == 0) {
+        operation_error =
+            app_run_capture_analysis(context);
+    }
+
+    /*
+     * 即使写表头或分析过程失败，也必须关闭已经打开的文件。
+     *
+     * fclose还可能在刷新stdio缓冲区时发现磁盘写入错误。
+     */
+    if (feature_csv_output != NULL) {
+        errno = 0;
+
+        if (fclose(feature_csv_output) != 0) {
+            close_error =
+                errno != 0 ? errno : EIO;
+        }
+    }
+
+    /*
+     * 如果业务操作和关闭同时失败，保留更早发生的业务错误。
+     */
+    if (operation_error != 0) {
+        return operation_error;
+    }
+
+    if (close_error != 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "failed to close feature CSV '%s': %s",
+            context->feature_csv_output_path,
+            strerror(close_error)
+        );
+
+        return close_error;
+    }
+
+    if (context->feature_csv_output_path != NULL &&
+        printf(
+            "Feature CSV output: %s\n",
+            context->feature_csv_output_path
+        ) < 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "feature CSV was created, "
+            "but confirmation output failed"
+        );
+
+        return EIO;
+    }
+
+    return 0;
+}
+
 int app_context_init(app_context_t *context)
 {
     if (context == NULL) {
@@ -2906,7 +3044,7 @@ int app_run(app_context_t *context)
             return EINVAL;
         }
 
-        return app_run_capture_analysis(context);
+        return app_run_capture_analysis_with_feature_csv(context);
 
         case APP_COMMAND_CAPTURE_INTERFACE:
         if (context->interface_name == NULL ||
@@ -2987,7 +3125,7 @@ int app_run(app_context_t *context)
             return EINVAL;
         }
 
-        return app_run_capture_analysis(context);
+        return app_run_capture_analysis_with_feature_csv(context);
 
     default:
         (void)snprintf(

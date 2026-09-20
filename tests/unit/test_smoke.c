@@ -688,6 +688,29 @@ static int test_feature_csv_run_validation(void)
 
     app_cleanup(&context);
 
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    /*
+     * /dev/null在Linux上必然已经存在。
+     *
+     * "wx"必须返回EEXIST，不能覆盖或写入现有对象。
+     * 该失败发生在打开PCAP之前，因此不依赖测试PCAP。
+     */
+    context.command = APP_COMMAND_READ_CAPTURE;
+    context.capture_path = "sample.pcap";
+    context.feature_csv_output_path = "/dev/null";
+
+    TEST_CHECK(app_run(&context) == EEXIST);
+
+    TEST_CHECK(
+        strstr(
+            context.error_message,
+            "failed to create feature CSV"
+        ) != NULL
+    );
+
+    app_cleanup(&context);
+
     return EXIT_SUCCESS;
 }
 
