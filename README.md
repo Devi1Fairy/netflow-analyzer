@@ -353,6 +353,8 @@ cmake -E chdir build ctest --output-on-failure
 - 19项C语言单元测试，分别验证字节读取、抓包与BPF及非阻塞等待封装、数据模型、各层协议解析、分发、流键、流记录、TCP状态机、流表、流过期调度、周期运行指标、普通CSV、流特征计算和版本化特征CSV格式化；
 - 1项Python端到端测试内部运行确定性PCAP场景，并额外验证6包ICMP聚合得到的精确特征行以及已有特征文件不会被覆盖。
 
+同一组20项测试已经在Release优化构建以及启用AddressSanitizer、UndefinedBehaviorSanitizer的独立Debug构建中通过；当前没有出现Sanitizer诊断或泄漏报告。Sanitizer参数暂时通过独立构建目录传入，尚未固化为CMake Preset。
+
 只运行端到端验收：
 
 ```bash
