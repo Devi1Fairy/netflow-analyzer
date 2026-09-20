@@ -2456,6 +2456,7 @@ int app_context_init(app_context_t *context)
         .flow_full_policy = APP_FLOW_FULL_POLICY_REJECT,
         .packet_limit = 0U,
         .csv_output_path = NULL,
+        .feature_csv_output_path = NULL,
         .active_capture = NULL,
         .error_message = {0},
         .stop_requested = 0,
@@ -2473,6 +2474,8 @@ int app_parse_arguments(app_context_t *context,
     const char *parsed_interface_name;
     const char *parsed_filter_expression;
     const char *parsed_csv_output_path;
+    const char *parsed_feature_csv_output_path;
+    
     app_flow_full_policy_t parsed_flow_full_policy;
     bool parsed_flow_full_policy_provided;
     size_t parsed_packet_limit;
@@ -2499,6 +2502,7 @@ int app_parse_arguments(app_context_t *context,
     context->packet_limit = 0U;
     context->flow_full_policy = APP_FLOW_FULL_POLICY_REJECT;
     context->csv_output_path = NULL;
+    context->feature_csv_output_path = NULL;
     context->error_message[0] = '\0';
 
     /*
@@ -2533,6 +2537,7 @@ int app_parse_arguments(app_context_t *context,
     parsed_flow_full_policy = APP_FLOW_FULL_POLICY_REJECT;
     parsed_flow_full_policy_provided = false;
     parsed_csv_output_path = NULL;
+    parsed_feature_csv_output_path = NULL;
     parsed_packet_limit = 0U;
 
     argument_index = 1;
@@ -2633,12 +2638,25 @@ int app_parse_arguments(app_context_t *context,
             }
 
             parsed_flow_full_policy_provided = true;
-        } else if (strcmp(option, "--csv") == 0){
+        } else if (strcmp(option, "--csv") == 0) {
             if (parsed_csv_output_path != NULL) {
                 return EINVAL;
             }
 
             parsed_csv_output_path = option_value;
+        } else if (strcmp(option, "--feature-csv") == 0) {
+            if (parsed_feature_csv_output_path !=
+                NULL) {
+                return EINVAL;
+            }
+
+            /*
+             * 路径直接借用argv中的字符串。
+             *
+             * 循环开头已经拒绝NULL和空字符串。
+             */
+            parsed_feature_csv_output_path =
+                option_value;
         } else {
             return EINVAL;
         }
@@ -2697,6 +2715,32 @@ int app_parse_arguments(app_context_t *context,
     }
 
     /*
+     * 实时特征CSV必须具有明确的数据包上限。
+     *
+     * 否则程序可能无限运行并持续增加输出文件，
+     * 最终耗尽开发板存储空间。
+     */
+    if (parsed_interface_name != NULL &&
+        parsed_feature_csv_output_path != NULL &&
+        parsed_packet_limit == 0U) {
+        return EINVAL;
+    }
+
+    /*
+     * 普通流记录CSV和特征CSV不能使用相同路径。
+     *
+     * 否则两个不同格式会争用同一个输出文件。
+     */
+    if (parsed_csv_output_path != NULL &&
+        parsed_feature_csv_output_path != NULL &&
+        strcmp(
+            parsed_csv_output_path,
+            parsed_feature_csv_output_path
+        ) == 0) {
+        return EINVAL;
+    }
+
+    /*
      * 满表策略第一版只属于实时监控。
      *
      * 离线分析仍保持完整文件聚合和现有容量拒绝语义，
@@ -2714,6 +2758,7 @@ int app_parse_arguments(app_context_t *context,
     context->interface_name = parsed_interface_name;
     context->filter_expression = parsed_filter_expression;
     context->csv_output_path = parsed_csv_output_path;
+    context->feature_csv_output_path = parsed_feature_csv_output_path;
     context->packet_limit = parsed_packet_limit;
     context->flow_full_policy = parsed_flow_full_policy;
 

@@ -38,6 +38,7 @@ static int test_context_lifecycle(void)
     TEST_CHECK(context.command == APP_COMMAND_HELP);
     TEST_CHECK(context.capture_path == NULL);
     TEST_CHECK(context.csv_output_path == NULL);
+    TEST_CHECK(context.feature_csv_output_path == NULL);
     TEST_CHECK(context.interface_name == NULL);
     TEST_CHECK(context.filter_expression == NULL);
     TEST_CHECK(context.active_capture == NULL);
@@ -62,6 +63,7 @@ static int test_context_lifecycle(void)
     TEST_CHECK(context.stop_requested == 0);
     TEST_CHECK(context.error_message[0] == '\0');
     TEST_CHECK(context.csv_output_path == NULL);
+    TEST_CHECK(context.feature_csv_output_path == NULL);
     TEST_CHECK(context.interface_name == NULL);
     TEST_CHECK(context.filter_expression == NULL);
     TEST_CHECK(context.active_capture == NULL);
@@ -173,6 +175,7 @@ static int test_read_capture_command(void)
      */
     TEST_CHECK(context.capture_path == arguments[2]);
     TEST_CHECK(context.csv_output_path == NULL);
+    TEST_CHECK(context.feature_csv_output_path == NULL);
 
     TEST_CHECK(
         strcmp(context.capture_path,
@@ -327,6 +330,242 @@ static int test_invalid_csv_arguments(void)
             &context,
             3,
             csv_without_capture
+        ) == EINVAL
+    );
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证离线和有界实时特征CSV参数。
+ */
+static int test_feature_csv_arguments(void)
+{
+    app_context_t context;
+
+    char *offline_arguments[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        "--feature-csv",
+        "features.csv",
+        NULL
+    };
+
+    char *both_csv_arguments[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        "--csv",
+        "flows.csv",
+        "--feature-csv",
+        "features.csv",
+        NULL
+    };
+
+    char *bounded_live_arguments[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        "--count",
+        "4",
+        "--feature-csv",
+        "features.csv",
+        NULL
+    };
+
+    char *plain_offline_arguments[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        NULL
+    };
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            5,
+            offline_arguments
+        ) == 0
+    );
+
+    TEST_CHECK(
+        context.command ==
+            APP_COMMAND_READ_CAPTURE
+    );
+
+    /*
+     * context直接借用argv中的路径字符串。
+     */
+    TEST_CHECK(
+        context.feature_csv_output_path ==
+            offline_arguments[4]
+    );
+
+    TEST_CHECK(context.csv_output_path == NULL);
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            7,
+            both_csv_arguments
+        ) == 0
+    );
+
+    TEST_CHECK(
+        context.csv_output_path ==
+            both_csv_arguments[4]
+    );
+
+    TEST_CHECK(
+        context.feature_csv_output_path ==
+            both_csv_arguments[6]
+    );
+
+    TEST_CHECK(
+        strcmp(
+            context.csv_output_path,
+            context.feature_csv_output_path
+        ) != 0
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            7,
+            bounded_live_arguments
+        ) == 0
+    );
+
+    TEST_CHECK(
+        context.command ==
+            APP_COMMAND_CAPTURE_INTERFACE
+    );
+
+    TEST_CHECK(context.packet_limit == 4U);
+
+    TEST_CHECK(
+        context.feature_csv_output_path ==
+            bounded_live_arguments[6]
+    );
+
+    /*
+     * 再次解析没有--feature-csv的命令，
+     * 旧的借用指针必须被清除。
+     */
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            3,
+            plain_offline_arguments
+        ) == 0
+    );
+
+    TEST_CHECK(
+        context.feature_csv_output_path == NULL
+    );
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
+ * @brief 验证非法特征CSV参数组合。
+ */
+static int test_invalid_feature_csv_arguments(void)
+{
+    app_context_t context;
+
+    char *missing_path[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        "--feature-csv",
+        NULL
+    };
+
+    char *duplicate_option[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        "--feature-csv",
+        "first.csv",
+        "--feature-csv",
+        "second.csv",
+        NULL
+    };
+
+    char *without_capture[] = {
+        "netflow-analyzer",
+        "--feature-csv",
+        "features.csv",
+        NULL
+    };
+
+    char *unbounded_live[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        "--feature-csv",
+        "features.csv",
+        NULL
+    };
+
+    char *same_output_path[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        "--csv",
+        "same.csv",
+        "--feature-csv",
+        "same.csv",
+        NULL
+    };
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            4,
+            missing_path
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            7,
+            duplicate_option
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            3,
+            without_capture
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            5,
+            unbounded_live
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            7,
+            same_output_path
         ) == EINVAL
     );
 
@@ -1177,6 +1416,20 @@ int main(void)
     }
 
     printf("[PASS] invalid CSV arguments\n");
+
+    if (test_feature_csv_arguments() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] feature CSV arguments\n");
+
+    if (test_invalid_feature_csv_arguments() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] invalid feature CSV arguments\n");
 
     if (test_live_interface_with_filter_command() != EXIT_SUCCESS) {
         return EXIT_FAILURE;

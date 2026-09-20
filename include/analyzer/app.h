@@ -127,6 +127,18 @@ typedef struct {
     const char *csv_output_path;
 
     /**
+     * 版本化流特征CSV输出文件路径。
+     *
+     * 该指针借用argv中的字符串地址，不拥有字符串，也不能free。
+     *
+     * NULL表示不生成模型特征CSV。
+     *
+     * 离线PCAP可以使用该路径；实时抓包只有设置了非零
+     * packet_limit时才允许使用，避免无限运行持续占用磁盘。
+     */
+    const char *feature_csv_output_path;
+
+    /**
      * 当前正在使用的采集对象。
      *
      * 该指针只在采集读取循环运行期间临时借用，不拥有capture对象，
@@ -185,7 +197,9 @@ int app_context_init(app_context_t *context);
  * - --version或-V。
  * - --read FILE或-r FILE
  * - --read FILE --csv CSV_FILE
- * - --interface NAME [--count PACKETS] [--filter EXPRESSION] [--flow-full-policy reject|evict-oldest]
+ * - --interface NAME [--count PACKETS] [--filter EXPRESSION]
+ * [--flow-full-policy reject|evict-oldest]
+ * [--feature-csv FEATURE_CSV_FILE]
  *
  * @param context 指向已经初始化的应用上下文。
  * @param argc main函数收到的参数数量。
