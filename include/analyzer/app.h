@@ -196,10 +196,16 @@ int app_context_init(app_context_t *context);
  * - --help或-h；
  * - --version或-V。
  * - --read FILE或-r FILE
- * - --read FILE --csv CSV_FILE
- * - --interface NAME [--count PACKETS] [--filter EXPRESSION]
- * [--flow-full-policy reject|evict-oldest]
- * [--feature-csv FEATURE_CSV_FILE]
+ *   [--csv CSV_FILE]
+ *   [--feature-csv FEATURE_CSV_FILE]
+ * - --interface NAME
+ *   [--count PACKETS]
+ *   [--filter EXPRESSION]
+ *   [--flow-full-policy reject|evict-oldest]
+ *   [--feature-csv FEATURE_CSV_FILE]
+ *
+ * 实时模式只有在提供非零--count上限时才允许特征CSV输出。
+ * 两类CSV使用独占创建模式，不覆盖已有文件，也不能使用同一路径。
  *
  * @param context 指向已经初始化的应用上下文。
  * @param argc main函数收到的参数数量。

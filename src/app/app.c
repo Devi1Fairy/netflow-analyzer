@@ -306,10 +306,14 @@ static int app_print_help(const char *program_name)
 
     if (printf(
             "Usage: %s [OPTION]\n"
-            "       %s --read <PCAP_FILE> [--csv <CSV_FILE>]\n"
-            "       %s --interface <INTERFACE> [--count <PACKETS>] "
+            "       %s --read <PCAP_FILE> "
+            "[--csv <CSV_FILE>] "
+            "[--feature-csv <FEATURE_CSV_FILE>]\n"
+            "       %s --interface <INTERFACE> "
+            "[--count <PACKETS>] "
             "[--filter <BPF_EXPRESSION>] "
-            "[--flow-full-policy <reject|evict-oldest>]\n"
+            "[--flow-full-policy <reject|evict-oldest>] "
+            "[--feature-csv <FEATURE_CSV_FILE>]\n"
             "\n"
             "Linux network traffic analyzer.\n"
             "\n"
@@ -318,10 +322,17 @@ static int app_print_help(const char *program_name)
             "  -V, --version    Show program version.\n"
             "  -r, --read FILE  Analyze an offline PCAP file.\n"
             "  -i, --interface NAME  Analyze a live capture interface.\n"
-            "  -c, --count PACKETS   Optional live packet limit; omit to run until stopped.\n"
-            "      --filter EXPRESSION  Apply a BPF filter to live capture.\n"
-            "      --flow-full-policy POLICY Handle a full live flow table: reject or evict-oldest.\n"
-            "      --csv FILE   Export flow records to a new CSV file.\n",
+            "  -c, --count PACKETS   Optional live packet limit; "
+            "omit to run until stopped.\n"
+            "      --filter EXPRESSION  Apply a BPF filter "
+            "to live capture.\n"
+            "      --flow-full-policy POLICY  Handle a full "
+            "live flow table: reject or evict-oldest.\n"
+            "      --csv FILE  Export full offline flow records "
+            "to a new CSV file.\n"
+            "      --feature-csv FILE  Export versioned flow "
+            "features to a new CSV file; "
+            "live capture requires --count.\n",
             display_name,
             display_name,
             display_name) < 0) {
