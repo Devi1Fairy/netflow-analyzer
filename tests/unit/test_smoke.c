@@ -43,6 +43,7 @@ static int test_context_lifecycle(void)
     TEST_CHECK(context.filter_expression == NULL);
     TEST_CHECK(context.active_capture == NULL);
     TEST_CHECK(context.packet_limit == 0U);
+    TEST_CHECK(context.offline_flow_idle_timeout_seconds == INT64_C(0));
     TEST_CHECK(context.error_message[0] == '\0');
     TEST_CHECK(context.flow_full_policy == APP_FLOW_FULL_POLICY_REJECT);
 
@@ -68,6 +69,7 @@ static int test_context_lifecycle(void)
     TEST_CHECK(context.filter_expression == NULL);
     TEST_CHECK(context.active_capture == NULL);
     TEST_CHECK(context.packet_limit == 0U);
+    TEST_CHECK(context.offline_flow_idle_timeout_seconds == INT64_C(0));
     TEST_CHECK(context.flow_full_policy == APP_FLOW_FULL_POLICY_REJECT);
 
     return EXIT_SUCCESS;

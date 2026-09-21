@@ -2995,6 +2995,7 @@ int app_context_init(app_context_t *context)
         .filter_expression = NULL,
         .flow_full_policy = APP_FLOW_FULL_POLICY_REJECT,
         .packet_limit = 0U,
+        .offline_flow_idle_timeout_seconds = INT64_C(0),
         .csv_output_path = NULL,
         .feature_csv_output_path = NULL,
         .active_capture = NULL,

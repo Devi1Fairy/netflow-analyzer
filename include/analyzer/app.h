@@ -3,6 +3,7 @@
 
 #include "analyzer/capture.h"
 
+#include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <signal.h>
@@ -116,6 +117,17 @@ typedef struct {
      * 请求或遇到致命错误。显式的--count参数仍只接受正整数。
      */
     size_t packet_limit;
+
+    /**
+     * 离线PCAP使用的可选流空闲超时，单位为秒。
+     *
+     * 0表示保持完整文件级聚合，不启用离线流过期。
+     * 大于0表示同一双向五元组在空闲达到该时间后结束当前
+     * 生命周期，后续相同五元组将创建新流。
+     *
+     * 第一版只供APP_COMMAND_READ_CAPTURE使用。
+     */
+    int64_t offline_flow_idle_timeout_seconds;
 
     /**
      * CSV流记录输出文件路径。
