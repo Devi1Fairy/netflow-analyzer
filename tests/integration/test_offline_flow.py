@@ -1166,6 +1166,11 @@ def main() -> int:
             work_dir=arguments.work_dir.resolve(),
         )
 
+        run_tcp_state_output_test(
+            program=arguments.program.resolve(),
+            work_dir=arguments.work_dir.resolve(),
+        )
+
         run_idle_timeout_lifecycle_test(
             program=arguments.program.resolve(),
             work_dir=arguments.work_dir.resolve(),
