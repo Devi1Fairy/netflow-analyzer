@@ -1500,6 +1500,165 @@ static int test_flow_full_policy_run_validation(void)
 }
 
 /**
+ * @brief 验证离线流空闲超时的解析、重置和非法组合。
+ */
+static int test_offline_flow_idle_timeout_arguments(void)
+{
+    app_context_t context;
+
+    char *valid_arguments[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        "--flow-idle-timeout",
+        "30",
+        NULL
+    };
+
+    char *plain_arguments[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        NULL
+    };
+
+    char *zero_timeout[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        "--flow-idle-timeout",
+        "0",
+        NULL
+    };
+
+    char *negative_timeout[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        "--flow-idle-timeout",
+        "-1",
+        NULL
+    };
+
+    char *overflow_timeout[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        "--flow-idle-timeout",
+        "9223372036854775808",
+        NULL
+    };
+
+    char *duplicate_timeout[] = {
+        "netflow-analyzer",
+        "--read",
+        "sample.pcap",
+        "--flow-idle-timeout",
+        "30",
+        "--flow-idle-timeout",
+        "60",
+        NULL
+    };
+
+    char *live_timeout[] = {
+        "netflow-analyzer",
+        "--interface",
+        "lo",
+        "--flow-idle-timeout",
+        "30",
+        NULL
+    };
+
+    TEST_CHECK(app_context_init(&context) == 0);
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            5,
+            valid_arguments
+        ) == 0
+    );
+
+    TEST_CHECK(
+        context.command ==
+            APP_COMMAND_READ_CAPTURE
+    );
+
+    TEST_CHECK(
+        context.offline_flow_idle_timeout_seconds ==
+            INT64_C(30)
+    );
+
+    /*
+     * 再次解析没有该参数的命令时，旧值必须清除。
+     */
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            3,
+            plain_arguments
+        ) == 0
+    );
+
+    TEST_CHECK(
+        context.offline_flow_idle_timeout_seconds ==
+            INT64_C(0)
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            5,
+            zero_timeout
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            5,
+            negative_timeout
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            5,
+            overflow_timeout
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            7,
+            duplicate_timeout
+        ) == EINVAL
+    );
+
+    TEST_CHECK(
+        app_parse_arguments(
+            &context,
+            5,
+            live_timeout
+        ) == EINVAL
+    );
+
+    /*
+     * 失败解析不能把局部值发布到context。
+     */
+    TEST_CHECK(
+        context.offline_flow_idle_timeout_seconds ==
+            INT64_C(0)
+    );
+
+    app_cleanup(&context);
+
+    return EXIT_SUCCESS;
+}
+
+/**
  * @brief 阶段0冒烟测试入口。
  */
 int main(void)
@@ -1630,6 +1789,13 @@ int main(void)
     }
 
     printf("[PASS] flow full policy run validation\n");
+
+    if (test_offline_flow_idle_timeout_arguments() !=
+        EXIT_SUCCESS) {
+        return EXIT_FAILURE;
+    }
+
+    printf("[PASS] offline flow idle timeout arguments\n");
 
     return EXIT_SUCCESS;
 }

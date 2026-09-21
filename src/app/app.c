@@ -294,6 +294,49 @@ static int app_parse_positive_size(
 }
 
 /**
+ * @brief 把十进制字符串解析为大于0的int64_t。
+ *
+ * 只有全部检查通过后才修改value。
+ *
+ * @return 成功时返回0；格式错误、值为0或超出int64_t范围时
+ *         返回EINVAL。
+ */
+static int app_parse_positive_int64(
+    const char *text,
+    int64_t *value)
+{
+    char *end_pointer = NULL;
+    uintmax_t parsed_value;
+
+    if (text == NULL ||
+        value == NULL ||
+        text[0] < '0' ||
+        text[0] > '9') {
+        return EINVAL;
+    }
+
+    errno = 0;
+
+    parsed_value = strtoumax(
+        text,
+        &end_pointer,
+        10
+    );
+
+    if (errno != 0 ||
+        end_pointer == text ||
+        *end_pointer != '\0' ||
+        parsed_value == UINTMAX_C(0) ||
+        parsed_value > (uintmax_t)INT64_MAX) {
+        return EINVAL;
+    }
+
+    *value = (int64_t)parsed_value;
+
+    return 0;
+}
+
+/**
  * @brief 打印命令行使用帮助。
  *
  * @param program_name 显示在Usage中的程序名称。
@@ -308,6 +351,7 @@ static int app_print_help(const char *program_name)
             "Usage: %s [OPTION]\n"
             "       %s --read <PCAP_FILE> "
             "[--csv <CSV_FILE>] "
+            "[--flow-idle-timeout <SECONDS>] "
             "[--feature-csv <FEATURE_CSV_FILE>]\n"
             "       %s --interface <INTERFACE> "
             "[--count <PACKETS>] "
@@ -321,6 +365,7 @@ static int app_print_help(const char *program_name)
             "  -h, --help       Show this help message.\n"
             "  -V, --version    Show program version.\n"
             "  -r, --read FILE  Analyze an offline PCAP file.\n"
+            "      --flow-idle-timeout SECONDS  Split offline flows after a positive idle timeout.\n"
             "  -i, --interface NAME  Analyze a live capture interface.\n"
             "  -c, --count PACKETS   Optional live packet limit; "
             "omit to run until stopped.\n"
@@ -1616,6 +1661,8 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
     int error_code;
     int statistics_error_code = 0;
 
+    int64_t flow_idle_timeout_seconds;
+
     if (context == NULL) {
         return EINVAL;
     }
@@ -1630,13 +1677,20 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
     /*
     * 输入来源与流生命周期策略是两个不同概念。
     *
-    * 当前保持原有行为：
-    * 实时抓包启用流过期，离线PCAP保持完整文件级聚合。
+    * 实时抓包继续使用固定默认超时；
+    * 离线PCAP只有显式提供正数超时时才启用过期。
     *
-    * 后续为离线模式增加显式配置时，只需要改变这里的策略来源，
-    * 不需要误改BPF、非阻塞读取、运行指标或抓包统计逻辑。
+    * BPF、非阻塞读取、运行指标和抓包统计仍只由live_capture控制。
     */
-    flow_expiration_enabled = live_capture;
+    if (live_capture) {
+        flow_idle_timeout_seconds =
+            APP_FLOW_IDLE_TIMEOUT_SECONDS;
+    } else {
+        flow_idle_timeout_seconds =
+            context->offline_flow_idle_timeout_seconds;
+    }
+
+    flow_expiration_enabled = flow_idle_timeout_seconds > INT64_C(0);
 
     if (context->packet_limit == 0U) {
         (void)snprintf(
@@ -1838,7 +1892,7 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
     if (flow_expiration_enabled) {
         error_code = flow_expiration_schedule_init(
             &expiration_schedule,
-            APP_FLOW_IDLE_TIMEOUT_SECONDS,
+            flow_idle_timeout_seconds,
             APP_FLOW_EXPIRATION_SCAN_INTERVAL_SECONDS
         );
 
@@ -1908,7 +1962,7 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
             context->flow_full_policy == APP_FLOW_FULL_POLICY_REJECT
                 ? "reject"
                 : "evict-oldest",
-            APP_FLOW_IDLE_TIMEOUT_SECONDS,
+            flow_idle_timeout_seconds,
             APP_FLOW_EXPIRATION_SCAN_INTERVAL_SECONDS,
             APP_RUNTIME_METRICS_INTERVAL_SECONDS
         );
@@ -2157,7 +2211,7 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
     /*
     * 必须在把当前数据包加入流表之前判断过期。
     *
-    * 如果一条旧流已经空闲30秒，而当前包恰好与旧流五元组相同，
+    * 如果一条旧流已经达到配置的空闲超时，而当前包恰好与旧流五元组相同，
     * 先更新流表会刷新last_seen，错误地把两个会话合并。
     */
     if (flow_expiration_enabled) {
@@ -2535,12 +2589,12 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
     capture_close(&capture);
 
     /*
-     * 当前还没有为离线模式启用流过期，因此流表中保存的是
-     * 本次离线分析的全部最终流。
-     *
-     * flow_csv_output由外层拥有，本函数只写记录，不写表头，
-     * 也不调用fclose。
-     */
+    * 已过期记录已经在离开流表时写出。
+    * 此处只写采集结束时仍保留在流表中的生命周期。
+    *
+    * flow_csv_output由外层拥有，本函数只写记录，不写表头，
+    * 也不调用fclose。
+    */
     if (flow_csv_output != NULL) {
         error_code = app_write_flow_table_csv(
             flow_csv_output,
@@ -2563,9 +2617,8 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
     /*
      * 采集结束后，流表中剩余记录不会再发生变化。
      *
-     * 离线模式下，这就是整个PCAP的最终流集合。
-     * 实时模式下，后续还需要把运行期间提前过期或被淘汰的流
-     * 分别接入同一个输出流。
+     * 已过期或被淘汰的记录已经在离开流表时写入特征CSV，
+     * 此处只写最终仍然存活的记录。
      */
     if (feature_csv_output != NULL) {
         error_code =
@@ -2630,18 +2683,39 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
     }
 
     /*
-    * 离线模式没有启用周期过期或满表淘汰策略，因此只在实时模式输出该指标。
+    * 实时模式始终启用流过期；
+    * 离线模式只有显式配置空闲超时时才输出过期计数。
     */
-    if (live_capture &&
+    if (flow_expiration_enabled &&
         printf(
-            "Expired flows: %zu\n"
-            "Evicted flows: %zu\n",
-            total_expired_flow_count,
-            total_evicted_flow_count) < 0) {
+            "Expired flows: %zu\n",
+            total_expired_flow_count
+        ) < 0) {
         (void)snprintf(
             context->error_message,
             sizeof(context->error_message),
-            "failed to write flow lifecycle counts"
+            "failed to write expired flow count"
+        );
+
+        flow_table_cleanup(&flow_table);
+        return EIO;
+    }
+
+    /*
+    * 满表淘汰策略第一版只属于实时监控。
+    *
+    * 离线分析即使启用了空闲过期，也不能在流表满载时静默
+    * 驱逐仍然活跃的记录；容量不足仍保持明确拒绝语义。
+    */
+    if (live_capture &&
+        printf(
+            "Evicted flows: %zu\n",
+            total_evicted_flow_count
+        ) < 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "failed to write evicted flow count"
         );
 
         flow_table_cleanup(&flow_table);
@@ -3024,6 +3098,8 @@ int app_parse_arguments(app_context_t *context,
     int argument_index;
     int error_code;
 
+    int64_t parsed_offline_flow_idle_timeout_seconds;
+
     if (context == NULL ||
         !context->initialized ||
         argc < 1 ||
@@ -3041,6 +3117,7 @@ int app_parse_arguments(app_context_t *context,
     context->interface_name = NULL;
     context->filter_expression = NULL;
     context->packet_limit = 0U;
+    context->offline_flow_idle_timeout_seconds = INT64_C(0);
     context->flow_full_policy = APP_FLOW_FULL_POLICY_REJECT;
     context->csv_output_path = NULL;
     context->feature_csv_output_path = NULL;
@@ -3076,6 +3153,7 @@ int app_parse_arguments(app_context_t *context,
     parsed_interface_name = NULL;
     parsed_filter_expression = NULL;
     parsed_flow_full_policy = APP_FLOW_FULL_POLICY_REJECT;
+    parsed_offline_flow_idle_timeout_seconds = INT64_C(0);
     parsed_flow_full_policy_provided = false;
     parsed_csv_output_path = NULL;
     parsed_feature_csv_output_path = NULL;
@@ -3136,6 +3214,23 @@ int app_parse_arguments(app_context_t *context,
             error_code = app_parse_positive_size(
                 option_value,
                 &parsed_packet_limit
+            );
+
+            if (error_code != 0) {
+                return EINVAL;
+            }
+        } else if (strcmp(option,"--flow-idle-timeout") == 0) {
+            /*
+             * 0既表示尚未提供，也是非法超时值。
+             */
+            if (parsed_offline_flow_idle_timeout_seconds !=
+                INT64_C(0)) {
+                return EINVAL;
+            }
+
+            error_code = app_parse_positive_int64(
+                option_value,
+                &parsed_offline_flow_idle_timeout_seconds
             );
 
             if (error_code != 0) {
@@ -3227,6 +3322,17 @@ int app_parse_arguments(app_context_t *context,
     }
 
     /*
+     * 第一版只允许离线PCAP配置流空闲超时。
+     *
+     * 实时模式继续使用经过开发板验证的固定30秒策略。
+     */
+    if (parsed_interface_name != NULL &&
+        parsed_offline_flow_idle_timeout_seconds !=
+            INT64_C(0)) {
+        return EINVAL;
+    }
+
+    /*
      * --count只属于实时抓包。
      */
     if (parsed_capture_path != NULL &&
@@ -3298,6 +3404,7 @@ int app_parse_arguments(app_context_t *context,
     context->capture_path = parsed_capture_path;
     context->interface_name = parsed_interface_name;
     context->filter_expression = parsed_filter_expression;
+    context->offline_flow_idle_timeout_seconds = parsed_offline_flow_idle_timeout_seconds;
     context->csv_output_path = parsed_csv_output_path;
     context->feature_csv_output_path = parsed_feature_csv_output_path;
     context->packet_limit = parsed_packet_limit;
@@ -3447,6 +3554,16 @@ int app_run(app_context_t *context)
             return EINVAL;
         }
 
+        if (context->offline_flow_idle_timeout_seconds < INT64_C(0)) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "offline flow idle timeout must not be negative"
+            );
+
+            return EINVAL;
+        }
+
         return app_run_capture_analysis_with_csv_outputs(context);
 
         case APP_COMMAND_CAPTURE_INTERFACE:
@@ -3456,6 +3573,18 @@ int app_run(app_context_t *context)
                 context->error_message,
                 sizeof(context->error_message),
                 "capture interface is missing"
+            );
+
+            return EINVAL;
+        }
+
+        if (context->offline_flow_idle_timeout_seconds !=
+            INT64_C(0)) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "offline flow idle timeout is only supported "
+                "for offline capture"
             );
 
             return EINVAL;

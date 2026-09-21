@@ -208,6 +208,7 @@ int app_context_init(app_context_t *context);
  * - --help或-h；
  * - --version或-V。
  * - --read FILE或-r FILE
+ *   [--flow-idle-timeout SECONDS]
  *   [--csv CSV_FILE]
  *   [--feature-csv FEATURE_CSV_FILE]
  * - --interface NAME
