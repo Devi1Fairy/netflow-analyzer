@@ -765,90 +765,6 @@ static int app_write_flow_table_csv(
 }
 
 /**
- * @brief 把流表中的全部记录导出到一个新CSV文件。
- *
- * 本函数拥有局部FILE对象的完整生命周期：
- *
- * 1. 使用独占创建模式打开文件；
- * 2. 写入CSV表头；
- * 3. 遍历流表并写入记录；
- * 4. 无论中途是否失败，都执行fclose。
- *
- * "wx"模式拒绝覆盖已有文件。
- *
- * @param table 指向已经完成聚合的流表。
- * @param output_path 准备创建的CSV文件路径。
- *
- * @return 成功时返回0；
- *         参数无效时返回EINVAL；
- *         文件已存在时返回EEXIST；
- *         其他打开、写入或关闭错误返回对应错误码。
- */
-static int app_export_flow_table_csv(
-    const flow_table_t *table,
-    const char *output_path)
-{
-    FILE *output;
-
-    int operation_error;
-    int close_error;
-
-    if (table == NULL ||
-        !table->initialized ||
-        output_path == NULL ||
-        output_path[0] == '\0') {
-        return EINVAL;
-    }
-
-    /*
-     * errno在成功调用后没有确定意义。
-     * 打开前清零，失败后才能安全地判断是否获得了具体错误码。
-     */
-    errno = 0;
-
-    /*
-     * x表示独占创建。
-     *
-     * 如果文件已经存在，fopen失败，不会截断原文件。
-     */
-    output = fopen(output_path, "wx");
-
-    if (output == NULL) {
-        return errno != 0 ? errno : EIO;
-    }
-
-    operation_error = flow_export_write_csv_header(output);
-
-    if (operation_error == 0) {
-        operation_error =
-            app_write_flow_table_csv(
-                output,
-                table
-            );
-    }
-
-    /*
-     * fclose可能在刷新标准库缓冲区时发现真正的磁盘写入错误，
-     * 因此不能忽略它的返回值。
-     */
-    errno = 0;
-    close_error = 0;
-
-    if (fclose(output) != 0) {
-        close_error = errno != 0 ? errno : EIO;
-    }
-
-    /*
-     * 如果写入和关闭都失败，优先返回更早发生的写入错误。
-     */
-    if (operation_error != 0) {
-        return operation_error;
-    }
-
-    return close_error;
-}
-
-/**
  * @brief 从一条流记录提取特征并写入已打开的CSV流。
  *
  * output由外层调用者拥有，本函数只借用，不调用fclose。
@@ -1552,10 +1468,13 @@ static int app_process_packet(
  *
  * 离线模式读取到文件末尾；
  * 实时模式读取到context->packet_limit指定的包数。
+ *
+ * flow_csv_output为可选的普通流CSV输出流。
  * feature_csv_output为可选的特征CSV输出流。
- * NULL表示不导出特征；非NULL时本函数只借用，不负责关闭。
+ * 两个输出参数分别为NULL时不生成对应CSV；
+ * 非NULL时本函数只借用，不负责关闭。
  */
-static int app_run_capture_analysis(app_context_t *context, FILE *feature_csv_output)
+static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output, FILE *feature_csv_output)
 {
     char capture_error[CAPTURE_ERROR_BUFFER_SIZE] = {0};
 
@@ -2528,6 +2447,32 @@ static int app_run_capture_analysis(app_context_t *context, FILE *feature_csv_ou
     capture_close(&capture);
 
     /*
+     * 当前还没有为离线模式启用流过期，因此流表中保存的是
+     * 本次离线分析的全部最终流。
+     *
+     * flow_csv_output由外层拥有，本函数只写记录，不写表头，
+     * 也不调用fclose。
+     */
+    if (flow_csv_output != NULL) {
+        error_code = app_write_flow_table_csv(
+            flow_csv_output,
+            &flow_table
+        );
+
+        if (error_code != 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to write remaining flow records: %s",
+                strerror(error_code)
+            );
+
+            flow_table_cleanup(&flow_table);
+            return error_code;
+        }
+    }
+
+    /*
      * 采集结束后，流表中剩余记录不会再发生变化。
      *
      * 离线模式下，这就是整个PCAP的最终流集合。
@@ -2665,39 +2610,6 @@ static int app_run_capture_analysis(app_context_t *context, FILE *feature_csv_ou
         return error_code;
     }
 
-    if (context->csv_output_path != NULL) {
-        error_code = app_export_flow_table_csv(
-            &flow_table,
-            context->csv_output_path
-        );
-
-        if (error_code != 0) {
-            (void)snprintf(
-                context->error_message,
-                sizeof(context->error_message),
-                "failed to export CSV '%s': %s",
-                context->csv_output_path,
-                strerror(error_code)
-            );
-
-            flow_table_cleanup(&flow_table);
-            return error_code;
-        }
-
-        if (printf(
-                "CSV output: %s\n",
-                context->csv_output_path) < 0) {
-            (void)snprintf(
-                context->error_message,
-                sizeof(context->error_message),
-                "CSV was created, but confirmation output failed"
-            );
-
-            flow_table_cleanup(&flow_table);
-            return EIO;
-        }
-    }
-
     /*
      * flow_table_cleanup只解除对flow_slots的借用，不会free数组。
      *
@@ -2722,11 +2634,14 @@ static int app_run_capture_analysis(app_context_t *context, FILE *feature_csv_ou
  *
  * 路径字符串仍由app_context_t借用，本函数不释放路径。
  *
- * 当前步骤只建立文件生命周期。流特征记录将在后续步骤中
- * 从分析循环写入这个文件。
+ * flow_csv_output由更外层调用者拥有，本函数只把它继续借给
+ * app_run_capture_analysis，不写表头也不关闭。
+ *
+ * 分析循环负责把过期、淘汰和最终剩余流的特征
+ * 写入这个文件。。
  */
 static int app_run_capture_analysis_with_feature_csv(
-    app_context_t *context)
+    app_context_t *context, FILE *flow_csv_output)
 {
     FILE *feature_csv_output = NULL;
 
@@ -2791,7 +2706,7 @@ static int app_run_capture_analysis_with_feature_csv(
      */
     if (operation_error == 0) {
         operation_error =
-            app_run_capture_analysis(context, feature_csv_output);
+            app_run_capture_analysis(context, flow_csv_output, feature_csv_output);
     }
 
     /*
@@ -2836,6 +2751,136 @@ static int app_run_capture_analysis_with_feature_csv(
             context->error_message,
             sizeof(context->error_message),
             "feature CSV was created, "
+            "but confirmation output failed"
+        );
+
+        return EIO;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief 在可选的普通流CSV文件生命周期内执行采集分析。
+ *
+ * 本函数拥有flow_csv_output：
+ *
+ * 1. 使用"wx"独占创建普通流CSV；
+ * 2. 写入一次普通流CSV表头；
+ * 3. 调用特征CSV包装层和采集分析；
+ * 4. 无论后续成功或失败都关闭普通流CSV。
+ *
+ * feature_csv_output仍由下一层包装函数独立拥有。
+ */
+static int app_run_capture_analysis_with_csv_outputs(
+    app_context_t *context)
+{
+    FILE *flow_csv_output = NULL;
+
+    int operation_error;
+    int close_error = 0;
+
+    if (context == NULL) {
+        return EINVAL;
+    }
+
+    if (context->csv_output_path != NULL) {
+        errno = 0;
+
+        /*
+         * "wx"只创建新文件，拒绝覆盖已有CSV。
+         */
+        flow_csv_output = fopen(
+            context->csv_output_path,
+            "wx"
+        );
+
+        if (flow_csv_output == NULL) {
+            operation_error =
+                errno != 0 ? errno : EIO;
+
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to create CSV '%s': %s",
+                context->csv_output_path,
+                strerror(operation_error)
+            );
+
+            return operation_error;
+        }
+
+        operation_error =
+            flow_export_write_csv_header(
+                flow_csv_output
+            );
+
+        if (operation_error != 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to write CSV header '%s': %s",
+                context->csv_output_path,
+                strerror(operation_error)
+            );
+        }
+    } else {
+        operation_error = 0;
+    }
+
+    /*
+     * 表头成功后才进入特征CSV包装层和分析循环。
+     */
+    if (operation_error == 0) {
+        operation_error =
+            app_run_capture_analysis_with_feature_csv(
+                context,
+                flow_csv_output
+            );
+    }
+
+    /*
+     * 即使特征CSV创建或分析过程失败，普通CSV仍由本层关闭。
+     */
+    if (flow_csv_output != NULL) {
+        errno = 0;
+
+        if (fclose(flow_csv_output) != 0) {
+            close_error =
+                errno != 0 ? errno : EIO;
+        }
+    }
+
+    /*
+     * 业务错误优先于随后发生的关闭错误。
+     *
+     * 发生业务错误时，context中通常已经保存了更具体的说明。
+     */
+    if (operation_error != 0) {
+        return operation_error;
+    }
+
+    if (close_error != 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "failed to close CSV '%s': %s",
+            context->csv_output_path,
+            strerror(close_error)
+        );
+
+        return close_error;
+    }
+
+    if (context->csv_output_path != NULL &&
+        printf(
+            "CSV output: %s\n",
+            context->csv_output_path
+        ) < 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "CSV was created, "
             "but confirmation output failed"
         );
 
@@ -3313,7 +3358,7 @@ int app_run(app_context_t *context)
             return EINVAL;
         }
 
-        return app_run_capture_analysis_with_feature_csv(context);
+        return app_run_capture_analysis_with_csv_outputs(context);
 
         case APP_COMMAND_CAPTURE_INTERFACE:
         if (context->interface_name == NULL ||
@@ -3394,7 +3439,7 @@ int app_run(app_context_t *context)
             return EINVAL;
         }
 
-        return app_run_capture_analysis_with_feature_csv(context);
+        return app_run_capture_analysis_with_csv_outputs(context);
 
     default:
         (void)snprintf(
