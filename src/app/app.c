@@ -703,6 +703,68 @@ static int app_print_flow_table_probe_statistics(
 }
 
 /**
+ * @brief 把流表中的全部记录写入已经打开的普通流CSV。
+ *
+ * output和table都由调用者拥有，本函数只借用。
+ * 本函数不写表头、不关闭文件，也不修改流表。
+ *
+ * @param output 指向已经打开并写过表头的输出流。
+ * @param table 指向已经初始化的流表。
+ *
+ * @return 成功时返回0；
+ *         参数或流表状态无效时返回EINVAL；
+ *         读取流表或写入CSV失败时返回对应错误码。
+ */
+static int app_write_flow_table_csv(
+    FILE *output,
+    const flow_table_t *table)
+{
+    const flow_record_t *record;
+
+    size_t flow_count;
+    size_t index;
+
+    int error_code;
+
+    if (output == NULL ||
+        table == NULL ||
+        !table->initialized) {
+        return EINVAL;
+    }
+
+    flow_count = flow_table_count(table);
+
+    for (index = 0U; index < flow_count; index += 1U) {
+        /*
+         * record只是借用流表内部记录的只读地址。
+         *
+         * 本循环不会修改或清理流表，因此该地址在本次写入完成前
+         * 保持有效，也不需要调用free。
+         */
+        error_code = flow_table_get(
+            table,
+            index,
+            &record
+        );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+
+        error_code = flow_export_write_csv_record(
+            output,
+            record
+        );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+    }
+
+    return 0;
+}
+
+/**
  * @brief 把流表中的全部记录导出到一个新CSV文件。
  *
  * 本函数拥有局部FILE对象的完整生命周期：
@@ -726,11 +788,7 @@ static int app_export_flow_table_csv(
     const flow_table_t *table,
     const char *output_path)
 {
-    const flow_record_t *record;
     FILE *output;
-
-    size_t flow_count;
-    size_t index;
 
     int operation_error;
     int close_error;
@@ -759,29 +817,14 @@ static int app_export_flow_table_csv(
         return errno != 0 ? errno : EIO;
     }
 
-    operation_error =
-        flow_export_write_csv_header(output);
+    operation_error = flow_export_write_csv_header(output);
 
     if (operation_error == 0) {
-        flow_count = flow_table_count(table);
-
-        for (index = 0U; index < flow_count; index += 1U) {
-            operation_error = flow_table_get(table, index, &record);
-
-            if (operation_error != 0) {
-                break;
-            }
-
-            operation_error =
-                flow_export_write_csv_record(
-                    output,
-                    record
-                );
-
-            if (operation_error != 0) {
-                break;
-            }
-        }
+        operation_error =
+            app_write_flow_table_csv(
+                output,
+                table
+            );
     }
 
     /*
