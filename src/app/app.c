@@ -703,6 +703,52 @@ static int app_print_flow_table_probe_statistics(
 }
 
 /**
+ * @brief 把连续数组中的流记录依次写入普通流CSV。
+ *
+ * 本函数只读借用records，不保存其中的元素地址。
+ * records既可以指向值副本数组，也可以指向一条流表记录。
+ *
+ * output由外层调用者拥有，本函数只借用，不关闭。
+ * record_count为0时不写入任何内容并返回成功。
+ *
+ * @param output 指向已经打开并写过表头的普通流CSV。
+ * @param records 指向连续的流记录数组。
+ * @param record_count records中有效记录的数量。
+ *
+ * @return 成功时返回0；
+ *         参数无效时返回EINVAL；
+ *         写入失败时返回底层导出函数的错误码。
+ */
+static int app_write_flow_csv_records(
+    FILE *output,
+    const flow_record_t *records,
+    size_t record_count)
+{
+    size_t index;
+    int error_code;
+
+    if (output == NULL ||
+        (records == NULL && record_count != 0U)) {
+        return EINVAL;
+    }
+
+    for (index = 0U;
+         index < record_count;
+         index += 1U) {
+        error_code = flow_export_write_csv_record(
+            output,
+            &records[index]
+        );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+    }
+
+    return 0;
+}
+
+/**
  * @brief 把流表中的全部记录写入已经打开的普通流CSV。
  *
  * output和table都由调用者拥有，本函数只借用。
@@ -751,9 +797,10 @@ static int app_write_flow_table_csv(
             return error_code;
         }
 
-        error_code = flow_export_write_csv_record(
+        error_code = app_write_flow_csv_records(
             output,
-            record
+            record,
+            1U
         );
 
         if (error_code != 0) {
@@ -2180,6 +2227,33 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
              * 因此这些记录必须在这里导出；退出时遍历剩余流表
              * 已经无法再次找到它们。
              */
+
+            if (flow_csv_output != NULL) {
+                error_code = app_write_flow_csv_records(
+                    flow_csv_output,
+                    expired_flow_records,
+                    expired_flow_count
+                );
+
+                if (error_code != 0) {
+                    (void)snprintf(
+                        context->error_message,
+                        sizeof(context->error_message),
+                        "failed to write expired flow records: %s",
+                        strerror(error_code)
+                    );
+
+                    /*
+                    * flow_csv_output由外层包装函数拥有。
+                    * 本层只借用，返回后不能在这里调用fclose。
+                    */
+                    context->active_capture = NULL;
+                    flow_table_cleanup(&flow_table);
+                    capture_close(&capture);
+                    return error_code;
+                }
+            }
+
             if (feature_csv_output != NULL) {
                 error_code =
                     app_write_flow_feature_csv_records(
