@@ -1601,6 +1601,7 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
     size_t total_evicted_flow_count = 0U;
 
     bool live_capture;
+    bool flow_expiration_enabled;
     bool print_preview;
     /*
      * false既可能表示尚未查询，也可能表示当前平台查询失败。
@@ -1625,6 +1626,17 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
      * 后面的协议解析和流量聚合不需要再区分数据来自文件还是网卡。
      */
     live_capture = context->command == APP_COMMAND_CAPTURE_INTERFACE;
+
+    /*
+    * 输入来源与流生命周期策略是两个不同概念。
+    *
+    * 当前保持原有行为：
+    * 实时抓包启用流过期，离线PCAP保持完整文件级聚合。
+    *
+    * 后续为离线模式增加显式配置时，只需要改变这里的策略来源，
+    * 不需要误改BPF、非阻塞读取、运行指标或抓包统计逻辑。
+    */
+    flow_expiration_enabled = live_capture;
 
     if (context->packet_limit == 0U) {
         (void)snprintf(
@@ -1818,10 +1830,12 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
     }
 
     /*
-    * 离线PCAP继续保留完整文件级聚合语义。
-    * 第一版只为实时采集初始化并使用过期调度器。
+    * 只有启用流过期时才初始化调度器。
+    *
+    * 初始化条件必须与后面调用flow_expiration_schedule_observe的
+    * 条件保持一致，不能使用尚未初始化的调度器。
     */
-    if (live_capture) {
+    if (flow_expiration_enabled) {
         error_code = flow_expiration_schedule_init(
             &expiration_schedule,
             APP_FLOW_IDLE_TIMEOUT_SECONDS,
@@ -2146,7 +2160,7 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
     * 如果一条旧流已经空闲30秒，而当前包恰好与旧流五元组相同，
     * 先更新流表会刷新last_seen，错误地把两个会话合并。
     */
-    if (live_capture) {
+    if (flow_expiration_enabled) {
         packet_timestamp = (flow_timestamp_t){
             .seconds = packet.timestamp_seconds,
             .microseconds = packet.timestamp_microseconds
