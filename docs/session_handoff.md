@@ -34,7 +34,7 @@ cmake -E chdir build ctest --output-on-failure
 - 当前`feature/flow-features`分支的x86_64 Debug构建共有21项CTest并全部通过；LubanCat-2N ARM64原生Debug仍以此前18项基线为已验证状态，新增特征与数据集审计模块尚未上板回归，不能写成板端21项已通过。此前单次扫描优化已完成Ubuntu `lo`和LubanCat-2N物理网卡300流手工验收；优化版官方SDK ARM64产物只要求`GLIBC_2.17`，板端得到300次操作、44次淘汰、256条最终流和零drop；TCP状态功能也已在`lo`真实HTTP/1.0连接中处理12包并最终输出`closed`，两个drop字段均为0。
 - 第一版流特征链已经完成：`flow_features_t`从双向流记录提取版本化模型输入，`--feature-csv`支持离线和带`--count`的有限实时模式；运行期间的过期流与淘汰流立即导出，停止时再导出最终剩余流。Ubuntu手工验收分别得到“2包过期流+4包剩余流”以及“44条淘汰流+256条剩余流=300条数据行”。CTU-13标签审计规则已经固化，但当前没有公开PCAP流与特征样本连接、模型训练、异常检测或在线推理。
 - 新增标签审计测试前，当前分支已经通过x86_64 Release优化构建的20项CTest；独立`build-sanitize`以ASan和UBSan插桩重新构建并通过相同20项测试，没有Sanitizer或泄漏报告。新增的第21项Python数据契约测试目前只在x86_64 Debug测试树执行；Release和Sanitizer构建尚未重新配置。Sanitizer配置通过CMake命令行参数临时建立，尚未成为仓库Preset。
-- CTU-13 Scenario 7已选为第一轮公开数据集对齐试点。标准库Python工具严格审计官方双向`.binetflow`标签，真实114077条记录按保守规则得到63条`malicious`、1669条`benign`和112345条`exclude`；确定性合成CSV测试不依赖外部数据文件。当前仍未下载截断PCAP、连接标签与`flow_features_v1`样本、训练模型或执行在线推理。
+- CTU-13 Scenario 7已选为第一轮公开数据集对齐试点。标准库Python工具严格审计官方双向`.binetflow`标签，真实114077条记录按保守规则得到63条`malicious`、1669条`benign`和112345条`exclude`；确定性合成CSV测试不依赖外部数据文件。公开全流量文件已经下载并通过bzip2 CRC检查，实际为7466160包的单接口Ethernet pcapng，捕获内容按42至66字节截断但保留原始线路长度。前1000包小样本得到604个`complete`、396个`truncated`、47条最终流、47行特征和零`flow_rejected`。当前仍未连接官方标签与`flow_features_v1`样本、训练模型或执行在线推理。
 - 实时`--count`已改为可选上限；本机`lo`在省略上限后能于静默期正常报告，随后处理4个`complete` ICMP包，并在`SIGTERM`后完成统计、流汇总与清理。
 - 主程序已在stdout首次I/O前显式启用行缓冲；严格普通文件重定向测试在进程结束前读到5秒周期报告，避免systemd journal日志延迟到缓冲区填满或服务退出。
 - 提交`740d5ab`的官方SDK ARM64部署包已在LubanCat-2N完成首次非root systemd手工启停：进程使用专用用户，能力仅为`CAP_NET_RAW`，`NoNewPrivs=1`；真实4包ICMP得到1条双向流且两个drop字段为0，SIGTERM正常收尾。
@@ -1394,7 +1394,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`单次扫描原位替换、TCP生命周期，以及普通流CSV和`flow_features_v1`特征CSV已经完成。当前`feature/flow-features`分支的x86_64 Debug构建共有21项CTest并全部通过；Release和ASan/UBSan仍为新增标签审计测试前的20项通过基线。LubanCat-2N最新已验证基线仍为新增特征前的18项，不能宣称板端21项已通过。特征CSV覆盖过期、淘汰和最终剩余三类互斥流记录，离线模式可直接使用，实时模式必须配合`--count`；CTU-13标签审计与保守三类映射已经完成，但尚未连接公开PCAP流与特征样本，也没有模型训练、异常判定或在线推理。板端此前已经完成真实TCP关闭、非root systemd、`CAP_NET_RAW`最小能力、连续失败限速、SD卡事故恢复、性能和10分钟长稳等验证。下一步下载并校验场景7截断PCAP、设计标签连接规则，再重新交叉构建并验证ARM64特征导出。
+周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`单次扫描原位替换、TCP生命周期，以及普通流CSV和`flow_features_v1`特征CSV已经完成。当前`feature/flow-features`分支的x86_64 Debug构建共有21项CTest并全部通过；Release和ASan/UBSan仍为新增标签审计测试前的20项通过基线。LubanCat-2N最新已验证基线仍为新增特征前的18项，不能宣称板端21项已通过。特征CSV覆盖过期、淘汰和最终剩余三类互斥流记录，离线模式可直接使用，实时模式必须配合`--count`；CTU-13标签审计、保守三类映射、公开截断PCAP校验和1000包边界验收已经完成，但尚未连接官方流标签与C提取特征样本，也没有模型训练、异常判定或在线推理。板端此前已经完成真实TCP关闭、非root systemd、`CAP_NET_RAW`最小能力、连续失败限速、SD卡事故恢复、性能和10分钟长稳等验证。下一步设计时间窗口、双向五元组与生命周期连接规则，再重新交叉构建并验证ARM64特征导出。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1437,4 +1437,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及普通CSV中使用统一名称。第一版流特征链又把完整流记录转换为版本化模型输入；过期、淘汰和最终剩余记录分别在离开生命周期的位置写出，Ubuntu手工验收已经证明2+4与44+256两组数量闭合。CTU-13 Scenario 7的标签来源、保守映射、审计脚本和确定性测试已经完成，x86_64 Debug构建现有21项CTest全部通过；Release和ASan/UBSan仍保留新增该测试前的20项基线。LubanCat-2N仍保留此前18项与真实TCP、systemd、性能和存储恢复验收，新增特征功能尚未上板。项目现在具备机器学习所需的数据生成和标签审计基础，但尚未完成PCAP样本连接、训练、评估或推理；下一步下载并校验截断PCAP、定义连接规则并补做ARM64特征链验证。`labs/thread_pipeline`仍因现有性能数据未显示单线程瓶颈而不接入正式路径。
+应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及普通CSV中使用统一名称。第一版流特征链又把完整流记录转换为版本化模型输入；过期、淘汰和最终剩余记录分别在离开生命周期的位置写出，Ubuntu手工验收已经证明2+4与44+256两组数量闭合。CTU-13 Scenario 7的标签来源、保守映射、审计脚本、确定性测试和公开截断PCAP小样本验收已经完成，x86_64 Debug构建现有21项CTest全部通过；Release和ASan/UBSan仍保留新增该测试前的20项基线。LubanCat-2N仍保留此前18项与真实TCP、systemd、性能和存储恢复验收，新增特征功能尚未上板。项目现在具备机器学习所需的数据生成和标签审计基础，但尚未完成官方流标签与C特征样本连接、训练、评估或推理；下一步定义时间窗口、双向五元组和生命周期连接规则，并补做ARM64特征链验证。`labs/thread_pipeline`仍因现有性能数据未显示单线程瓶颈而不接入正式路径。
