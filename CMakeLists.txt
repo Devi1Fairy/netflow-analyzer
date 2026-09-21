@@ -597,6 +597,24 @@ if(BUILD_TESTING)
             TIMEOUT 10
     )
 
+    # 使用合成标签和流CSV验证唯一、缺失及歧义匹配分类。
+    add_test(
+        NAME ctu13_flow_match_audit_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_ctu13_flow_match_audit.py
+            --script
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/audit_ctu13_flow_matches.py
+            --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}
+    )
+
+    set_tests_properties(
+        ctu13_flow_match_audit_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
     # 创建CSV流记录导出单元测试程序。
     add_executable(
         flow_export_tests
