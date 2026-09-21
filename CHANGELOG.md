@@ -71,6 +71,7 @@
 - x86_64 Release优化构建及其20项CTest全部通过；独立`build-sanitize`使用AddressSanitizer与UndefinedBehaviorSanitizer重新构建并运行同一组20项测试，未报告越界、释放后使用、未定义行为或内存泄漏。Sanitizer配置尚未固化为项目Preset。
 - 选择CTU-13 Scenario 7作为公开数据集对齐试点，并新增标准库Python标签审计工具：严格检查官方`.binetflow`表头，只把`From-Botnet`映射为恶意、`From-Normal`映射为正常，其余标签排除。真实114077条记录得到63条恶意、1669条正常和112345条排除记录；确定性合成CSV测试覆盖成功映射、错误表头、缺失字段、空标签、空文件和不存在文件，使x86_64 Debug CTest增加到21项并全部通过。公开PCAP流与`flow_features_v1`样本尚未完成连接。
 - 下载并校验CTU-13 Scenario 7公开全流量截断文件：bzip2 CRC通过，压缩包SHA-256为`246e43ea206de437c1bf32fb07f865a8971c86dda0fd95e6597985d9f9c85577`；解压后实际格式为单接口Ethernet pcapng，共7466160包、持续1277.473788秒，文件只保留42至66捕获字节但记录约6085 MB原始线路数据。抽取前1000包进行边界验收，程序得到604个`complete`、396个`truncated`、47条最终流、47行特征和零`flow_rejected`，证明libpcap读取和安全截断分类有效，同时确认捕获字节特征与流完整性会受到公开数据截断策略影响。
+- 新增CTU-13 Scenario 7流身份规范化模块：把固定`CEST +02:00`本地时间精确转换为UTC Unix微秒，把TCP、UDP和ICMP映射为标准IPv4协议号，并复用C端的IP、端口排序规则生成双向端点；ICMP端口固定为0，ARP等当前不支持协议与非法字段分别返回不同结果。确定性测试覆盖时区、持续时间、正反方向、ICMP、ARP、端口和亚微秒边界，使x86_64 Debug CTest增加到22项并全部通过。
 
 ## [0.2.0] - 2026-08-26
 

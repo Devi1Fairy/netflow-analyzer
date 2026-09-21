@@ -579,6 +579,24 @@ if(BUILD_TESTING)
             TIMEOUT 10
     )
 
+    # 验证CTU-13时间、协议和双向五元组规范化规则。
+    #
+    # 测试使用合成字段，不依赖仓库外的大型公开数据文件。
+    add_test(
+        NAME ctu13_flow_identity_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_ctu13_flow_identity.py
+            --scripts-dir
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+    )
+
+    set_tests_properties(
+        ctu13_flow_identity_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
     # 创建CSV流记录导出单元测试程序。
     add_executable(
         flow_export_tests
