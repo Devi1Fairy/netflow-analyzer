@@ -218,6 +218,11 @@ Release主程序位于`build-release/bin/netflow-analyzer`。
 # 读取并分析一个离线PCAP文件。
 ./build/bin/netflow-analyzer --read /path/to/input.pcap
 
+# 按30秒空闲边界拆分同一五元组的离线流生命周期。
+./build/bin/netflow-analyzer \
+    --read /path/to/input.pcap \
+    --flow-idle-timeout 30
+
 # 分析离线PCAP，并把最终双向流记录写入一个新CSV文件。
 ./build/bin/netflow-analyzer \
     --read /path/to/input.pcap \
@@ -302,10 +307,13 @@ Flow summary: 1 flow(s)
 | `-c N`、`--count N` | 可选的实时包数上限，N必须大于0；省略时持续运行到停止信号 |
 | `--filter EXPRESSION` | 为实时抓包安装BPF过滤表达式；含空格时需要使用引号 |
 | `--flow-full-policy POLICY` | 设置实时流表满载策略：默认`reject`，或使用`evict-oldest`淘汰最久未活动流 |
+| `--flow-idle-timeout SECONDS` | 为离线PCAP启用正整数秒的空闲分段；省略时保持整文件聚合 |
 | `--csv FILE` | 把流记录导出到一个新CSV文件，不覆盖已有文件 |
 | `--feature-csv FILE` | 把最终流转换为`flow_features_v1`特征CSV；实时模式必须同时提供`--count` |
 
 离线分析会先显示文件与链路类型，再预览前5个数据包。程序仍会处理文件中的所有数据包，最后输出总包数、预览包数和双向流汇总。TCP流汇总包含`tcp_state`；指定`--csv`后，应用层在聚合成功后创建CSV文件，写入固定表头和全部流记录，其中TCP写入稳定阶段名称，UDP和ICMP写入`not-applicable`。C11的独占创建模式会在目标已存在时失败，避免静默覆盖原文件。
+
+`--flow-idle-timeout`只对离线模式生效。启用后，程序使用PCAP包时间戳的最大已观察值作为事件时间高水位，在当前包入表前导出并删除已空闲流。这使同一五元组能在长时间空闲后形成新生命周期；省略该选项时仍保持原有的整份PCAP聚合语义。该选项提供可审计的分段能力，但不声称与Argus或任何公开数据集的私有分流规则完全一致。
 
 `--feature-csv`使用另一套面向训练和推理输入的数据契约。它可以与离线`--csv`同时使用，但两个路径必须不同；两类输出都使用`"wx"`独占创建，拒绝覆盖已有文件。实时模式若省略`--count`会拒绝启动特征导出，避免持续服务无限增长文件并耗尽开发板存储。
 
