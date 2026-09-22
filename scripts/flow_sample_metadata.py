@@ -5,11 +5,13 @@
 
 本模块不会训练模型，也不会把IP、端口或标签加入模型特征。
 """
+import csv
 import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Optional
+from ipaddress import IPv4Address
+from typing import Optional, TextIO
 
 
 SAMPLE_ID_SCHEMA_VERSION = "flow_sample_id_v1"
@@ -17,6 +19,25 @@ SAMPLE_ID_SCHEMA_VERSION = "flow_sample_id_v1"
 SAMPLE_METADATA_SCHEMA_VERSION = "flow_sample_metadata_v1"
 
 SUPPORTED_FEATURE_SCHEMA_VERSION = "flow_features_v1"
+
+SAMPLE_METADATA_CSV_COLUMNS = (
+    "metadata_schema_version",
+    "feature_schema_version",
+    "feature_row_number",
+    "sample_id",
+    "capture_id",
+    "protocol",
+    "endpoint_a_ip",
+    "endpoint_a_port",
+    "endpoint_b_ip",
+    "endpoint_b_port",
+    "first_seen_unix_microseconds",
+    "last_seen_unix_microseconds",
+    "match_status",
+    "candidate_count",
+    "label_group",
+    "is_trainable",
+)
 
 MATCH_STATUS_UNMATCHED = "unmatched"
 MATCH_STATUS_UNIQUE = "unique"
@@ -424,3 +445,100 @@ def build_sample_metadata(
         candidate_count=candidate_count,
         label_group=label_group,
     )
+
+def write_sample_metadata_csv_header(
+    output_stream: TextIO,
+) -> None:
+    """
+    向文本流写出一行稳定的元数据CSV表头。
+
+    本函数借用output_stream，不负责关闭或刷新它。
+    写入错误由csv模块或底层文本流直接抛给调用者。
+    """
+
+    writer = csv.writer(
+        output_stream,
+        lineterminator="\n",
+    )
+
+    writer.writerow(
+        SAMPLE_METADATA_CSV_COLUMNS
+    )
+
+
+def write_sample_metadata_csv_record(
+    output_stream: TextIO,
+    metadata: FlowSampleMetadata,
+) -> None:
+    """
+    验证并写出一条流样本元数据记录。
+
+    身份字段只写入sidecar元数据文件，不会改变
+    flow_features_v1模型特征文件。
+    """
+
+    if not isinstance(
+        metadata,
+        FlowSampleMetadata,
+    ):
+        raise TypeError(
+            "metadata must be FlowSampleMetadata"
+        )
+
+    # 即使调用者绕过build_sample_metadata直接构造dataclass，
+    # 写文件前仍重新验证所有状态不变量。
+    validated_metadata = build_sample_metadata(
+        identity=metadata.identity,
+        feature_row_number=(
+            metadata.feature_row_number
+        ),
+        match_status=metadata.match_status,
+        candidate_count=metadata.candidate_count,
+        label_group=metadata.label_group,
+    )
+
+    identity = validated_metadata.identity
+
+    writer = csv.writer(
+        output_stream,
+        lineterminator="\n",
+    )
+
+    writer.writerow(
+        (
+            SAMPLE_METADATA_SCHEMA_VERSION,
+            SUPPORTED_FEATURE_SCHEMA_VERSION,
+            validated_metadata.feature_row_number,
+            validated_metadata.sample_id,
+            identity.capture_id,
+            identity.protocol,
+            str(
+                IPv4Address(
+                    identity.endpoint_a_ipv4
+                )
+            ),
+            identity.endpoint_a_port,
+            str(
+                IPv4Address(
+                    identity.endpoint_b_ipv4
+                )
+            ),
+            identity.endpoint_b_port,
+            identity.first_seen_microseconds,
+            identity.last_seen_microseconds,
+            validated_metadata.match_status,
+            validated_metadata.candidate_count,
+            (
+                validated_metadata.label_group
+                if validated_metadata.label_group
+                is not None
+                else ""
+            ),
+            (
+                1
+                if validated_metadata.is_trainable
+                else 0
+            ),
+        )
+    )
+    

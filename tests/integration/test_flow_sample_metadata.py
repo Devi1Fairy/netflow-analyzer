@@ -2,12 +2,12 @@
 
 """验证稳定流样本ID的数据契约。"""
 
+import io
 import argparse
 import sys
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Callable, Type
-
 
 EXPECTED_SAMPLE_ID = (
     "flow_sample_id_v1:"
@@ -77,8 +77,11 @@ def run_tests(scripts_dir: Path) -> None:
         SAMPLE_METADATA_SCHEMA_VERSION,
         SUPPORTED_FEATURE_SCHEMA_VERSION,
         FlowSampleIdentity,
+        FlowSampleMetadata,
         build_sample_id,
         build_sample_metadata,
+        write_sample_metadata_csv_header,
+        write_sample_metadata_csv_record,
     )
 
     identity = FlowSampleIdentity(
@@ -264,6 +267,108 @@ def run_tests(scripts_dir: Path) -> None:
         "single-candidate ambiguity was accepted",
     )
 
+    output_stream = io.StringIO()
+
+    write_sample_metadata_csv_header(
+        output_stream
+    )
+
+    write_sample_metadata_csv_record(
+        output_stream,
+        unique_metadata,
+    )
+
+    write_sample_metadata_csv_record(
+        output_stream,
+        unmatched_metadata,
+    )
+
+    expected_csv = (
+        "metadata_schema_version,"
+        "feature_schema_version,"
+        "feature_row_number,"
+        "sample_id,"
+        "capture_id,"
+        "protocol,"
+        "endpoint_a_ip,"
+        "endpoint_a_port,"
+        "endpoint_b_ip,"
+        "endpoint_b_port,"
+        "first_seen_unix_microseconds,"
+        "last_seen_unix_microseconds,"
+        "match_status,"
+        "candidate_count,"
+        "label_group,"
+        "is_trainable\n"
+        "flow_sample_metadata_v1,"
+        "flow_features_v1,"
+        "1,"
+        f"{sample_id},"
+        "ctu13-scenario-7,"
+        "6,"
+        "192.0.2.10,"
+        "55000,"
+        "198.51.100.20,"
+        "443,"
+        "1313495484049047,"
+        "1313495485299048,"
+        "unique,"
+        "1,"
+        "malicious,"
+        "1\n"
+        "flow_sample_metadata_v1,"
+        "flow_features_v1,"
+        "2,"
+        f"{sample_id},"
+        "ctu13-scenario-7,"
+        "6,"
+        "192.0.2.10,"
+        "55000,"
+        "198.51.100.20,"
+        "443,"
+        "1313495484049047,"
+        "1313495485299048,"
+        "unmatched,"
+        "0,"
+        ","
+        "0\n"
+    )
+
+    require(
+        output_stream.getvalue()
+        == expected_csv,
+        "metadata CSV output is not stable",
+    )
+
+    require(
+        not output_stream.closed,
+        "metadata writer closed the borrowed stream",
+    )
+
+    invalid_metadata = FlowSampleMetadata(
+        feature_row_number=1,
+        identity=identity,
+        match_status=MATCH_STATUS_UNIQUE,
+        candidate_count=2,
+        label_group=LABEL_GROUP_MALICIOUS,
+    )
+
+    invalid_output = io.StringIO()
+
+    require_exception(
+        ValueError,
+        lambda: write_sample_metadata_csv_record(
+            invalid_output,
+            invalid_metadata,
+        ),
+        "invalid metadata was written",
+    )
+
+    require(
+        invalid_output.getvalue() == "",
+        "invalid metadata partially modified output",
+    )
+
     print("[PASS] flow sample metadata contract")
 
 
@@ -292,3 +397,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+    
