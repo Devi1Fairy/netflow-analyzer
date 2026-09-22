@@ -68,8 +68,17 @@ def run_tests(scripts_dir: Path) -> None:
     sys.path.insert(0, str(scripts_dir))
 
     from flow_sample_metadata import (
+        LABEL_GROUP_BENIGN,
+        LABEL_GROUP_MALICIOUS,
+        MATCH_STATUS_AMBIGUOUS_CONFLICTING_LABELS,
+        MATCH_STATUS_AMBIGUOUS_SAME_LABEL,
+        MATCH_STATUS_UNIQUE,
+        MATCH_STATUS_UNMATCHED,
+        SAMPLE_METADATA_SCHEMA_VERSION,
+        SUPPORTED_FEATURE_SCHEMA_VERSION,
         FlowSampleIdentity,
         build_sample_id,
+        build_sample_metadata,
     )
 
     identity = FlowSampleIdentity(
@@ -142,6 +151,117 @@ def run_tests(scripts_dir: Path) -> None:
         FrozenInstanceError,
         lambda: setattr(identity, "protocol", 17),
         "sample identity was mutable",
+    )
+
+    require(
+        SAMPLE_METADATA_SCHEMA_VERSION
+        == "flow_sample_metadata_v1",
+        "unexpected metadata schema version",
+    )
+
+    require(
+        SUPPORTED_FEATURE_SCHEMA_VERSION
+        == "flow_features_v1",
+        "unexpected feature schema version",
+    )
+
+    unique_metadata = build_sample_metadata(
+        identity=identity,
+        feature_row_number=1,
+        match_status=MATCH_STATUS_UNIQUE,
+        candidate_count=1,
+        label_group=LABEL_GROUP_MALICIOUS,
+    )
+
+    require(
+        unique_metadata.sample_id == sample_id,
+        "metadata sample ID differs from identity ID",
+    )
+
+    require(
+        unique_metadata.is_trainable,
+        "unique supervised match is not trainable",
+    )
+
+    unmatched_metadata = build_sample_metadata(
+        identity=identity,
+        feature_row_number=2,
+        match_status=MATCH_STATUS_UNMATCHED,
+        candidate_count=0,
+        label_group=None,
+    )
+
+    require(
+        not unmatched_metadata.is_trainable,
+        "unmatched sample became trainable",
+    )
+
+    same_label_ambiguity = build_sample_metadata(
+        identity=identity,
+        feature_row_number=3,
+        match_status=(
+            MATCH_STATUS_AMBIGUOUS_SAME_LABEL
+        ),
+        candidate_count=2,
+        label_group=LABEL_GROUP_BENIGN,
+    )
+
+    require(
+        not same_label_ambiguity.is_trainable,
+        "same-label ambiguity became trainable",
+    )
+
+    conflicting_ambiguity = build_sample_metadata(
+        identity=identity,
+        feature_row_number=4,
+        match_status=(
+            MATCH_STATUS_AMBIGUOUS_CONFLICTING_LABELS
+        ),
+        candidate_count=2,
+        label_group=None,
+    )
+
+    require(
+        not conflicting_ambiguity.is_trainable,
+        "conflicting-label ambiguity became trainable",
+    )
+
+    require_exception(
+        ValueError,
+        lambda: build_sample_metadata(
+            identity=identity,
+            feature_row_number=0,
+            match_status=MATCH_STATUS_UNIQUE,
+            candidate_count=1,
+            label_group=LABEL_GROUP_MALICIOUS,
+        ),
+        "zero feature row number was accepted",
+    )
+
+    require_exception(
+        ValueError,
+        lambda: build_sample_metadata(
+            identity=identity,
+            feature_row_number=1,
+            match_status=MATCH_STATUS_UNIQUE,
+            candidate_count=1,
+            label_group=None,
+        ),
+        "unique match without a label was accepted",
+    )
+
+    require_exception(
+        ValueError,
+        lambda: build_sample_metadata(
+            identity=identity,
+            feature_row_number=1,
+            match_status=(
+                MATCH_STATUS_AMBIGUOUS_SAME_LABEL
+            ),
+            candidate_count=1,
+            label_group=LABEL_GROUP_BENIGN,
+        ),
+        "single-candidate ambiguity was accepted",
     )
 
     print("[PASS] flow sample metadata contract")
