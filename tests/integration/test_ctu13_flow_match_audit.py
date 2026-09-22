@@ -147,6 +147,14 @@ def write_csv(
         writer.writerow(columns)
         writer.writerows(rows)
 
+def require(
+    condition: bool,
+    message: str,
+) -> None:
+    """要求condition成立，否则使测试失败。"""
+
+    if not condition:
+        raise RuntimeError(message)
 
 def run_audit(
     script: Path,
@@ -179,6 +187,79 @@ def run_tests(
         raise RuntimeError(
             f"audit script does not exist: {script}"
         )
+
+    # 被测脚本依赖同目录中的其他项目模块，因此必须先加入
+    # 模块搜索路径，再执行局部导入。
+    sys.path.insert(0, str(script.parent))
+
+    from audit_ctu13_flow_matches import (
+        LabelInterval,
+        classify_match_candidates,
+    )
+
+    from flow_sample_metadata import (
+        MATCH_STATUS_AMBIGUOUS_CONFLICTING_LABELS,
+        MATCH_STATUS_AMBIGUOUS_SAME_LABEL,
+        MATCH_STATUS_UNIQUE,
+        MATCH_STATUS_UNMATCHED,
+    )
+
+    unmatched = classify_match_candidates([])
+
+    require(
+        unmatched.status
+        == MATCH_STATUS_UNMATCHED
+        and unmatched.candidate_count == 0
+        and unmatched.label_group is None,
+        "empty candidate list was misclassified",
+    )
+
+    unique = classify_match_candidates(
+        [
+            LabelInterval(
+                start_microseconds=100,
+                end_microseconds=200,
+                label_group="malicious",
+            )
+        ]
+    )
+
+    require(
+        unique.status == MATCH_STATUS_UNIQUE
+        and unique.candidate_count == 1
+        and unique.label_group == "malicious",
+        "unique candidate was misclassified",
+    )
+
+    same_label = classify_match_candidates(
+        [
+            LabelInterval(100, 200, "benign"),
+            LabelInterval(150, 250, "benign"),
+        ]
+    )
+
+    require(
+        same_label.status
+        == MATCH_STATUS_AMBIGUOUS_SAME_LABEL
+        and same_label.candidate_count == 2
+        and same_label.label_group == "benign",
+        "same-label ambiguity was misclassified",
+    )
+
+    conflicting = classify_match_candidates(
+        [
+            LabelInterval(100, 200, "benign"),
+            LabelInterval(150, 250, "malicious"),
+        ]
+    )
+
+    require(
+        conflicting.status
+        == MATCH_STATUS_AMBIGUOUS_CONFLICTING_LABELS
+        and conflicting.candidate_count == 2
+        and conflicting.label_group is None,
+        "conflicting-label ambiguity was misclassified",
+    )
 
     with tempfile.TemporaryDirectory(
         prefix="ctu13-flow-match-",

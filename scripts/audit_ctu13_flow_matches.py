@@ -12,7 +12,21 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import DefaultDict, Dict, List, Tuple
+from typing import (
+    DefaultDict,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+)
+
+from flow_sample_metadata import (
+    MATCH_STATUS_AMBIGUOUS_CONFLICTING_LABELS,
+    MATCH_STATUS_AMBIGUOUS_SAME_LABEL,
+    MATCH_STATUS_UNIQUE,
+    MATCH_STATUS_UNMATCHED,
+    SUPPORTED_LABEL_GROUPS,
+)
 
 from ctu13_flow_identity import (
     Ctu13FlowIdentity,
@@ -63,6 +77,18 @@ class LabelInterval:
     end_microseconds: int
     label_group: str
 
+@dataclass(frozen=True)
+class FlowMatchClassification:
+    """
+    一条C流记录与监督标签之间的匹配分类。
+
+    candidate_count保存时间与五元组都匹配的候选数。
+    label_group只在候选标签能够得到单一结论时存在。
+    """
+
+    status: str
+    candidate_count: int
+    label_group: Optional[str]
 
 def parse_arguments() -> argparse.Namespace:
     """解析标签文件和C流记录CSV路径。"""
@@ -423,6 +449,62 @@ def intervals_overlap(
         and second_start <= first_end
     )
 
+def classify_match_candidates(
+    candidates: List[LabelInterval],
+) -> FlowMatchClassification:
+    """
+    把候选标签列表归类为唯一、未匹配或两类歧义。
+
+    本函数不选择歧义候选，也不把未知标签自动解释为正常。
+    """
+
+    candidate_count = len(candidates)
+
+    if candidate_count == 0:
+        return FlowMatchClassification(
+            status=MATCH_STATUS_UNMATCHED,
+            candidate_count=0,
+            label_group=None,
+        )
+
+    candidate_groups = {
+        candidate.label_group
+        for candidate in candidates
+    }
+
+    if not candidate_groups.issubset(
+        SUPPORTED_LABEL_GROUPS
+    ):
+        raise ValueError(
+            "match candidates contain an unsupported "
+            "label group"
+        )
+
+    if candidate_count == 1:
+        return FlowMatchClassification(
+            status=MATCH_STATUS_UNIQUE,
+            candidate_count=1,
+            label_group=candidates[0].label_group,
+        )
+
+    if len(candidate_groups) == 1:
+        return FlowMatchClassification(
+            status=(
+                MATCH_STATUS_AMBIGUOUS_SAME_LABEL
+            ),
+            candidate_count=candidate_count,
+            label_group=next(
+                iter(candidate_groups)
+            ),
+        )
+
+    return FlowMatchClassification(
+        status=(
+            MATCH_STATUS_AMBIGUOUS_CONFLICTING_LABELS
+        ),
+        candidate_count=candidate_count,
+        label_group=None,
+    )
 
 def audit_flow_matches(
     label_file: Path,
@@ -508,33 +590,23 @@ def audit_flow_matches(
                 )
             ]
 
-            if not candidates:
-                counts["matches_unmatched"] += 1
-                continue
-
-            if len(candidates) == 1:
-                label_group = (
-                    candidates[0].label_group
+            classification = (
+                classify_match_candidates(
+                    candidates
                 )
+            )
 
-                counts["matches_unique"] += 1
-                counts[
-                    f"matches_unique_{label_group}"
-                ] += 1
-                continue
+            counts[
+                f"matches_{classification.status}"
+            ] += 1
 
-            candidate_groups = {
-                candidate.label_group
-                for candidate in candidates
-            }
-
-            if len(candidate_groups) == 1:
+            if (
+                classification.status
+                == MATCH_STATUS_UNIQUE
+            ):
                 counts[
-                    "matches_ambiguous_same_label"
-                ] += 1
-            else:
-                counts[
-                    "matches_ambiguous_conflicting_labels"
+                    "matches_unique_"
+                    f"{classification.label_group}"
                 ] += 1
 
     if counts["flows_total"] == 0:
