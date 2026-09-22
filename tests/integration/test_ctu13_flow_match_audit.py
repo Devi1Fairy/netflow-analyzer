@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 
 LABEL_COLUMNS = (
@@ -161,22 +162,41 @@ def run_audit(
     script: Path,
     label_file: Path,
     flow_csv: Path,
+    capture_id: Optional[str] = None,
+    metadata_output: Optional[Path] = None,
 ):
     """使用当前Python解释器运行被测工具。"""
 
+    command = [
+        sys.executable,
+        str(script),
+        str(label_file),
+        str(flow_csv),
+    ]
+
+    if capture_id is not None:
+        command.extend(
+            [
+                "--capture-id",
+                capture_id,
+            ]
+        )
+
+    if metadata_output is not None:
+        command.extend(
+            [
+                "--metadata-output",
+                str(metadata_output),
+            ]
+        )
+
     return subprocess.run(
-        [
-            sys.executable,
-            str(script),
-            str(label_file),
-            str(flow_csv),
-        ],
+        command,
         capture_output=True,
         text=True,
         timeout=5,
         check=False,
     )
-
 
 def run_tests(
     script: Path,
@@ -598,6 +618,135 @@ def run_tests(
             )
             == 5,
             "metadata sample IDs are not unique",
+        )
+
+        metadata_output = (
+            temporary_path / "metadata.csv"
+        )
+
+        metadata_process = run_audit(
+            script=script,
+            label_file=label_file,
+            flow_csv=flow_csv,
+            capture_id="ctu13-scenario-7",
+            metadata_output=metadata_output,
+        )
+
+        require(
+            metadata_process.returncode == 0,
+            "metadata CLI audit failed\n"
+            f"stdout:\n{metadata_process.stdout}\n"
+            f"stderr:\n{metadata_process.stderr}",
+        )
+
+        require(
+            metadata_process.stdout
+            == expected_output,
+            "metadata mode changed the audit summary",
+        )
+
+        require(
+            metadata_process.stderr == "",
+            "metadata CLI audit wrote to stderr",
+        )
+
+        require(
+            metadata_output.is_file(),
+            "metadata output file was not created",
+        )
+
+        require(
+            metadata_output.read_text(
+                encoding="utf-8"
+            )
+            == metadata_stream.getvalue(),
+            "CLI metadata differs from "
+            "in-memory metadata",
+        )
+
+        original_metadata = (
+            metadata_output.read_text(
+                encoding="utf-8"
+            )
+        )
+
+        overwrite_process = run_audit(
+            script=script,
+            label_file=label_file,
+            flow_csv=flow_csv,
+            capture_id="ctu13-scenario-7",
+            metadata_output=metadata_output,
+        )
+
+        require(
+            overwrite_process.returncode != 0,
+            "existing metadata output was accepted",
+        )
+
+        require(
+            metadata_output.read_text(
+                encoding="utf-8"
+            )
+            == original_metadata,
+            "existing metadata output was modified",
+        )
+
+        unpaired_output = (
+            temporary_path / "unpaired.csv"
+        )
+
+        missing_capture_process = run_audit(
+            script=script,
+            label_file=label_file,
+            flow_csv=flow_csv,
+            metadata_output=unpaired_output,
+        )
+
+        require(
+            missing_capture_process.returncode == 2,
+            "metadata output without capture ID "
+            "was not rejected by argparse",
+        )
+
+        require(
+            not unpaired_output.exists(),
+            "unpaired metadata output was created",
+        )
+
+        missing_output_process = run_audit(
+            script=script,
+            label_file=label_file,
+            flow_csv=flow_csv,
+            capture_id="ctu13-scenario-7",
+        )
+
+        require(
+            missing_output_process.returncode == 2,
+            "capture ID without metadata output "
+            "was not rejected by argparse",
+        )
+
+        incomplete_output = (
+            temporary_path / "incomplete.csv"
+        )
+
+        invalid_capture_process = run_audit(
+            script=script,
+            label_file=label_file,
+            flow_csv=flow_csv,
+            capture_id="invalid/capture/id",
+            metadata_output=incomplete_output,
+        )
+
+        require(
+            invalid_capture_process.returncode == 1,
+            "invalid capture ID was accepted",
+        )
+
+        require(
+            not incomplete_output.exists(),
+            "incomplete metadata output "
+            "was not removed",
         )
 
 

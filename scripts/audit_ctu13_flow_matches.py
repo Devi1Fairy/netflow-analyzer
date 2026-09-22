@@ -3,7 +3,9 @@
 """
 审计C流记录CSV与CTU-13监督标签之间的匹配关系。
 
-本工具只报告匹配质量，不生成训练集，也不会自动选择歧义候选。
+默认只报告匹配质量。提供capture ID和输出路径时，同时生成
+流特征对应的metadata sidecar，但不会生成训练集，也不会
+自动选择歧义候选。
 """
 
 import argparse
@@ -118,7 +120,35 @@ def parse_arguments() -> argparse.Namespace:
         help="Path to a flow CSV produced by --csv.",
     )
 
-    return parser.parse_args()
+    parser.add_argument(
+        "--capture-id",
+        help=(
+            "Stable identifier of the source capture. "
+            "Required with --metadata-output."
+        ),
+    )
+
+    parser.add_argument(
+        "--metadata-output",
+        type=Path,
+        help=(
+            "Create a flow sample metadata sidecar. "
+            "The destination must not already exist."
+        ),
+    )
+
+    arguments = parser.parse_args()
+
+    if (
+        (arguments.capture_id is None)
+        != (arguments.metadata_output is None)
+    ):
+        parser.error(
+            "--capture-id and --metadata-output "
+            "must be used together"
+        )
+
+    return arguments
 
 
 def require_text(
@@ -728,16 +758,57 @@ def main() -> int:
 
     arguments = parse_arguments()
 
+    metadata_output_created = False
+
     try:
-        counts = audit_flow_matches(
-            arguments.label_file,
-            arguments.flow_csv,
-        )
-    except (OSError, csv.Error, ValueError) as error:
+        if arguments.metadata_output is None:
+            counts = audit_flow_matches(
+                arguments.label_file,
+                arguments.flow_csv,
+            )
+        else:
+            with arguments.metadata_output.open(
+                "x",
+                encoding="utf-8",
+                newline="",
+            ) as metadata_output_stream:
+                metadata_output_created = True
+
+                counts = audit_flow_matches(
+                    label_file=arguments.label_file,
+                    flow_csv=arguments.flow_csv,
+                    capture_id=arguments.capture_id,
+                    metadata_output_stream=(
+                        metadata_output_stream
+                    ),
+                )
+
+    except (
+        OSError,
+        csv.Error,
+        TypeError,
+        ValueError,
+    ) as error:
+        cleanup_error = None
+
+        if metadata_output_created:
+            try:
+                arguments.metadata_output.unlink()
+            except OSError as current_cleanup_error:
+                cleanup_error = current_cleanup_error
+
         print(
             f"CTU-13 flow match audit failed: {error}",
             file=sys.stderr,
         )
+
+        if cleanup_error is not None:
+            print(
+                "Additionally failed to remove incomplete "
+                f"metadata output: {cleanup_error}",
+                file=sys.stderr,
+            )
+
         return 1
 
     output_fields = (
