@@ -597,6 +597,26 @@ if(BUILD_TESTING)
             TIMEOUT 10
     )
 
+    # 使用确定性合成Zeek文本验证IoT-23标签审计工具。
+    #
+    # 测试不依赖仓库外的公开PCAP或标签文件。
+    add_test(
+        NAME iot23_label_audit_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_iot23_label_audit.py
+            --script
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/inspect_iot23_labels.py
+            --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}
+    )
+
+    set_tests_properties(
+        iot23_label_audit_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
     # 验证稳定流样本ID的序列化、摘要和输入边界。
     #
     # 测试只使用确定性合成身份，不依赖外部CTU-13数据文件。
