@@ -17,6 +17,7 @@ from typing import (
     Dict,
     List,
     Optional,
+    TextIO,
     Tuple,
 )
 
@@ -29,6 +30,8 @@ from flow_sample_metadata import (
     FlowSampleIdentity,
     FlowSampleMetadata,
     build_sample_metadata,
+    write_sample_metadata_csv_header,
+    write_sample_metadata_csv_record,
 )
 
 from ctu13_flow_identity import (
@@ -570,8 +573,29 @@ def build_flow_sample_metadata(
 def audit_flow_matches(
     label_file: Path,
     flow_csv: Path,
+    capture_id: Optional[str] = None,
+    metadata_output_stream: Optional[TextIO] = None,
 ) -> Dict[str, int]:
-    """审计所有C流记录的五元组和时间区间匹配结果。"""
+    """
+    审计所有C流记录并可选写出样本元数据。
+
+    capture_id和metadata_output_stream必须同时提供或同时省略。
+    本函数只借用输出流，不负责关闭或刷新它。
+    """
+
+    if (
+        (capture_id is None)
+        != (metadata_output_stream is None)
+    ):
+        raise ValueError(
+            "capture_id and metadata_output_stream "
+            "must be provided together"
+        )
+
+    if metadata_output_stream is not None:
+        write_sample_metadata_csv_header(
+            metadata_output_stream
+        )
 
     label_index, counts = load_label_index(
         label_file
@@ -656,6 +680,27 @@ def audit_flow_matches(
                     candidates
                 )
             )
+
+            if metadata_output_stream is not None:
+                metadata = build_flow_sample_metadata(
+                    capture_id=capture_id,
+                    feature_row_number=(
+                        counts["flows_total"]
+                    ),
+                    flow_key=key,
+                    first_seen_microseconds=(
+                        first_seen
+                    ),
+                    last_seen_microseconds=(
+                        last_seen
+                    ),
+                    classification=classification,
+                )
+
+                write_sample_metadata_csv_record(
+                    metadata_output_stream,
+                    metadata,
+                )
 
             counts[
                 f"matches_{classification.status}"

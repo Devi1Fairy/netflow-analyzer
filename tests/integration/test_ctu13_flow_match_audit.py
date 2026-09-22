@@ -2,6 +2,7 @@
 
 """验证CTU-13流匹配审计工具。"""
 
+import io
 import argparse
 import csv
 import subprocess
@@ -194,6 +195,7 @@ def run_tests(
 
     from audit_ctu13_flow_matches import (
         LabelInterval,
+        audit_flow_matches,
         build_flow_sample_metadata,
         classify_match_candidates,
     )
@@ -203,6 +205,7 @@ def run_tests(
         MATCH_STATUS_AMBIGUOUS_SAME_LABEL,
         MATCH_STATUS_UNIQUE,
         MATCH_STATUS_UNMATCHED,
+        SAMPLE_METADATA_CSV_COLUMNS,
         FlowSampleIdentity,
     )
 
@@ -486,6 +489,116 @@ def run_tests(
                 "valid audit wrote to stderr\n"
                 f"stderr:\n{completed_process.stderr}"
             )
+
+        metadata_stream = io.StringIO()
+
+        metadata_counts = audit_flow_matches(
+            label_file=label_file,
+            flow_csv=flow_csv,
+            capture_id="ctu13-scenario-7",
+            metadata_output_stream=(
+                metadata_stream
+            ),
+        )
+
+        require(
+            metadata_counts["flows_total"] == 5,
+            "metadata audit processed an "
+            "unexpected flow count",
+        )
+
+        require(
+            not metadata_stream.closed,
+            "audit closed the borrowed metadata stream",
+        )
+
+        metadata_stream.seek(0)
+
+        metadata_reader = csv.DictReader(
+            metadata_stream
+        )
+
+        require(
+            tuple(metadata_reader.fieldnames or ())
+            == SAMPLE_METADATA_CSV_COLUMNS,
+            "metadata sidecar columns are incorrect",
+        )
+
+        metadata_rows = list(metadata_reader)
+
+        require(
+            len(metadata_rows) == 5,
+            "metadata sidecar row count is incorrect",
+        )
+
+        require(
+            [
+                row["feature_row_number"]
+                for row in metadata_rows
+            ]
+            == ["1", "2", "3", "4", "5"],
+            "metadata feature row numbers "
+            "are not sequential",
+        )
+
+        require(
+            [
+                row["match_status"]
+                for row in metadata_rows
+            ]
+            == [
+                "unique",
+                "unique",
+                "unmatched",
+                "ambiguous_same_label",
+                "ambiguous_conflicting_labels",
+            ],
+            "metadata match statuses are incorrect",
+        )
+
+        require(
+            [
+                row["label_group"]
+                for row in metadata_rows
+            ]
+            == [
+                "malicious",
+                "benign",
+                "",
+                "malicious",
+                "",
+            ],
+            "metadata label groups are incorrect",
+        )
+
+        require(
+            [
+                row["is_trainable"]
+                for row in metadata_rows
+            ]
+            == ["1", "1", "0", "0", "0"],
+            "metadata trainable flags are incorrect",
+        )
+
+        require(
+            all(
+                row["capture_id"]
+                == "ctu13-scenario-7"
+                for row in metadata_rows
+            ),
+            "metadata capture IDs are incorrect",
+        )
+
+        require(
+            len(
+                {
+                    row["sample_id"]
+                    for row in metadata_rows
+                }
+            )
+            == 5,
+            "metadata sample IDs are not unique",
+        )
 
 
 def main() -> int:
