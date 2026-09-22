@@ -597,6 +597,24 @@ if(BUILD_TESTING)
             TIMEOUT 10
     )
 
+    # 验证稳定流样本ID的序列化、摘要和输入边界。
+    #
+    # 测试只使用确定性合成身份，不依赖外部CTU-13数据文件。
+    add_test(
+        NAME flow_sample_metadata_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_flow_sample_metadata.py
+            --scripts-dir
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+    )
+
+    set_tests_properties(
+        flow_sample_metadata_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
     # 使用合成标签和流CSV验证唯一、缺失及歧义匹配分类。
     add_test(
         NAME ctu13_flow_match_audit_tests
