@@ -26,6 +26,9 @@ from flow_sample_metadata import (
     MATCH_STATUS_UNIQUE,
     MATCH_STATUS_UNMATCHED,
     SUPPORTED_LABEL_GROUPS,
+    FlowSampleIdentity,
+    FlowSampleMetadata,
+    build_sample_metadata,
 )
 
 from ctu13_flow_identity import (
@@ -504,6 +507,64 @@ def classify_match_candidates(
         ),
         candidate_count=candidate_count,
         label_group=None,
+    )
+
+def build_flow_sample_metadata(
+    capture_id: str,
+    feature_row_number: int,
+    flow_key: FlowKey,
+    first_seen_microseconds: int,
+    last_seen_microseconds: int,
+    classification: FlowMatchClassification,
+) -> FlowSampleMetadata:
+    """
+    把已经解析的C流身份和标签匹配结果组装成样本元数据。
+
+    flow_key必须使用C流表相同的规范化端点顺序。
+    feature_row_number从1开始，只计算特征CSV数据行。
+    本函数创建新的不可变对象，不持有CSV行或文件资源。
+    """
+
+    if not isinstance(
+        classification,
+        FlowMatchClassification,
+    ):
+        raise TypeError(
+            "classification must be "
+            "FlowMatchClassification"
+        )
+
+    (
+        protocol,
+        endpoint_a_ipv4,
+        endpoint_a_port,
+        endpoint_b_ipv4,
+        endpoint_b_port,
+    ) = flow_key
+
+    identity = FlowSampleIdentity(
+        capture_id=capture_id,
+        protocol=protocol,
+        endpoint_a_ipv4=endpoint_a_ipv4,
+        endpoint_a_port=endpoint_a_port,
+        endpoint_b_ipv4=endpoint_b_ipv4,
+        endpoint_b_port=endpoint_b_port,
+        first_seen_microseconds=(
+            first_seen_microseconds
+        ),
+        last_seen_microseconds=(
+            last_seen_microseconds
+        ),
+    )
+
+    return build_sample_metadata(
+        identity=identity,
+        feature_row_number=feature_row_number,
+        match_status=classification.status,
+        candidate_count=(
+            classification.candidate_count
+        ),
+        label_group=classification.label_group,
     )
 
 def audit_flow_matches(

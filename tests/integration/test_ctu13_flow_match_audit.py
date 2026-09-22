@@ -194,6 +194,7 @@ def run_tests(
 
     from audit_ctu13_flow_matches import (
         LabelInterval,
+        build_flow_sample_metadata,
         classify_match_candidates,
     )
 
@@ -202,6 +203,7 @@ def run_tests(
         MATCH_STATUS_AMBIGUOUS_SAME_LABEL,
         MATCH_STATUS_UNIQUE,
         MATCH_STATUS_UNMATCHED,
+        FlowSampleIdentity,
     )
 
     unmatched = classify_match_candidates([])
@@ -259,6 +261,47 @@ def run_tests(
         and conflicting.candidate_count == 2
         and conflicting.label_group is None,
         "conflicting-label ambiguity was misclassified",
+    )
+
+    expected_identity = FlowSampleIdentity(
+        capture_id="ctu13-scenario-7",
+        protocol=6,
+        endpoint_a_ipv4=167772161,
+        endpoint_a_port=1000,
+        endpoint_b_ipv4=167772162,
+        endpoint_b_port=80,
+        first_seen_microseconds=1313495484250000,
+        last_seen_microseconds=1313495484750000,
+    )
+
+    metadata = build_flow_sample_metadata(
+        capture_id="ctu13-scenario-7",
+        feature_row_number=1,
+        flow_key=(
+            6,
+            167772161,
+            1000,
+            167772162,
+            80,
+        ),
+        first_seen_microseconds=1313495484250000,
+        last_seen_microseconds=1313495484750000,
+        classification=unique,
+    )
+
+    require(
+        metadata.identity == expected_identity,
+        "flow identity was not preserved in metadata",
+    )
+
+    require(
+        metadata.feature_row_number == 1
+        and metadata.match_status
+        == MATCH_STATUS_UNIQUE
+        and metadata.candidate_count == 1
+        and metadata.label_group == "malicious"
+        and metadata.is_trainable,
+        "unique flow match metadata is incorrect",
     )
 
     with tempfile.TemporaryDirectory(
