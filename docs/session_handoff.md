@@ -1,6 +1,6 @@
 # Netflow Analyzer会话交接文档
 
-最后更新：2026-09-21（Asia/Shanghai）
+最后更新：2026-09-22（Asia/Shanghai）
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
@@ -23,7 +23,7 @@ cmake -E chdir build ctest --output-on-failure
 
 - 当前功能分支：`feature/flow-features`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前分支在既有非root systemd、TCP状态和流表生命周期功能之上，已提交流特征模型、版本化特征CSV、CLI参数、文件生命周期、数据集标签审计和身份规范化；开始本轮匹配审计时最新已推送提交为`e5144bc feat(ml): normalize CTU-13 flow identities`，实际接手时仍须以`git log`为准；
+- 当前分支在既有非root systemd、TCP状态和流表生命周期功能之上，已提交流特征模型、版本化特征CSV、CLI参数、文件生命周期、数据集标签审计、身份规范化、稳定样本ID和元数据sidecar；本次交接时最新已推送提交为`0f1aa5e feat(ml): expose flow metadata sidecar output`，实际接手时仍须以`git log`为准；
 - TCP状态机、流记录接入、终端显示、CSV字段和确定性三次握手验收均已提交；接手时仍须先检查工作区，不能覆盖用户后续未提交改动；
 - 离线CLI已新增可选`--flow-idle-timeout SECONDS`，默认继续整文件聚合；确定性6包ICMP验收已证明30秒阈值会导出2包旧流，并把同键后续4包建立为新流。普通流CSV和特征CSV均精确产生两条顺序一致的记录；
 - 当前正式版本宏为`0.2.0`；
@@ -32,10 +32,11 @@ cmake -E chdir build ctest --output-on-failure
 - 本地主程序：`build/bin/netflow-analyzer`；
 - 官方SDK交叉构建目录：`/home/zcb/build/netflow-analyzer-lubancat-sdk-release-v2`；
 - 通用GCC交叉构建目录：`/home/zcb/build/netflow-analyzer-generic-sysroot-release`；
-- 当前`feature/flow-features`分支的x86_64 Debug构建共有23项CTest并全部通过；LubanCat-2N ARM64原生Debug仍以此前18项基线为已验证状态，新增特征与数据集模块尚未上板回归，不能写成板端23项已通过。此前单次扫描优化已完成Ubuntu `lo`和LubanCat-2N物理网卡300流手工验收；优化版官方SDK ARM64产物只要求`GLIBC_2.17`，板端得到300次操作、44次淘汰、256条最终流和零drop；TCP状态功能也已在`lo`真实HTTP/1.0连接中处理12包并最终输出`closed`，两个drop字段均为0。
+- 当前`feature/flow-features`分支的x86_64 Debug构建共有24项CTest并全部通过；LubanCat-2N ARM64原生Debug仍以此前18项基线为已验证状态，新增特征与数据集模块尚未上板回归，不能写成板端24项已通过。此前单次扫描优化已完成Ubuntu `lo`和LubanCat-2N物理网卡300流手工验收；优化版官方SDK ARM64产物只要求`GLIBC_2.17`，板端得到300次操作、44次淘汰、256条最终流和零drop；TCP状态功能也已在`lo`真实HTTP/1.0连接中处理12包并最终输出`closed`，两个drop字段均为0。
 - 第一版流特征链已经完成：`flow_features_t`从双向流记录提取版本化模型输入，`--feature-csv`支持离线和带`--count`的有限实时模式；运行期间的过期流与淘汰流立即导出，停止时再导出最终剩余流。Ubuntu手工验收分别得到“2包过期流+4包剩余流”以及“44条淘汰流+256条剩余流=300条数据行”。CTU-13标签规则和匹配质量审计已经固化，但当前没有可靠的一对一训练样本、模型训练、异常检测或在线推理。
-- 新增标签审计测试前，当前分支已经通过x86_64 Release优化构建的20项CTest；独立`build-sanitize`以ASan和UBSan插桩重新构建并通过相同20项测试，没有Sanitizer或泄漏报告。新增的标签审计、身份规范化和匹配审计三项Python数据契约测试目前只在x86_64 Debug测试树执行；Release和Sanitizer构建尚未重新配置。Sanitizer配置通过CMake命令行参数临时建立，尚未成为仓库Preset。
-- CTU-13 Scenario 7已选为第一轮公开数据集对齐试点。标准库Python工具严格审计官方双向`.binetflow`标签，真实114077条记录按保守规则得到63条`malicious`、1669条`benign`和112345条`exclude`；确定性合成CSV测试不依赖外部数据文件。公开全流量文件已经下载并通过bzip2 CRC检查，实际为7466160包的单接口Ethernet pcapng，捕获内容按42至66字节截断但保留原始线路长度。前1000包小样本得到604个`complete`、396个`truncated`、47条最终流、47行特征和零`flow_rejected`。标签侧现已把`CEST +02:00`时间精确转换为UTC Unix微秒，并按与C端一致的IP、端口规则生成双向流身份；首条标签时间与PCAP首包时间精确相等，TCP、UDP、ICMP和不支持协议边界有确定性测试。匹配审计又证明前1000包的47条流均不属于保守监督集合，而恶意DNS子集的2条C流都覆盖多个同标签Argus生命周期；当前仍没有可靠的一对一训练样本、训练模型或在线推理。
+- `flow_sample_id_v1`现已根据抓包来源、规范化流键和生命周期时间生成稳定SHA-256标识；`flow_sample_metadata_v1` sidecar通过`feature_row_number`把特征行连接到样本身份、匹配状态、候选数量、监督标签和可训练标志。只有唯一匹配的正常或恶意样本可以训练；身份字段不进入`flow_features_v1`。
+- 新增标签审计测试前，当前分支已经通过x86_64 Release优化构建的20项CTest；独立`build-sanitize`以ASan和UBSan插桩重新构建并通过相同20项测试，没有Sanitizer或泄漏报告。新增的标签审计、身份规范化、样本元数据和匹配审计四项Python数据契约测试目前只在x86_64 Debug测试树执行；Release和Sanitizer构建尚未重新配置。Sanitizer配置通过CMake命令行参数临时建立，尚未成为仓库Preset。
+- CTU-13 Scenario 7已选为第一轮公开数据集对齐试点。标准库Python工具严格审计官方双向`.binetflow`标签，真实114077条记录按保守规则得到63条`malicious`、1669条`benign`和112345条`exclude`；确定性合成CSV测试不依赖外部数据文件。公开全流量文件已经下载并通过bzip2 CRC检查，实际为7466160包的单接口Ethernet pcapng，捕获内容按42至66字节截断但保留原始线路长度。前1000包小样本得到604个`complete`、396个`truncated`、47条最终流、47行特征和零`flow_rejected`。标签侧现已把`CEST +02:00`时间精确转换为UTC Unix微秒，并按与C端一致的IP、端口规则生成双向流身份；首条标签时间与PCAP首包时间精确相等，TCP、UDP、ICMP和不支持协议边界有确定性测试。匹配审计又证明前1000包的47条流均不属于保守监督集合，而恶意DNS子集的2条C流都覆盖多个同标签Argus生命周期；sidecar能够如实记录这些结果，但当前仍没有可靠的一对一训练样本、训练模型或在线推理。
 - 实时`--count`已改为可选上限；本机`lo`在省略上限后能于静默期正常报告，随后处理4个`complete` ICMP包，并在`SIGTERM`后完成统计、流汇总与清理。
 - 主程序已在stdout首次I/O前显式启用行缓冲；严格普通文件重定向测试在进程结束前读到5秒周期报告，避免systemd journal日志延迟到缓冲区填满或服务退出。
 - 提交`740d5ab`的官方SDK ARM64部署包已在LubanCat-2N完成首次非root systemd手工启停：进程使用专用用户，能力仅为`CAP_NET_RAW`，`NoNewPrivs=1`；真实4包ICMP得到1条双向流且两个drop字段为0，SIGTERM正常收尾。
@@ -200,7 +201,7 @@ Release主程序位于`build-release/bin/netflow-analyzer`。
 - 官方Buildroot GCC 9.3、SDK内置glibc 2.29 sysroot和隔离的板端libpcap overlay；
 - Ubuntu `aarch64-linux-gnu-gcc` 13、板端完整sysroot和GCC `-B`启动文件前缀。
 
-两种产物均为AArch64 ELF，动态加载器为`/lib/ld-linux-aarch64.so.1`，最终只要求`GLIBC_2.17`。交叉配置使用`BUILD_TESTING=OFF`；既有逻辑回归由当时x86_64与ARM64板端原生构建的18项CTest负责，交叉产物加载和真实采集由板端`ldd`、`--help`和ICMP测试负责。当前分支已扩展到23项x86_64 Debug测试，新增模块仍需重新交叉构建并执行板端原生测试和运行验收。
+两种产物均为AArch64 ELF，动态加载器为`/lib/ld-linux-aarch64.so.1`，最终只要求`GLIBC_2.17`。交叉配置使用`BUILD_TESTING=OFF`；既有逻辑回归由当时x86_64与ARM64板端原生构建的18项CTest负责，交叉产物加载和真实采集由板端`ldd`、`--help`和ICMP测试负责。当前分支已扩展到24项x86_64 Debug测试，新增模块仍需重新交叉构建并执行板端原生测试和运行验收。
 
 完整目录、环境变量、CMake命令和故障处理见[`docs/cross_compilation.md`](cross_compilation.md)。
 
@@ -605,6 +606,18 @@ CSV在协议号后使用稳定的`tcp_state`字段。TCP流通过`tcp_flow_phase
 
 离线模式允许`--csv`和`--feature-csv`同时出现，但路径必须不同。实时特征CSV必须配合大于0的`--count`，避免无上限服务持续增加文件并耗尽开发板存储。该约束只控制本次任务的输入包数，不等价于生产级文件轮转或配额管理。
 
+### 8.11 样本身份与元数据sidecar所有权
+
+`scripts/flow_sample_metadata.py`把模型输入和数据治理信息分开。`flow_features_v1`继续只保存模型输入；`FlowSampleIdentity`保存`capture_id`、协议、规范化端点和首末Unix微秒，`FlowSampleMetadata`再增加从1开始的特征行号、匹配状态、候选数和可选标签。
+
+`flow_sample_id_v1`把模式版本和全部身份字段按固定顺序序列化为紧凑ASCII JSON，再计算SHA-256摘要。它是确定性的低碰撞标识，不是标签、密码或数字签名。身份对象使用冻结的dataclass，端点必须已经按C端流键规则排序；ICMP端口固定为0。
+
+`flow_sample_metadata_v1` sidecar包含完整身份、`sample_id`、`feature_row_number`、匹配质量和`is_trainable`。只有`unique`且标签为`benign`或`malicious`时可训练；`unmatched`、`ambiguous_same_label`和`ambiguous_conflicting_labels`都保留为不可训练证据。
+
+Python写出函数借用调用者提供的`TextIO`，不负责关闭或刷新。审计CLI才拥有目标文件：`--capture-id`和`--metadata-output`必须成对提供，目标以`"x"`模式独占创建，失败时尝试删除本次产生的不完整文件，已有文件不会被覆盖。
+
+`feature_row_number`要求普通流CSV和特征CSV来自同一次分析、相同生命周期参数和相同输出顺序。它不能把不同运行产生的两个文件任意拼接；后续训练集构建器仍需检查模式版本、行数和对应关系。
+
 ## 9. 协议与二进制解析原则
 
 ### 9.1 为什么使用字节游标
@@ -706,7 +719,19 @@ sudo ./build/bin/netflow-analyzer \
 
 目标文件必须不存在。离线模式可以同时指定`--csv`和`--feature-csv`，但两者路径必须不同。实时模式使用`--feature-csv`时必须提供严格正整数`--count`；无上限实时模式会在参数验证阶段被拒绝。
 
-当前输出模式为`flow_features_v1`。它没有标签、IP或端口，不能直接声称已经形成可监督训练数据集；后续还需要针对选定公开数据集建立字段和标签对齐方案。
+当前输出模式为`flow_features_v1`。它没有标签、IP或端口；身份和匹配结果由独立的`flow_sample_metadata_v1` sidecar保存。sidecar只是建立可审计连接，不代表真实数据已经形成可监督训练集。
+
+CTU-13匹配审计及可选sidecar导出：
+
+```bash
+python3 scripts/audit_ctu13_flow_matches.py \
+    /path/to/capture20110816-2.binetflow \
+    /path/to/flows.csv \
+    --capture-id ctu13-scenario-7 \
+    --metadata-output /path/to/new-metadata.csv
+```
+
+普通流CSV和对应的特征CSV必须来自同一次分析，才能用元数据中的`feature_row_number`连接。`--capture-id`和`--metadata-output`必须同时出现；目标文件必须不存在，失败时不会保留本次不完整输出。
 
 ### 10.5 实时有限或持续分析
 
@@ -775,7 +800,7 @@ sudo ./build/bin/netflow-analyzer \
 
 ## 12. 当前测试体系
 
-当前`feature/flow-features`分支的x86_64 Debug构建共有23项CTest，最近一次全量执行全部通过，总耗时约0.42秒。LubanCat-2N板端最新已验证基线仍为特征模块加入前的18项，后续上板时必须重新配置并运行新增测试：
+当前`feature/flow-features`分支的x86_64 Debug构建共有24项CTest，最近一次全量执行全部通过，总耗时约0.94秒。LubanCat-2N板端最新已验证基线仍为特征模块加入前的18项，后续上板时必须重新配置并运行新增测试：
 
 | 编号 | CTest名称 | 主要覆盖 |
 |---:|---|---|
@@ -795,13 +820,14 @@ sudo ./build/bin/netflow-analyzer \
 | 14 | `offline_flow_acceptance` | 6包ICMP PCAP验证聚合、预览、普通CSV、精确特征行和已有特征文件不覆盖；3包TCP握手验证终端与CSV的`established`；同键6包ICMP在30秒离线空闲阈值下验证2包过期流与4包最终流的终端、普通CSV和特征CSV；260包PCAP验证四类异常/拒绝、256槽满载、完整扫描和继续运行 |
 | 15 | `ctu13_label_audit_tests` | 合成CSV验证保守三类标签映射、字段契约、空标签、缺失字段、空文件、不存在文件和CLI退出码 |
 | 16 | `ctu13_flow_identity_tests` | Scenario 7时区、精确微秒、协议号、双向端点规范化、ICMP端口、不支持协议和非法字段 |
-| 17 | `ctu13_flow_match_audit_tests` | 合成标签与流CSV验证唯一、未匹配、排除、不支持协议、同标签歧义和冲突标签歧义 |
-| 18 | `flow_export_tests` | CSV表头、TCP状态字段、协议/状态不变量、记录顺序、格式化和无效参数 |
-| 19 | `flow_expiration_tests` | 事件时间高水位、扫描边界、乱序时间戳、参数验证和截止时间下溢 |
-| 20 | `runtime_metrics_tests` | 累计值差分、PPS/Mbps、流表占用率、零流量、时间边界和溢出保护 |
-| 21 | `tcp_flow_state_tests` | 初始化、稳定名称、双向握手、重传、中途捕获、无效输入、FIN关闭、RST和终止状态 |
-| 22 | `flow_features_tests` | 流特征总量、均值、持续时间、方向不平衡度、TCP状态关系、错误边界和失败不修改输出 |
-| 23 | `flow_feature_export_tests` | `flow_features_v1`表头、TCP/非TCP行、布尔编码、浮点精度、状态不变量和写入错误 |
+| 17 | `flow_sample_metadata_tests` | 稳定样本ID、身份不变量、四种匹配状态、可训练标志、固定sidecar表头与记录、借用输出流和失败不写半行 |
+| 18 | `ctu13_flow_match_audit_tests` | 合成标签与流CSV验证唯一、未匹配、排除、不支持协议、两种歧义，以及元数据行号、CLI参数配对、已有文件保护和失败清理 |
+| 19 | `flow_export_tests` | CSV表头、TCP状态字段、协议/状态不变量、记录顺序、格式化和无效参数 |
+| 20 | `flow_expiration_tests` | 事件时间高水位、扫描边界、乱序时间戳、参数验证和截止时间下溢 |
+| 21 | `runtime_metrics_tests` | 累计值差分、PPS/Mbps、流表占用率、零流量、时间边界和溢出保护 |
+| 22 | `tcp_flow_state_tests` | 初始化、稳定名称、双向握手、重传、中途捕获、无效输入、FIN关闭、RST和终止状态 |
+| 23 | `flow_features_tests` | 流特征总量、均值、持续时间、方向不平衡度、TCP状态关系、错误边界和失败不修改输出 |
+| 24 | `flow_feature_export_tests` | `flow_features_v1`表头、TCP/非TCP行、布尔编码、浮点精度、状态不变量和写入错误 |
 
 只运行重点测试示例：
 
@@ -971,19 +997,19 @@ cmake -E chdir build ctest \
 
 ### 16.4 流特征和机器学习
 
-- 已完成`flow_features_v1`特征计算与版本化CSV，但没有实现异常标签、模型训练、阈值选择、模型持久化或在线推理；
-- 当前不输出IP和端口，可以降低身份记忆风险，但也没有样本ID可直接连接外部标签；
+- 已完成`flow_features_v1`特征计算与版本化CSV，但没有实现模型训练、阈值选择、模型持久化或在线推理；
+- 特征CSV不输出IP和端口，可以降低身份记忆风险；独立`flow_sample_metadata_v1` sidecar现已用稳定样本ID连接身份、匹配状态和可选监督标签；
 - `protocol`和`tcp_phase`必须按类别特征处理，`schema_version`不能进入模型；
 - 训练集与实时推理必须对齐列名、顺序、单位、方向定义、类别编码和归一化参数；
 - 优先选择能够取得原始PCAP的公开数据集，让相同C提取器生成特征；只有预聚合表格时，需要逐项记录可映射、需换算和无法复现的字段；
-- 新增特征和数据集模块尚未在LubanCat-2N运行，板端不能宣称23项CTest或特征实时导出已经验证。
+- 新增特征和数据集模块尚未在LubanCat-2N运行，板端不能宣称24项CTest或特征实时导出已经验证。
 
 ### 16.5 工程质量
 
 - 当前严格警告和全部测试通过；
 - 源码存在少量不影响功能的格式不一致，用户已要求暂不专门处理格式问题；
 - 实时路径只有手工验收，没有环境独立的端到端自动化；
-- ASan与UBSan独立构建已通过新增标签审计测试前的20项CTest，但还没有正式接入主项目构建预设；标签审计、身份规范化和匹配审计三项Python测试尚未在该构建树重新配置执行。TSan也未配置，不能把本次单线程测试解释为已经完成并发竞态验证。
+- ASan与UBSan独立构建已通过新增标签审计测试前的20项CTest，但还没有正式接入主项目构建预设；标签审计、身份规范化、样本元数据和匹配审计四项Python测试尚未在该构建树重新配置执行。TSan也未配置，不能把本次单线程测试解释为已经完成并发竞态验证。
 
 ## 17. 已完成阶段：BPF过滤
 
@@ -1279,11 +1305,11 @@ LubanCat官方SDK交叉产物实测：
 
 规则输出应使用稳定事件模型，后续Qt和云平台都消费同一数据，不应让检测逻辑直接依赖GUI。
 
-第一版稳定流特征和`flow_features_v1`导出已经完成，但这不等于机器学习异常检测已经完成。下一步应先选择一个能取得原始PCAP或字段定义足够完整的公开数据集，逐列核对名称、单位、方向、类别含义和标签来源；优先让公开PCAP通过同一个C提取器生成训练特征，降低训练与实时部署之间的语义偏差。
+第一版稳定流特征和`flow_features_v1`导出已经完成，但这不等于机器学习异常检测已经完成。公开数据集仍应优先提供原始PCAP或足够完整的字段定义，并逐列核对名称、单位、方向、类别含义和标签来源；优先让公开PCAP通过同一个C提取器生成训练特征，降低训练与实时部署之间的语义偏差。
 
-当前特征文件没有标签、IP、端口或样本ID。若公开数据集只提供预聚合表格，必须显式设计可复现的映射或配套元数据，不能默认按行与当前CSV对应。完成数据对齐后，再建立Python训练/验证划分、预处理参数保存、基线模型和评价指标，最后才评估是否把推理部署到ARM64板端。
+当前特征文件仍不直接包含标签、IP、端口或样本ID。第一版`flow_sample_id_v1`和`flow_sample_metadata_v1` sidecar已经把模型输入与身份/标签连接分离，并用特征行号记录同一次分析中的对应关系。若公开数据集只提供预聚合表格，仍必须显式验证字段映射，不能把任意文件按行拼接。取得足够的唯一匹配样本后，再建立Python训练/验证划分、预处理参数保存、基线模型和评价指标，最后才评估是否把推理部署到ARM64板端。
 
-CTU-13 Scenario 7的第一轮匹配审计已经完成：审计器要求规范化双向五元组相等且时间区间重叠，并把结果分成唯一、未匹配、同标签歧义和冲突标签歧义。前1000包的47条流全部落在保守策略排除的背景标签范围，因此正式监督索引中均未匹配；感染主机DNS子集的2条流都覆盖多个恶意Argus记录，因此属于同标签歧义。公开TCP截断和流边界差异都阻止当前数据直接形成一对一训练样本。离线模式现已提供可选的事件时间空闲分段，但还不能宣称与Argus流边界完全等价。下一步定义`sample_id`和标签连接元数据契约，再用候选空闲阈值重跑真实匹配审计，然后才进入训练代码。
+CTU-13 Scenario 7的第一轮匹配审计已经完成：审计器要求规范化双向五元组相等且时间区间重叠，并把结果分成唯一、未匹配、同标签歧义和冲突标签歧义。前1000包的47条流全部落在保守策略排除的背景标签范围，因此正式监督索引中均未匹配；感染主机DNS子集的2条流都覆盖多个恶意Argus记录，因此属于同标签歧义。sidecar现已能为每条结果生成稳定ID并保留匹配质量，但公开TCP截断和流边界差异仍阻止当前数据直接形成一对一训练样本。下一步用候选空闲阈值重跑真实匹配审计，然后才决定是否扩展场景并进入训练代码。
 
 ### 18.10 可视化
 
@@ -1401,7 +1427,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 /home/zcb/workspace/netflow-analyzer/docs/session_handoff.md
 
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
-周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`单次扫描原位替换、TCP生命周期，以及普通流CSV和`flow_features_v1`特征CSV已经完成。当前`feature/flow-features`分支的x86_64 Debug构建共有23项CTest并全部通过；Release和ASan/UBSan仍为新增数据集测试前的20项通过基线。LubanCat-2N最新已验证基线仍为新增特征前的18项，不能宣称板端23项已通过。特征CSV覆盖过期、淘汰和最终剩余三类互斥流记录，离线模式可通过`--flow-idle-timeout`使用可审计的事件时间空闲分段，实时模式的特征导出必须配合`--count`；CTU-13标签审计、保守三类映射、公开截断PCAP校验、标签侧流身份规范化和匹配审计已经完成。真实试点得到47条监督未匹配背景流，以及2条覆盖多个恶意Argus生命周期的同标签歧义DNS流，尚未形成可靠的一对一训练样本，也没有模型训练、异常判定或在线推理。板端此前已经完成真实TCP关闭、非root systemd、`CAP_NET_RAW`最小能力、连续失败限速、SD卡事故恢复、性能和10分钟长稳等验证。下一步定义`sample_id`和标签连接元数据契约，再用候选空闲阈值重跑真实匹配审计；随后重新交叉构建并验证ARM64特征导出。
+周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表线性探测统计、实时`reject|evict-oldest`单次扫描原位替换、TCP生命周期，以及普通流CSV和`flow_features_v1`特征CSV已经完成。当前`feature/flow-features`分支的x86_64 Debug构建共有24项CTest并全部通过；Release和ASan/UBSan仍为新增数据集测试前的20项通过基线。LubanCat-2N最新已验证基线仍为新增特征前的18项，不能宣称板端24项已通过。特征CSV覆盖过期、淘汰和最终剩余三类互斥流记录，离线模式可通过`--flow-idle-timeout`使用可审计的事件时间空闲分段，实时模式的特征导出必须配合`--count`；CTU-13标签审计、保守三类映射、公开截断PCAP校验、标签侧流身份规范化、稳定`sample_id`、`flow_sample_metadata_v1` sidecar和匹配审计已经完成。真实试点得到47条监督未匹配背景流，以及2条覆盖多个恶意Argus生命周期的同标签歧义DNS流，尚未形成可靠的一对一训练样本，也没有模型训练、异常判定或在线推理。板端此前已经完成真实TCP关闭、非root systemd、`CAP_NET_RAW`最小能力、连续失败限速、SD卡事故恢复、性能和10分钟长稳等验证。下一步用候选空闲阈值重跑真实匹配审计；随后重新交叉构建并验证ARM64特征导出。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1444,4 +1470,4 @@ BPF过滤
 → 静默期周期运行指标
 ```
 
-应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及普通CSV中使用统一名称。第一版流特征链又把完整流记录转换为版本化模型输入；过期、淘汰和最终剩余记录分别在离开生命周期的位置写出，Ubuntu手工验收已经证明2+4与44+256两组数量闭合。CTU-13 Scenario 7的标签来源、保守映射、公开截断PCAP小样本、标签侧双向身份规范化和匹配审计已经完成，首条标签与PCAP时间精确相等，x86_64 Debug构建现有23项CTest全部通过；Release和ASan/UBSan仍保留新增数据集测试前的20项基线。真实审计没有伪造一对一连接：前1000包的47条C流在保守监督集合中全部未匹配，恶意DNS子集的2条流均为同标签多候选；公开TCP截断与流边界差异已经写入问题日志。LubanCat-2N仍保留此前18项与真实TCP、systemd、性能和存储恢复验收，新增特征功能尚未上板。项目现在具备机器学习所需的数据生成、可选离线生命周期分段、标签审计、身份规范化和匹配质量测量基础，但尚未生成训练样本或实现训练、评估与推理；下一步定义`sample_id`和标签连接元数据契约，再用候选空闲阈值重跑真实审计，随后补做ARM64特征链验证。`labs/thread_pipeline`仍因现有性能数据未显示单线程瓶颈而不接入正式路径。
+应用处理结果分类、默认满载拒绝、显式最旧流淘汰、线性探测可观测性，以及单次满表扫描中的最旧候选选择和原位替换已经完成。TCP流按值保存独立旁路状态，能够区分完整握手、中途捕获、FIN关闭和RST，并在终端及普通CSV中使用统一名称。第一版流特征链又把完整流记录转换为版本化模型输入；过期、淘汰和最终剩余记录分别在离开生命周期的位置写出，Ubuntu手工验收已经证明2+4与44+256两组数量闭合。CTU-13 Scenario 7的标签来源、保守映射、公开截断PCAP小样本、标签侧双向身份规范化、稳定样本ID、sidecar元数据和匹配审计已经完成，首条标签与PCAP时间精确相等，x86_64 Debug构建现有24项CTest全部通过；Release和ASan/UBSan仍保留新增数据集测试前的20项基线。真实审计没有伪造一对一连接：前1000包的47条C流在保守监督集合中全部未匹配，恶意DNS子集的2条流均为同标签多候选；公开TCP截断与流边界差异已经写入问题日志。LubanCat-2N仍保留此前18项与真实TCP、systemd、性能和存储恢复验收，新增特征功能尚未上板。项目现在具备机器学习所需的数据生成、可选离线生命周期分段、标签审计、身份规范化、稳定连接和匹配质量测量基础，但尚未生成训练样本或实现训练、评估与推理；下一步用候选空闲阈值重跑真实审计，随后补做ARM64特征链验证。`labs/thread_pipeline`仍因现有性能数据未显示单线程瓶颈而不接入正式路径。

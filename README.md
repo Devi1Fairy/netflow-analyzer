@@ -38,9 +38,9 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 
 当前`Unreleased`还为每条TCP流增加了旁路连接状态跟踪。状态机根据规范化流方向和TCP标志识别`unobserved`、`syn-seen`、`syn-ack-seen`、`established`、`midstream`、`fin-seen`、`fin-bidirectional`、`closed`和`reset`。终端流汇总与离线CSV复用同一组稳定名称；UDP和ICMP的`tcp_state`明确写为`not-applicable`。该状态机描述分析器实际观察到的报文过程，不等同于Linux内核socket状态，也尚未执行序列号确认、乱序处理或TCP字节流重组。
 
-当前`Unreleased`已经建立第一版机器学习数据接口：`flow_features_t`把聚合完成的双向流转换为持续时间、包/字节总量、平均包长、方向不平衡度和TCP生命周期特征，`--feature-csv FILE`按`flow_features_v1`固定模式导出。离线模式可以直接生成数据集；实时模式必须同时提供`--count`，并把运行期间过期、被容量策略淘汰以及停止时仍留在流表中的三类互斥记录写入同一个文件。该能力只完成特征生成和数据契约，尚未完成公开PCAP流与标签样本连接、模型训练、异常判定或板端推理。
+当前`Unreleased`已经建立第一版机器学习数据接口：`flow_features_t`把聚合完成的双向流转换为持续时间、包/字节总量、平均包长、方向不平衡度和TCP生命周期特征，`--feature-csv FILE`按`flow_features_v1`固定模式导出。离线模式可以直接生成特征；实时模式必须同时提供`--count`，并把运行期间过期、被容量策略淘汰以及停止时仍留在流表中的三类互斥记录写入同一个文件。特征文件仍只保存模型输入；身份、标签连接和匹配质量通过独立的`flow_sample_metadata_v1` sidecar记录，不把IP、端口或标签混入模型特征。
 
-公开数据集试点选择CTU-13 Scenario 7。仓库提供只依赖Python标准库的标签审计工具，把官方`From-Botnet`保守映射为`malicious`、`From-Normal`映射为`benign`，其余未知方向和Background标签统一排除；真实标签文件得到63条恶意、1669条正常和112345条排除记录。公开的全流量文件实际为7466160包的Ethernet pcapng，捕获内容按42至66字节截断但保留原始线路长度；前1000包试验中604包完整进入流聚合、396包被安全判为截断，最终生成47条流特征且没有容量拒绝。该步骤证明读取边界有效，但尚未完成PCAP流与官方标签的样本连接，也没有训练或评估模型。
+公开数据集试点选择CTU-13 Scenario 7。仓库提供只依赖Python标准库的标签、身份和匹配审计工具，把官方`From-Botnet`保守映射为`malicious`、`From-Normal`映射为`benign`，其余未知方向和Background标签统一排除；真实标签文件得到63条恶意、1669条正常和112345条排除记录。公开的全流量文件实际为7466160包的Ethernet pcapng，捕获内容按42至66字节截断但保留原始线路长度；前1000包试验中604包完整进入流聚合、396包被安全判为截断，最终生成47条流特征且没有容量拒绝。第一轮匹配审计中这47条流均不属于保守监督集合，感染主机DNS子集的2条流又都覆盖多个同标签Argus生命周期；工具因此保留`unmatched`或歧义状态，而不会伪造唯一标签。当前仍没有可靠的一对一训练样本，也没有训练、评估或部署模型。
 
 ## v0.2.0新增
 
@@ -77,7 +77,7 @@ Ethernet II → IPv4 → TCP / UDP / ICMP
 - 实时流过期暂时固定为空闲30秒、每5秒事件时间扫描一次，尚未开放CLI配置；
 - 流过期的事件时间只随实际收到的数据包推进，接口完全静默时要等下一包到来才判断旧流；周期运行指标使用单调时钟，因此静默时仍会按时输出；
 - 尚未解析DNS、HTTP等应用层协议；
-- 已实现版本化流特征提取、CSV导出和CTU-13标签审计，但尚未完成PCAP流与标签样本连接、规则异常检测、机器学习训练/推理、Qt界面或云端展示；
+- 已实现版本化流特征提取、稳定样本ID、标签匹配审计和sidecar元数据导出，但真实CTU-13试点尚未形成可靠的一对一训练样本，也未实现规则异常检测、机器学习训练/推理、Qt界面或云端展示；
 - ARM Linux开发板已完成原生Debug/Release构建、当前18项CTest、离线跨平台一致性、两种交叉产物、物理网卡抓包、真实TCP完整关闭、单流/多流性能、满载边界、流表探测成本和10分钟长稳基线；最新官方SDK产物又完成单次满表扫描优化复测，300个UDP新流对应300次探测操作、44次最旧流淘汰、256条最终流和零drop。
 - LubanCat-2N已完成非root systemd手工启停、开机自启、异常恢复、连续失败限速和第一批低风险沙箱加固：服务进程使用无登录专用用户，只获得`CAP_NET_RAW`且`NoNewPrivs=1`；静默周期日志、真实ICMP、双向流汇总和SIGTERM收尾均进入journal。一次重启中接口时间戳能力查询短暂返回`EBUSY`，`Restart=on-failure`等待2秒后成功恢复；持续使用不存在接口时，显式的`30s/5次`策略在5次失败后拒绝第6次启动。systemd 245安全评分由`5.2 MEDIUM`降为`3.7 OK`，服务长稳仍待验证。
 - 目标镜像的`resize-all.service`会扫描`/proc/mounts`中的已挂载分区；一次SD卡持久化挂载实验触发VFAT重建且恢复失败。该服务现已禁用、屏蔽并通过跨boot验证；板端Git工作树已通过Git Bundle恢复到eMMC ext4，新构建目录中的18项CTest全部通过。修正`usbmount`配置后，数据卡由唯一挂载管理者以`uid=1000,gid=1000,fmask=0133,dmask=0022,noexec`自动挂载，普通用户读写测试通过；SD卡只承担PCAP、CSV、数据集和日志存储。
@@ -337,6 +337,38 @@ Flow summary: 1 flow(s)
 
 每条流只在生命周期本次结束时写一行：实时过期流在删除时写出，被淘汰流在槽位覆盖前写出，采集结束后再写出最终剩余流。因此三组记录互不重叠，合起来构成这次有限采集的完整流集合。特征文件有意不包含IP、端口和异常标签，防止第一版模型直接记忆设备或服务标识；这也意味着后续使用公开数据集时，必须明确建立标签或样本标识的对齐规则，不能仅凭当前CSV自动获得监督学习标签。
 
+### 特征与标签sidecar
+
+同一次离线分析可以同时生成普通流CSV和特征CSV。普通流CSV保留标签匹配所需的端点与时间，特征CSV只保存模型输入：
+
+```bash
+./build/bin/netflow-analyzer \
+    --read /path/to/scenario-7.pcap \
+    --csv /tmp/scenario-7-flows.csv \
+    --feature-csv /tmp/scenario-7-features.csv
+
+python3 scripts/audit_ctu13_flow_matches.py \
+    /path/to/capture20110816-2.binetflow \
+    /tmp/scenario-7-flows.csv \
+    --capture-id ctu13-scenario-7 \
+    --metadata-output /tmp/scenario-7-metadata.csv
+```
+
+`--capture-id`与`--metadata-output`必须同时提供。元数据目标使用独占创建，不覆盖已有文件；审计失败时会尝试删除本次产生的不完整文件。要用`feature_row_number`连接特征，普通流CSV和特征CSV必须来自同一次分析，并使用相同的流生命周期配置。
+
+`flow_sample_metadata_v1`包含：
+
+| 字段组 | 作用 |
+|---|---|
+| `metadata_schema_version`、`feature_schema_version` | 声明sidecar和特征文件的数据契约版本 |
+| `feature_row_number` | 从1开始定位特征CSV的数据行，表头不计入 |
+| `sample_id` | `flow_sample_id_v1:`加规范化身份的SHA-256摘要；用于稳定关联，不是标签或安全签名 |
+| `capture_id`、协议、规范化端点、首末Unix微秒 | 建立可复现身份，只存在于sidecar，不自动进入模型 |
+| `match_status`、`candidate_count`、`label_group` | 保存唯一、未匹配、同标签歧义或冲突标签歧义及其证据 |
+| `is_trainable` | 只有唯一匹配且标签为`benign`或`malicious`时为1 |
+
+元数据工具不会静默选择歧义候选，也不会生成训练集。下一阶段仍需用候选空闲阈值重跑真实匹配审计，确认能否得到足够的唯一样本。
+
 实时分析会等待网卡流量；提供`--count`时，达到指定数据包数量后结束，省略时则持续运行。两种模式收到`SIGINT`或`SIGTERM`停止请求后，都会取得libpcap运行统计、关闭采集句柄并输出流汇总。不提供`--filter`时，计数针对接口上返回的全部数据包，不只包含用户主动执行`ping`等命令产生的流量；例如VS Code及其本地服务也可能通过`lo`持续交换TCP数据。提供过滤器后，libpcap在数据包进入应用读取循环前执行匹配，只有匹配包会进入协议解析、流聚合和可选的`--count`计数。`--count`限制处理包数而不是等待时间；没有足够的匹配流量时程序会继续等待，用户可以使用Ctrl+C安全结束并保留已经聚合的结果。
 
 实时过期调度器使用捕获数据包时间戳的最大值作为时间高水位，避免乱序包让时间倒退。扫描发生在当前包加入流表之前，因此同一五元组在空闲30秒后重新出现时，旧记录会先输出和删除，当前包再建立新记录。`Expired flows`是运行期间已经输出的累计数量，最终`Flow summary`只包含仍留在流表中的记录。
@@ -426,7 +458,7 @@ LubanCat-2N已经完成ARM64原生Debug/Release构建、当前18项板端CTest�
 2. 处理同一五元组关闭后重新建连，随后增加TCP乱序与字节流重组，再进入DNS、HTTP等应用层解析；
 3. 当前继续保持单线程；只有后续测量证明单线程成为瓶颈，才复审实验中的阻塞队列和线程流水线；
 4. 如果真实负载超过256条活跃流，再根据占用率、探测长度、拒绝和淘汰数据评估可配置容量、重建或动态扩容；
-5. 在现有`flow_features_v1`数据契约上对齐公开数据集的字段、样本和标签，建立可复现的Python训练/评估流程；规则异常检测和模型在线推理仍需分别实现；
+5. 使用`flow_sample_metadata_v1`对候选空闲阈值重跑真实数据匹配审计；获得足够的唯一样本后，再建立可复现的Python训练/评估流程，规则异常检测和模型在线推理仍需分别实现；
 6. 在稳定的数据接口之上实现Qt上位机，并按需要扩展云端展示。
 
 版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)，技术、环境和硬件选型见[docs/technical_decisions.md](docs/technical_decisions.md)，两种ARM64构建方式见[docs/cross_compilation.md](docs/cross_compilation.md)，非root服务安装见[docs/systemd_deployment.md](docs/systemd_deployment.md)，首轮板端测量见[docs/performance_baseline.md](docs/performance_baseline.md)。
