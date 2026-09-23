@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 from typing import Dict, Tuple
 
+from iot23_flow_identity import normalize_flow_identity
 from iot23_label import (
     LABEL_GROUPS,
     classify_label,
@@ -132,15 +133,17 @@ def inspect_label_file(
     Dict[str, int],
     Dict[str, int],
     Dict[str, int],
+    Dict[str, int],
 ]:
     """
     验证并统计IoT-23标签文件。
 
-    返回三个由调用者拥有的新字典：
+    返回四个由调用者拥有的新字典：
 
     1. 项目统一标签数量；
     2. 协议数量；
     3. 详细标签数量。
+    4. 流身份规范化结果数量。
 
     文件对象由with语句管理，函数返回后文件已经关闭。
     """
@@ -152,6 +155,12 @@ def inspect_label_file(
 
     protocol_counts: Dict[str, int] = {}
     detailed_label_counts: Dict[str, int] = {}
+
+    identity_counts = {
+        "supported": 0,
+        "unsupported": 0,
+        "zero_duration": 0,
+    }
 
     separator_seen = False
     fields_seen = False
@@ -257,6 +266,40 @@ def inspect_label_file(
                 generic_label
             )
 
+            # 字段数量已经在前面严格验证，因此这里能够把
+            # 20个字段名和20个字段值一一组成字典。
+            row = dict(
+                zip(
+                    EXPECTED_BASE_COLUMNS,
+                    fields[:-1],
+                )
+            )
+
+            try:
+                identity = normalize_flow_identity(
+                    row
+                )
+            except ValueError as error:
+                # 在底层错误前补充原始文件行号，便于定位
+                # 大型真实数据集中的坏记录。
+                raise ValueError(
+                    f"line {line_number}: "
+                    f"invalid flow identity: {error}"
+                ) from error
+
+            if identity is None:
+                identity_counts["unsupported"] += 1
+            else:
+                identity_counts["supported"] += 1
+
+                if (
+                    identity.start_time_microseconds
+                    == identity.end_time_microseconds
+                ):
+                    identity_counts[
+                        "zero_duration"
+                    ] += 1
+
             label_counts[label_group] += 1
 
             protocol_counts[protocol] = (
@@ -291,6 +334,7 @@ def inspect_label_file(
         label_counts,
         protocol_counts,
         detailed_label_counts,
+        identity_counts,
     )
 
 
@@ -304,6 +348,7 @@ def main() -> int:
             label_counts,
             protocol_counts,
             detailed_label_counts,
+            identity_counts,
         ) = inspect_label_file(
             arguments.input_file
         )
@@ -325,6 +370,18 @@ def main() -> int:
         print(
             f"{group}={label_counts[group]}"
         )
+    print(
+        "identity_supported="
+        f"{identity_counts['supported']}"
+    )
+    print(
+        "identity_unsupported="
+        f"{identity_counts['unsupported']}"
+    )
+    print(
+        "identity_zero_duration="
+        f"{identity_counts['zero_duration']}"
+    )
 
     for protocol in sorted(protocol_counts):
         print(

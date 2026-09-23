@@ -97,6 +97,9 @@ def build_record(
     generic_label: str,
     detailed_label: str,
     appended_override=None,
+    duration: str = "1.000000",
+    orig_pkts: str = "1",
+    resp_pkts: str = "1",
 ) -> str:
     """构造一条字段数量正确的合成Zeek记录。"""
 
@@ -109,7 +112,7 @@ def build_record(
         "80",
         protocol,
         "-",
-        "1.000000",
+        duration,
         "40",
         "50",
         "SF",
@@ -117,9 +120,9 @@ def build_record(
         "-",
         "0",
         "Dd",
-        "1",
+        orig_pkts,
         "68",
-        "1",
+        resp_pkts,
         "78",
     ]
 
@@ -253,9 +256,17 @@ def run_tests(
                     "udp",
                     "Benign",
                     "-",
+                    duration="-",
+                    orig_pkts="1",
+                    resp_pkts="0",
                 ),
                 build_record(
                     "icmp",
+                    "Background",
+                    "-",
+                ),
+                build_record(
+                    "unknown_transport",
                     "Background",
                     "-",
                 ),
@@ -276,14 +287,18 @@ def run_tests(
 
         expected_output = (
             f"input={valid_path}\n"
-            "total=3\n"
+            "total=4\n"
             "malicious=1\n"
             "benign=1\n"
-            "exclude=1\n"
+            "exclude=2\n"
+            "identity_supported=3\n"
+            "identity_unsupported=1\n"
+            "identity_zero_duration=1\n"
             "protocol[icmp]=1\n"
             "protocol[tcp]=1\n"
             "protocol[udp]=1\n"
-            "detailed_label[-]=2\n"
+            "protocol[unknown_transport]=1\n"
+            "detailed_label[-]=3\n"
             "detailed_label[Attack]=1\n"
         )
 
@@ -426,6 +441,35 @@ def run_tests(
         require_failure(
             run_audit(script, unknown_label_path),
             "unsupported IoT-23 generic label",
+        )
+
+        # 多包记录缺少duration时，无法可靠推导结束时间。
+        invalid_identity_path = (
+            temporary_path / "invalid-identity.log"
+        )
+
+        write_log(
+            invalid_identity_path,
+            [
+                build_record(
+                    "tcp",
+                    "Benign",
+                    "-",
+                    duration="-",
+                    orig_pkts="1",
+                    resp_pkts="1",
+                ),
+            ],
+        )
+
+        require_failure(
+            run_audit(
+                script,
+                invalid_identity_path,
+            ),
+            "invalid flow identity: "
+            "unset IoT-23 duration requires "
+            "exactly one packet",
         )
 
         # 有完整头部但没有记录也必须失败。
