@@ -14,9 +14,12 @@
 import argparse
 import sys
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
-from iot23_flow_identity import normalize_flow_identity
+from iot23_flow_identity import (
+    Iot23FlowIdentity,
+    normalize_flow_identity,
+)
 from iot23_label import (
     LABEL_GROUPS,
     classify_label,
@@ -64,6 +67,11 @@ EXPECTED_RECORD_FIELD_COUNT = (
     len(EXPECTED_BASE_COLUMNS) + 1
 )
 
+# 接收一条已验证记录；None表示当前分析器不支持其协议。
+RecordConsumer = Callable[
+    [Optional[Iot23FlowIdentity], str],
+    None,
+]
 
 def parse_arguments() -> argparse.Namespace:
     """解析命令行中的IoT-23标签文件路径。"""
@@ -129,6 +137,7 @@ def validate_fields_directive(
 
 def inspect_label_file(
     input_file: Path,
+    on_record: Optional[RecordConsumer] = None,
 ) -> Tuple[
     Dict[str, int],
     Dict[str, int],
@@ -314,6 +323,10 @@ def inspect_label_file(
             )
 
             record_count += 1
+
+            # 只把完成字段和身份验证的记录交给调用者。
+            if on_record is not None:
+                on_record(identity, label_group)
 
     if not separator_seen:
         raise ValueError(

@@ -643,6 +643,8 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_iot23_label_index.py
             --scripts-dir
             ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+            --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}
     )
 
     set_tests_properties(

@@ -2,9 +2,11 @@
 
 """按规范化双向五元组组织IoT-23标签候选。"""
 
-from collections import defaultdict
 from dataclasses import dataclass
-from typing import DefaultDict, Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
+from pathlib import Path
+
+from inspect_iot23_labels import inspect_label_file
 
 from iot23_flow_identity import Iot23FlowIdentity
 from iot23_label import LABEL_GROUPS
@@ -38,46 +40,62 @@ def flow_key_from_identity(
     )
 
 
+def _append_label(
+    index: Dict[FlowKey, List[LabelInterval]],
+    identity: Optional[Iot23FlowIdentity],
+    label_group: str,
+) -> None:
+    """把一条可监督标签加入调用者拥有的索引。"""
+
+    if label_group not in LABEL_GROUPS:
+        raise ValueError(
+            f"unsupported label group: {label_group!r}"
+        )
+
+    if label_group == "exclude" or identity is None:
+        return
+
+    key = flow_key_from_identity(identity)
+
+    # 同一流键可能对应多个独立时间区间，不能覆盖旧候选。
+    index.setdefault(key, []).append(
+        LabelInterval(
+            start_microseconds=identity.start_time_microseconds,
+            end_microseconds=identity.end_time_microseconds,
+            label_group=label_group,
+        )
+    )
+
+
 def build_label_index(
     records: Iterable[LabelInput],
 ) -> Dict[FlowKey, List[LabelInterval]]:
-    """
-    从已规范化的记录建立候选索引。
+    """从已规范化的记录建立候选索引。"""
 
-    None表示当前C分析器不支持的协议；exclude不能用作
-    监督标签。两者都不进入索引。
-
-    返回的新字典及其中的列表由调用者持有。
-    """
-
-    index: DefaultDict[
-        FlowKey,
-        List[LabelInterval],
-    ] = defaultdict(list)
+    index: Dict[FlowKey, List[LabelInterval]] = {}
 
     for identity, label_group in records:
-        if label_group not in LABEL_GROUPS:
-            raise ValueError(
-                f"unsupported label group: {label_group!r}"
-            )
+        _append_label(index, identity, label_group)
 
-        if label_group == "exclude" or identity is None:
-            continue
+    return index
 
-        key = flow_key_from_identity(identity)
 
-        # append保留同键的每一条标签和输入顺序；
-        # 不能用赋值覆盖旧区间。
-        index[key].append(
-            LabelInterval(
-                start_microseconds=(
-                    identity.start_time_microseconds
-                ),
-                end_microseconds=(
-                    identity.end_time_microseconds
-                ),
-                label_group=label_group,
-            )
-        )
+def load_label_index(
+    label_file: Path,
+) -> Dict[FlowKey, List[LabelInterval]]:
+    """边验证标签文件，边建立候选索引。"""
 
-    return dict(index)
+    index: Dict[FlowKey, List[LabelInterval]] = {}
+
+    def collect(
+        identity: Optional[Iot23FlowIdentity],
+        label_group: str,
+    ) -> None:
+        _append_label(index, identity, label_group)
+
+    inspect_label_file(
+        label_file,
+        on_record=collect,
+    )
+
+    return index
