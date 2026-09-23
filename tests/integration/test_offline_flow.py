@@ -280,6 +280,93 @@ def write_test_pcap(pcap_path: Path) -> None:
 
     write_pcap(pcap_path, packets)
 
+def write_idle_timeout_lifecycle_pcap(
+    pcap_path: Path,
+) -> None:
+    """
+    写入同一个双向ICMP流的两个独立生命周期。
+
+    第一个生命周期结束后空闲超过30秒。第二个生命周期的
+    首包会推动离线时间高水位，使第一个生命周期满足过期条件。
+    """
+
+    endpoint_a_mac = bytes.fromhex("001122334455")
+    endpoint_b_mac = bytes.fromhex("66778899aabb")
+
+    base_timestamp = 1_700_003_000
+
+    packets: List[Tuple[int, int, bytes]] = []
+
+    exchanges = (
+        # 第一个生命周期：两个包。
+        (
+            base_timestamp,
+            100,
+            base_timestamp + 1,
+            200,
+            1,
+        ),
+
+        # 第二个生命周期：四个包。
+        (
+            base_timestamp + 40,
+            100,
+            base_timestamp + 40,
+            200,
+            2,
+        ),
+        (
+            base_timestamp + 41,
+            100,
+            base_timestamp + 41,
+            200,
+            3,
+        ),
+    )
+
+    for (
+        request_seconds,
+        request_microseconds,
+        reply_seconds,
+        reply_microseconds,
+        sequence,
+    ) in exchanges:
+        request = build_icmp_frame(
+            source_mac=endpoint_a_mac,
+            destination_mac=endpoint_b_mac,
+            source_ipv4="10.0.0.1",
+            destination_ipv4="10.0.0.2",
+            icmp_type=8,
+            sequence=sequence,
+        )
+
+        reply = build_icmp_frame(
+            source_mac=endpoint_b_mac,
+            destination_mac=endpoint_a_mac,
+            source_ipv4="10.0.0.2",
+            destination_ipv4="10.0.0.1",
+            icmp_type=0,
+            sequence=sequence,
+        )
+
+        packets.append(
+            (
+                request_seconds,
+                request_microseconds,
+                request,
+            )
+        )
+
+        packets.append(
+            (
+                reply_seconds,
+                reply_microseconds,
+                reply,
+            )
+        )
+
+    write_pcap(pcap_path, packets)
+
 def write_tcp_handshake_pcap(pcap_path: Path) -> None:
     """写入一条完整TCP三次握手。"""
 
@@ -478,6 +565,11 @@ def run_acceptance_test(
             / "offline-flow-result.csv"
         )
 
+        feature_csv_path = (
+            Path(temporary_directory)
+            / "offline-flow-features.csv"
+        )
+
         write_test_pcap(pcap_path)
 
         completed_process = subprocess.run(
@@ -487,6 +579,8 @@ def run_acceptance_test(
                 str(pcap_path),
                 "--csv",
                 str(csv_path),
+                "--feature-csv",
+                str(feature_csv_path),
             ],
             capture_output=True,
             text=True,
@@ -615,9 +709,56 @@ def run_acceptance_test(
                 f"actual: {csv_lines!r}"
             )
 
+        require_text(
+            output,
+            f"Feature CSV output: {feature_csv_path}",
+        )
+
+        if not feature_csv_path.is_file():
+            raise RuntimeError(
+                "feature CSV output was not created: "
+                f"{feature_csv_path}"
+            )
+
+        feature_csv_lines = feature_csv_path.read_text(
+            encoding="utf-8"
+        ).splitlines()
+
+        expected_feature_csv_lines = [
+            (
+                "schema_version,"
+                "protocol,"
+                "duration_microseconds,"
+                "total_packet_count,"
+                "total_captured_byte_count,"
+                "total_wire_byte_count,"
+                "mean_captured_bytes_per_packet,"
+                "mean_wire_bytes_per_packet,"
+                "packet_count_imbalance_ratio,"
+                "wire_byte_count_imbalance_ratio,"
+                "tcp_state_applicable,"
+                "tcp_phase,"
+                "tcp_handshake_completed"
+            ),
+            (
+                "flow_features_v1,1,2000100,6,"
+                "276,276,46,46,0,0,"
+                "0,not-applicable,0"
+            ),
+        ]
+
+        if feature_csv_lines != expected_feature_csv_lines:
+            raise RuntimeError(
+                "feature CSV output does not match expected records\n"
+                f"expected: {expected_feature_csv_lines!r}\n"
+                f"actual: {feature_csv_lines!r}"
+            )
+
         # 保存第一次成功生成的CSV内容。
         original_csv_content = csv_path.read_bytes()
 
+        original_feature_csv_content = (feature_csv_path.read_bytes())
+        
         # 再次使用相同CSV路径运行程序。
         # 因为输出文件已经存在，本次运行必须失败。
         repeated_process = subprocess.run(
@@ -627,6 +768,8 @@ def run_acceptance_test(
                 str(pcap_path),
                 "--csv",
                 str(csv_path),
+                "--feature-csv",
+                str(feature_csv_path),
             ],
             capture_output=True,
             text=True,
@@ -643,6 +786,200 @@ def run_acceptance_test(
         if csv_path.read_bytes() != original_csv_content:
             raise RuntimeError(
                 "existing CSV content changed after overwrite rejection"
+            )
+
+        if feature_csv_path.read_bytes()!= original_feature_csv_content:
+            raise RuntimeError(
+                "existing feature CSV content changed "
+                "after overwrite rejection"
+            )
+
+def run_idle_timeout_lifecycle_test(
+    program: Path,
+    work_dir: Path,
+) -> None:
+    """
+    验证同一个流键在空闲超时前后形成两个独立生命周期。
+    """
+
+    with tempfile.TemporaryDirectory(
+        prefix="offline-idle-timeout-",
+        dir=work_dir,
+    ) as temporary_directory:
+        pcap_path = (
+            Path(temporary_directory)
+            / "idle-timeout-lifecycle.pcap"
+        )
+
+        csv_path = (
+            Path(temporary_directory)
+            / "idle-timeout-flows.csv"
+        )
+
+        feature_csv_path = (
+            Path(temporary_directory)
+            / "idle-timeout-features.csv"
+        )
+
+        write_idle_timeout_lifecycle_pcap(pcap_path)
+
+        completed_process = subprocess.run(
+            [
+                str(program),
+                "--read",
+                str(pcap_path),
+                "--flow-idle-timeout",
+                "30",
+                "--csv",
+                str(csv_path),
+                "--feature-csv",
+                str(feature_csv_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+
+        if completed_process.returncode != 0:
+            raise RuntimeError(
+                "idle-timeout analysis returned non-zero status\n"
+                f"exit code: {completed_process.returncode}\n"
+                f"stdout:\n{completed_process.stdout}\n"
+                f"stderr:\n{completed_process.stderr}"
+            )
+
+        output = completed_process.stdout
+
+        require_text(output, "Total packets: 6")
+        require_text(output, "Previewed packets: 5")
+
+        require_text(
+            output,
+            "Processing results: "
+            "complete=6 "
+            "truncated=0 "
+            "malformed=0 "
+            "unsupported=0 "
+            "flow_rejected=0",
+        )
+
+        expired_flow_lines = [
+            line
+            for line in output.splitlines()
+            if line.startswith("Expired flow ")
+        ]
+
+        if len(expired_flow_lines) != 1:
+            raise RuntimeError(
+                "expected exactly one expired flow line, "
+                f"found {len(expired_flow_lines)}: "
+                f"{expired_flow_lines!r}"
+            )
+
+        require_text(
+            expired_flow_lines[0],
+            "a_to_b_packets=1 "
+            "a_to_b_captured_bytes=46 "
+            "a_to_b_wire_bytes=46",
+        )
+
+        require_text(
+            expired_flow_lines[0],
+            "b_to_a_packets=1 "
+            "b_to_a_captured_bytes=46 "
+            "b_to_a_wire_bytes=46",
+        )
+
+        require_text(
+            expired_flow_lines[0],
+            "first_seen=1700003000.000100 "
+            "last_seen=1700003001.000200",
+        )
+
+        require_text(output, "Expired flows: 1")
+        require_text(output, "Flow summary: 1 flow(s)")
+
+        require_text(
+            output,
+            "Flow 1: protocol=ICMP "
+            "tcp_state=not-applicable "
+            "endpoint_a=10.0.0.1:0 "
+            "endpoint_b=10.0.0.2:0",
+        )
+
+        require_text(
+            output,
+            "a_to_b_packets=2 "
+            "a_to_b_captured_bytes=92 "
+            "a_to_b_wire_bytes=92",
+        )
+
+        require_text(
+            output,
+            "b_to_a_packets=2 "
+            "b_to_a_captured_bytes=92 "
+            "b_to_a_wire_bytes=92",
+        )
+
+        require_text(
+            output,
+            "first_seen=1700003040.000100 "
+            "last_seen=1700003041.000200",
+        )
+
+        csv_lines = csv_path.read_text(
+            encoding="utf-8"
+        ).splitlines()
+
+        expected_csv_records = [
+            (
+                "1,not-applicable,"
+                "10.0.0.1,0,10.0.0.2,0,"
+                "1,46,46,"
+                "1,46,46,"
+                "1700003000,100,"
+                "1700003001,200"
+            ),
+            (
+                "1,not-applicable,"
+                "10.0.0.1,0,10.0.0.2,0,"
+                "2,92,92,"
+                "2,92,92,"
+                "1700003040,100,"
+                "1700003041,200"
+            ),
+        ]
+
+        if csv_lines[1:] != expected_csv_records:
+            raise RuntimeError(
+                "idle-timeout CSV records do not match\n"
+                f"expected: {expected_csv_records!r}\n"
+                f"actual: {csv_lines[1:]!r}"
+            )
+
+        feature_csv_lines = feature_csv_path.read_text(
+            encoding="utf-8"
+        ).splitlines()
+
+        expected_feature_records = [
+            (
+                "flow_features_v1,1,1000100,2,"
+                "92,92,46,46,0,0,"
+                "0,not-applicable,0"
+            ),
+            (
+                "flow_features_v1,1,1000100,4,"
+                "184,184,46,46,0,0,"
+                "0,not-applicable,0"
+            ),
+        ]
+
+        if feature_csv_lines[1:] != expected_feature_records:
+            raise RuntimeError(
+                "idle-timeout feature CSV records do not match\n"
+                f"expected: {expected_feature_records!r}\n"
+                f"actual: {feature_csv_lines[1:]!r}"
             )
 
 def run_tcp_state_output_test(
@@ -825,6 +1162,16 @@ def main() -> int:
 
     try:
         run_acceptance_test(
+            program=arguments.program.resolve(),
+            work_dir=arguments.work_dir.resolve(),
+        )
+
+        run_tcp_state_output_test(
+            program=arguments.program.resolve(),
+            work_dir=arguments.work_dir.resolve(),
+        )
+
+        run_idle_timeout_lifecycle_test(
             program=arguments.program.resolve(),
             work_dir=arguments.work_dir.resolve(),
         )

@@ -9,6 +9,8 @@
 #include "analyzer/ipv4_dispatch.h"
 #include "analyzer/flow_table.h"
 #include "analyzer/flow_export.h"
+#include "analyzer/flow_features.h"
+#include "analyzer/flow_feature_export.h"
 #include "analyzer/flow_expiration.h"
 #include "analyzer/runtime_metrics.h"
 #include "analyzer/tcp_flow_state.h"
@@ -292,6 +294,49 @@ static int app_parse_positive_size(
 }
 
 /**
+ * @brief 把十进制字符串解析为大于0的int64_t。
+ *
+ * 只有全部检查通过后才修改value。
+ *
+ * @return 成功时返回0；格式错误、值为0或超出int64_t范围时
+ *         返回EINVAL。
+ */
+static int app_parse_positive_int64(
+    const char *text,
+    int64_t *value)
+{
+    char *end_pointer = NULL;
+    uintmax_t parsed_value;
+
+    if (text == NULL ||
+        value == NULL ||
+        text[0] < '0' ||
+        text[0] > '9') {
+        return EINVAL;
+    }
+
+    errno = 0;
+
+    parsed_value = strtoumax(
+        text,
+        &end_pointer,
+        10
+    );
+
+    if (errno != 0 ||
+        end_pointer == text ||
+        *end_pointer != '\0' ||
+        parsed_value == UINTMAX_C(0) ||
+        parsed_value > (uintmax_t)INT64_MAX) {
+        return EINVAL;
+    }
+
+    *value = (int64_t)parsed_value;
+
+    return 0;
+}
+
+/**
  * @brief 打印命令行使用帮助。
  *
  * @param program_name 显示在Usage中的程序名称。
@@ -304,10 +349,15 @@ static int app_print_help(const char *program_name)
 
     if (printf(
             "Usage: %s [OPTION]\n"
-            "       %s --read <PCAP_FILE> [--csv <CSV_FILE>]\n"
-            "       %s --interface <INTERFACE> [--count <PACKETS>] "
+            "       %s --read <PCAP_FILE> "
+            "[--csv <CSV_FILE>] "
+            "[--flow-idle-timeout <SECONDS>] "
+            "[--feature-csv <FEATURE_CSV_FILE>]\n"
+            "       %s --interface <INTERFACE> "
+            "[--count <PACKETS>] "
             "[--filter <BPF_EXPRESSION>] "
-            "[--flow-full-policy <reject|evict-oldest>]\n"
+            "[--flow-full-policy <reject|evict-oldest>] "
+            "[--feature-csv <FEATURE_CSV_FILE>]\n"
             "\n"
             "Linux network traffic analyzer.\n"
             "\n"
@@ -315,11 +365,19 @@ static int app_print_help(const char *program_name)
             "  -h, --help       Show this help message.\n"
             "  -V, --version    Show program version.\n"
             "  -r, --read FILE  Analyze an offline PCAP file.\n"
+            "      --flow-idle-timeout SECONDS  Split offline flows after a positive idle timeout.\n"
             "  -i, --interface NAME  Analyze a live capture interface.\n"
-            "  -c, --count PACKETS   Optional live packet limit; omit to run until stopped.\n"
-            "      --filter EXPRESSION  Apply a BPF filter to live capture.\n"
-            "      --flow-full-policy POLICY Handle a full live flow table: reject or evict-oldest.\n"
-            "      --csv FILE   Export flow records to a new CSV file.\n",
+            "  -c, --count PACKETS   Optional live packet limit; "
+            "omit to run until stopped.\n"
+            "      --filter EXPRESSION  Apply a BPF filter "
+            "to live capture.\n"
+            "      --flow-full-policy POLICY  Handle a full "
+            "live flow table: reject or evict-oldest.\n"
+            "      --csv FILE  Export full offline flow records "
+            "to a new CSV file.\n"
+            "      --feature-csv FILE  Export versioned flow "
+            "features to a new CSV file; "
+            "live capture requires --count.\n",
             display_name,
             display_name,
             display_name) < 0) {
@@ -690,108 +748,231 @@ static int app_print_flow_table_probe_statistics(
 }
 
 /**
- * @brief 把流表中的全部记录导出到一个新CSV文件。
+ * @brief 把连续数组中的流记录依次写入普通流CSV。
  *
- * 本函数拥有局部FILE对象的完整生命周期：
+ * 本函数只读借用records，不保存其中的元素地址。
+ * records既可以指向值副本数组，也可以指向一条流表记录。
  *
- * 1. 使用独占创建模式打开文件；
- * 2. 写入CSV表头；
- * 3. 遍历流表并写入记录；
- * 4. 无论中途是否失败，都执行fclose。
+ * output由外层调用者拥有，本函数只借用，不关闭。
+ * record_count为0时不写入任何内容并返回成功。
  *
- * "wx"模式拒绝覆盖已有文件。
- *
- * @param table 指向已经完成聚合的流表。
- * @param output_path 准备创建的CSV文件路径。
+ * @param output 指向已经打开并写过表头的普通流CSV。
+ * @param records 指向连续的流记录数组。
+ * @param record_count records中有效记录的数量。
  *
  * @return 成功时返回0；
  *         参数无效时返回EINVAL；
- *         文件已存在时返回EEXIST；
- *         其他打开、写入或关闭错误返回对应错误码。
+ *         写入失败时返回底层导出函数的错误码。
  */
-static int app_export_flow_table_csv(
-    const flow_table_t *table,
-    const char *output_path)
+static int app_write_flow_csv_records(
+    FILE *output,
+    const flow_record_t *records,
+    size_t record_count)
+{
+    size_t index;
+    int error_code;
+
+    if (output == NULL ||
+        (records == NULL && record_count != 0U)) {
+        return EINVAL;
+    }
+
+    for (index = 0U;
+         index < record_count;
+         index += 1U) {
+        error_code = flow_export_write_csv_record(
+            output,
+            &records[index]
+        );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+    }
+
+    return 0;
+}
+
+/**
+ * @brief 把流表中的全部记录写入已经打开的普通流CSV。
+ *
+ * output和table都由调用者拥有，本函数只借用。
+ * 本函数不写表头、不关闭文件，也不修改流表。
+ *
+ * @param output 指向已经打开并写过表头的输出流。
+ * @param table 指向已经初始化的流表。
+ *
+ * @return 成功时返回0；
+ *         参数或流表状态无效时返回EINVAL；
+ *         读取流表或写入CSV失败时返回对应错误码。
+ */
+static int app_write_flow_table_csv(
+    FILE *output,
+    const flow_table_t *table)
 {
     const flow_record_t *record;
-    FILE *output;
 
     size_t flow_count;
     size_t index;
 
-    int operation_error;
-    int close_error;
+    int error_code;
 
-    if (table == NULL ||
-        !table->initialized ||
-        output_path == NULL ||
-        output_path[0] == '\0') {
+    if (output == NULL ||
+        table == NULL ||
+        !table->initialized) {
         return EINVAL;
     }
 
-    /*
-     * errno在成功调用后没有确定意义。
-     * 打开前清零，失败后才能安全地判断是否获得了具体错误码。
-     */
-    errno = 0;
+    flow_count = flow_table_count(table);
 
-    /*
-     * x表示独占创建。
-     *
-     * 如果文件已经存在，fopen失败，不会截断原文件。
-     */
-    output = fopen(output_path, "wx");
+    for (index = 0U; index < flow_count; index += 1U) {
+        /*
+         * record只是借用流表内部记录的只读地址。
+         *
+         * 本循环不会修改或清理流表，因此该地址在本次写入完成前
+         * 保持有效，也不需要调用free。
+         */
+        error_code = flow_table_get(
+            table,
+            index,
+            &record
+        );
 
-    if (output == NULL) {
-        return errno != 0 ? errno : EIO;
-    }
+        if (error_code != 0) {
+            return error_code;
+        }
 
-    operation_error =
-        flow_export_write_csv_header(output);
+        error_code = app_write_flow_csv_records(
+            output,
+            record,
+            1U
+        );
 
-    if (operation_error == 0) {
-        flow_count = flow_table_count(table);
-
-        for (index = 0U; index < flow_count; index += 1U) {
-            operation_error = flow_table_get(table, index, &record);
-
-            if (operation_error != 0) {
-                break;
-            }
-
-            operation_error =
-                flow_export_write_csv_record(
-                    output,
-                    record
-                );
-
-            if (operation_error != 0) {
-                break;
-            }
+        if (error_code != 0) {
+            return error_code;
         }
     }
 
-    /*
-     * fclose可能在刷新标准库缓冲区时发现真正的磁盘写入错误，
-     * 因此不能忽略它的返回值。
-     */
-    errno = 0;
-    close_error = 0;
-
-    if (fclose(output) != 0) {
-        close_error = errno != 0 ? errno : EIO;
-    }
-
-    /*
-     * 如果写入和关闭都失败，优先返回更早发生的写入错误。
-     */
-    if (operation_error != 0) {
-        return operation_error;
-    }
-
-    return close_error;
+    return 0;
 }
 
+/**
+ * @brief 从一条流记录提取特征并写入已打开的CSV流。
+ *
+ * output由外层调用者拥有，本函数只借用，不调用fclose。
+ * record同样只读借用，不保存其地址。
+ */
+static int app_write_flow_feature_csv_record(
+    FILE *output,
+    const flow_record_t *record)
+{
+    flow_features_t features = {0};
+    int error_code;
+
+    if (output == NULL || record == NULL) {
+        return EINVAL;
+    }
+
+    error_code = flow_features_from_record(
+        record,
+        &features
+    );
+
+    if (error_code != 0) {
+        return error_code;
+    }
+
+    return flow_feature_export_write_csv_record(
+        output,
+        &features
+    );
+}
+
+/**
+ * @brief 把连续数组中的流记录依次写入特征CSV。
+ *
+ * records中的每个元素都是独立的值副本，不依赖流表槽位。
+ *
+ * output由外层拥有，本函数只借用，不关闭。
+ * record_count为0时不写入任何内容并返回成功。
+ */
+static int app_write_flow_feature_csv_records(
+    FILE *output,
+    const flow_record_t *records,
+    size_t record_count)
+{
+    size_t index;
+    int error_code;
+
+    if (output == NULL ||
+        (records == NULL && record_count != 0U)) {
+        return EINVAL;
+    }
+
+    for (index = 0U;
+         index < record_count;
+         index += 1U) {
+        error_code =
+            app_write_flow_feature_csv_record(
+                output,
+                &records[index]
+            );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+    }
+
+    return 0;
+}
+
+/**
+ * @brief 把流表中当前保留的全部记录写入特征CSV。
+ *
+ * 本函数不写表头，也不关闭output。
+ */
+static int app_write_flow_table_feature_csv(
+    FILE *output,
+    const flow_table_t *table)
+{
+    const flow_record_t *record;
+
+    size_t flow_count;
+    size_t index;
+    int error_code;
+
+    if (output == NULL ||
+        table == NULL ||
+        !table->initialized) {
+        return EINVAL;
+    }
+
+    flow_count = flow_table_count(table);
+
+    for (index = 0U; index < flow_count; index += 1U) {
+        error_code = flow_table_get(
+            table,
+            index,
+            &record
+        );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+
+        error_code =
+            app_write_flow_feature_csv_record(
+                output,
+                record
+            );
+
+        if (error_code != 0) {
+            return error_code;
+        }
+    }
+
+    return 0;
+}
 
 /**
  * @brief 解析一条捕获数据包，更新流表，并按需输出数据包概要。
@@ -1379,8 +1560,13 @@ static int app_process_packet(
  *
  * 离线模式读取到文件末尾；
  * 实时模式读取到context->packet_limit指定的包数。
+ *
+ * flow_csv_output为可选的普通流CSV输出流。
+ * feature_csv_output为可选的特征CSV输出流。
+ * 两个输出参数分别为NULL时不生成对应CSV；
+ * 非NULL时本函数只借用，不负责关闭。
  */
-static int app_run_capture_analysis(app_context_t *context)
+static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output, FILE *feature_csv_output)
 {
     char capture_error[CAPTURE_ERROR_BUFFER_SIZE] = {0};
 
@@ -1460,6 +1646,7 @@ static int app_run_capture_analysis(app_context_t *context)
     size_t total_evicted_flow_count = 0U;
 
     bool live_capture;
+    bool flow_expiration_enabled;
     bool print_preview;
     /*
      * false既可能表示尚未查询，也可能表示当前平台查询失败。
@@ -1474,6 +1661,8 @@ static int app_run_capture_analysis(app_context_t *context)
     int error_code;
     int statistics_error_code = 0;
 
+    int64_t flow_idle_timeout_seconds;
+
     if (context == NULL) {
         return EINVAL;
     }
@@ -1484,6 +1673,24 @@ static int app_run_capture_analysis(app_context_t *context)
      * 后面的协议解析和流量聚合不需要再区分数据来自文件还是网卡。
      */
     live_capture = context->command == APP_COMMAND_CAPTURE_INTERFACE;
+
+    /*
+    * 输入来源与流生命周期策略是两个不同概念。
+    *
+    * 实时抓包继续使用固定默认超时；
+    * 离线PCAP只有显式提供正数超时时才启用过期。
+    *
+    * BPF、非阻塞读取、运行指标和抓包统计仍只由live_capture控制。
+    */
+    if (live_capture) {
+        flow_idle_timeout_seconds =
+            APP_FLOW_IDLE_TIMEOUT_SECONDS;
+    } else {
+        flow_idle_timeout_seconds =
+            context->offline_flow_idle_timeout_seconds;
+    }
+
+    flow_expiration_enabled = flow_idle_timeout_seconds > INT64_C(0);
 
     if (context->packet_limit == 0U) {
         (void)snprintf(
@@ -1677,13 +1884,15 @@ static int app_run_capture_analysis(app_context_t *context)
     }
 
     /*
-    * 离线PCAP继续保留完整文件级聚合语义。
-    * 第一版只为实时采集初始化并使用过期调度器。
+    * 只有启用流过期时才初始化调度器。
+    *
+    * 初始化条件必须与后面调用flow_expiration_schedule_observe的
+    * 条件保持一致，不能使用尚未初始化的调度器。
     */
-    if (live_capture) {
+    if (flow_expiration_enabled) {
         error_code = flow_expiration_schedule_init(
             &expiration_schedule,
-            APP_FLOW_IDLE_TIMEOUT_SECONDS,
+            flow_idle_timeout_seconds,
             APP_FLOW_EXPIRATION_SCAN_INTERVAL_SECONDS
         );
 
@@ -1753,7 +1962,7 @@ static int app_run_capture_analysis(app_context_t *context)
             context->flow_full_policy == APP_FLOW_FULL_POLICY_REJECT
                 ? "reject"
                 : "evict-oldest",
-            APP_FLOW_IDLE_TIMEOUT_SECONDS,
+            flow_idle_timeout_seconds,
             APP_FLOW_EXPIRATION_SCAN_INTERVAL_SECONDS,
             APP_RUNTIME_METRICS_INTERVAL_SECONDS
         );
@@ -2002,10 +2211,10 @@ static int app_run_capture_analysis(app_context_t *context)
     /*
     * 必须在把当前数据包加入流表之前判断过期。
     *
-    * 如果一条旧流已经空闲30秒，而当前包恰好与旧流五元组相同，
+    * 如果一条旧流已经达到配置的空闲超时，而当前包恰好与旧流五元组相同，
     * 先更新流表会刷新last_seen，错误地把两个会话合并。
     */
-    if (live_capture) {
+    if (flow_expiration_enabled) {
         packet_timestamp = (flow_timestamp_t){
             .seconds = packet.timestamp_seconds,
             .microseconds = packet.timestamp_microseconds
@@ -2077,6 +2286,67 @@ static int app_run_capture_analysis(app_context_t *context)
                 flow_table_cleanup(&flow_table);
                 capture_close(&capture);
                 return error_code;
+            }
+
+            /*
+             * flow_table_expire_before已经在删除槽位前把记录按值
+             * 复制到expired_flow_records中。
+             *
+             * 因此这些记录必须在这里导出；退出时遍历剩余流表
+             * 已经无法再次找到它们。
+             */
+
+            if (flow_csv_output != NULL) {
+                error_code = app_write_flow_csv_records(
+                    flow_csv_output,
+                    expired_flow_records,
+                    expired_flow_count
+                );
+
+                if (error_code != 0) {
+                    (void)snprintf(
+                        context->error_message,
+                        sizeof(context->error_message),
+                        "failed to write expired flow records: %s",
+                        strerror(error_code)
+                    );
+
+                    /*
+                    * flow_csv_output由外层包装函数拥有。
+                    * 本层只借用，返回后不能在这里调用fclose。
+                    */
+                    context->active_capture = NULL;
+                    flow_table_cleanup(&flow_table);
+                    capture_close(&capture);
+                    return error_code;
+                }
+            }
+
+            if (feature_csv_output != NULL) {
+                error_code =
+                    app_write_flow_feature_csv_records(
+                        feature_csv_output,
+                        expired_flow_records,
+                        expired_flow_count
+                    );
+
+                if (error_code != 0) {
+                    (void)snprintf(
+                        context->error_message,
+                        sizeof(context->error_message),
+                        "failed to write expired flow features: %s",
+                        strerror(error_code)
+                    );
+
+                    /*
+                     * feature_csv_output由外层包装函数拥有。
+                     * 返回后外层仍会调用fclose，本层不能重复关闭。
+                     */
+                    context->active_capture = NULL;
+                    flow_table_cleanup(&flow_table);
+                    capture_close(&capture);
+                    return error_code;
+                }
             }
 
             total_expired_flow_count += expired_flow_count;
@@ -2155,6 +2425,40 @@ static int app_run_capture_analysis(app_context_t *context)
                 flow_table_cleanup(&flow_table);
                 capture_close(&capture);
                 return error_code;
+            }
+
+            /*
+             * evicted_flow_record是流表覆盖旧槽位前生成的值副本。
+             *
+             * 旧记录已经不在流表中，必须在这里立即导出；
+             * 退出时遍历最终流表无法再次取得它。
+             */
+            if (feature_csv_output != NULL) {
+                error_code =
+                    app_write_flow_feature_csv_record(
+                        feature_csv_output,
+                        &evicted_flow_record
+                    );
+
+                if (error_code != 0) {
+                    (void)snprintf(
+                        context->error_message,
+                        sizeof(context->error_message),
+                        "failed to write evicted flow features "
+                        "for packet %zu: %s",
+                        total_packet_count,
+                        strerror(error_code)
+                    );
+
+                    /*
+                     * 输出流由外层包装函数拥有。
+                     * 本层清理流表与capture，但不能调用fclose。
+                     */
+                    context->active_capture = NULL;
+                    flow_table_cleanup(&flow_table);
+                    capture_close(&capture);
+                    return error_code;
+                }
             }
 
             total_evicted_flow_count += 1U;
@@ -2284,6 +2588,58 @@ static int app_run_capture_analysis(app_context_t *context)
     context->active_capture = NULL;
     capture_close(&capture);
 
+    /*
+    * 已过期记录已经在离开流表时写出。
+    * 此处只写采集结束时仍保留在流表中的生命周期。
+    *
+    * flow_csv_output由外层拥有，本函数只写记录，不写表头，
+    * 也不调用fclose。
+    */
+    if (flow_csv_output != NULL) {
+        error_code = app_write_flow_table_csv(
+            flow_csv_output,
+            &flow_table
+        );
+
+        if (error_code != 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to write remaining flow records: %s",
+                strerror(error_code)
+            );
+
+            flow_table_cleanup(&flow_table);
+            return error_code;
+        }
+    }
+
+    /*
+     * 采集结束后，流表中剩余记录不会再发生变化。
+     *
+     * 已过期或被淘汰的记录已经在离开流表时写入特征CSV，
+     * 此处只写最终仍然存活的记录。
+     */
+    if (feature_csv_output != NULL) {
+        error_code =
+            app_write_flow_table_feature_csv(
+                feature_csv_output,
+                &flow_table
+            );
+
+        if (error_code != 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to write remaining flow features: %s",
+                strerror(error_code)
+            );
+
+            flow_table_cleanup(&flow_table);
+            return error_code;
+        }
+    }
+
     if (printf(
             "Total packets: %zu\n"
             "Previewed packets: %zu\n"
@@ -2327,18 +2683,39 @@ static int app_run_capture_analysis(app_context_t *context)
     }
 
     /*
-    * 离线模式没有启用周期过期或满表淘汰策略，因此只在实时模式输出该指标。
+    * 实时模式始终启用流过期；
+    * 离线模式只有显式配置空闲超时时才输出过期计数。
     */
-    if (live_capture &&
+    if (flow_expiration_enabled &&
         printf(
-            "Expired flows: %zu\n"
-            "Evicted flows: %zu\n",
-            total_expired_flow_count,
-            total_evicted_flow_count) < 0) {
+            "Expired flows: %zu\n",
+            total_expired_flow_count
+        ) < 0) {
         (void)snprintf(
             context->error_message,
             sizeof(context->error_message),
-            "failed to write flow lifecycle counts"
+            "failed to write expired flow count"
+        );
+
+        flow_table_cleanup(&flow_table);
+        return EIO;
+    }
+
+    /*
+    * 满表淘汰策略第一版只属于实时监控。
+    *
+    * 离线分析即使启用了空闲过期，也不能在流表满载时静默
+    * 驱逐仍然活跃的记录；容量不足仍保持明确拒绝语义。
+    */
+    if (live_capture &&
+        printf(
+            "Evicted flows: %zu\n",
+            total_evicted_flow_count
+        ) < 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "failed to write evicted flow count"
         );
 
         flow_table_cleanup(&flow_table);
@@ -2395,45 +2772,282 @@ static int app_run_capture_analysis(app_context_t *context)
         return error_code;
     }
 
-    if (context->csv_output_path != NULL) {
-        error_code = app_export_flow_table_csv(
-            &flow_table,
-            context->csv_output_path
-        );
-
-        if (error_code != 0) {
-            (void)snprintf(
-                context->error_message,
-                sizeof(context->error_message),
-                "failed to export CSV '%s': %s",
-                context->csv_output_path,
-                strerror(error_code)
-            );
-
-            flow_table_cleanup(&flow_table);
-            return error_code;
-        }
-
-        if (printf(
-                "CSV output: %s\n",
-                context->csv_output_path) < 0) {
-            (void)snprintf(
-                context->error_message,
-                sizeof(context->error_message),
-                "CSV was created, but confirmation output failed"
-            );
-
-            flow_table_cleanup(&flow_table);
-            return EIO;
-        }
-    }
-
     /*
      * flow_table_cleanup只解除对flow_slots的借用，不会free数组。
      *
      * 函数返回后，flow_slots作为局部数组自然结束生命周期。
      */
     flow_table_cleanup(&flow_table);
+
+    return 0;
+}
+
+/**
+ * @brief 在可选的特征CSV文件生命周期内执行采集分析。
+ *
+ * feature_csv_output_path为NULL时直接运行分析，不创建文件。
+ *
+ * 配置了输出路径时，本函数拥有FILE对象：
+ *
+ * 1. 使用"wx"独占创建文件；
+ * 2. 写入一次版本化表头；
+ * 3. 执行采集分析；
+ * 4. 无论分析成功或失败都调用fclose。
+ *
+ * 路径字符串仍由app_context_t借用，本函数不释放路径。
+ *
+ * flow_csv_output由更外层调用者拥有，本函数只把它继续借给
+ * app_run_capture_analysis，不写表头也不关闭。
+ *
+ * 分析循环负责把过期、淘汰和最终剩余流的特征
+ * 写入这个文件。。
+ */
+static int app_run_capture_analysis_with_feature_csv(
+    app_context_t *context, FILE *flow_csv_output)
+{
+    FILE *feature_csv_output = NULL;
+
+    int operation_error;
+    int close_error = 0;
+
+    if (context == NULL) {
+        return EINVAL;
+    }
+
+    if (context->feature_csv_output_path != NULL) {
+        /*
+         * errno只有在库函数报告失败时才有意义。
+         */
+        errno = 0;
+
+        /*
+         * "wx"表示创建新文件，并拒绝覆盖已经存在的文件。
+         */
+        feature_csv_output = fopen(
+            context->feature_csv_output_path,
+            "wx"
+        );
+
+        if (feature_csv_output == NULL) {
+            operation_error =
+                errno != 0 ? errno : EIO;
+
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to create feature CSV '%s': %s",
+                context->feature_csv_output_path,
+                strerror(operation_error)
+            );
+
+            return operation_error;
+        }
+
+        operation_error =
+            flow_feature_export_write_csv_header(
+                feature_csv_output
+            );
+
+        if (operation_error != 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to write feature CSV header '%s': %s",
+                context->feature_csv_output_path,
+                strerror(operation_error)
+            );
+        }
+    } else {
+        operation_error = 0;
+    }
+
+    /*
+     * 表头成功后才进入分析。
+     *
+     * 后续步骤会把feature_csv_output作为借用的输出流传入分析函数。
+     */
+    if (operation_error == 0) {
+        operation_error =
+            app_run_capture_analysis(context, flow_csv_output, feature_csv_output);
+    }
+
+    /*
+     * 即使写表头或分析过程失败，也必须关闭已经打开的文件。
+     *
+     * fclose还可能在刷新stdio缓冲区时发现磁盘写入错误。
+     */
+    if (feature_csv_output != NULL) {
+        errno = 0;
+
+        if (fclose(feature_csv_output) != 0) {
+            close_error =
+                errno != 0 ? errno : EIO;
+        }
+    }
+
+    /*
+     * 如果业务操作和关闭同时失败，保留更早发生的业务错误。
+     */
+    if (operation_error != 0) {
+        return operation_error;
+    }
+
+    if (close_error != 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "failed to close feature CSV '%s': %s",
+            context->feature_csv_output_path,
+            strerror(close_error)
+        );
+
+        return close_error;
+    }
+
+    if (context->feature_csv_output_path != NULL &&
+        printf(
+            "Feature CSV output: %s\n",
+            context->feature_csv_output_path
+        ) < 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "feature CSV was created, "
+            "but confirmation output failed"
+        );
+
+        return EIO;
+    }
+
+    return 0;
+}
+
+/**
+ * @brief 在可选的普通流CSV文件生命周期内执行采集分析。
+ *
+ * 本函数拥有flow_csv_output：
+ *
+ * 1. 使用"wx"独占创建普通流CSV；
+ * 2. 写入一次普通流CSV表头；
+ * 3. 调用特征CSV包装层和采集分析；
+ * 4. 无论后续成功或失败都关闭普通流CSV。
+ *
+ * feature_csv_output仍由下一层包装函数独立拥有。
+ */
+static int app_run_capture_analysis_with_csv_outputs(
+    app_context_t *context)
+{
+    FILE *flow_csv_output = NULL;
+
+    int operation_error;
+    int close_error = 0;
+
+    if (context == NULL) {
+        return EINVAL;
+    }
+
+    if (context->csv_output_path != NULL) {
+        errno = 0;
+
+        /*
+         * "wx"只创建新文件，拒绝覆盖已有CSV。
+         */
+        flow_csv_output = fopen(
+            context->csv_output_path,
+            "wx"
+        );
+
+        if (flow_csv_output == NULL) {
+            operation_error =
+                errno != 0 ? errno : EIO;
+
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to create CSV '%s': %s",
+                context->csv_output_path,
+                strerror(operation_error)
+            );
+
+            return operation_error;
+        }
+
+        operation_error =
+            flow_export_write_csv_header(
+                flow_csv_output
+            );
+
+        if (operation_error != 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "failed to write CSV header '%s': %s",
+                context->csv_output_path,
+                strerror(operation_error)
+            );
+        }
+    } else {
+        operation_error = 0;
+    }
+
+    /*
+     * 表头成功后才进入特征CSV包装层和分析循环。
+     */
+    if (operation_error == 0) {
+        operation_error =
+            app_run_capture_analysis_with_feature_csv(
+                context,
+                flow_csv_output
+            );
+    }
+
+    /*
+     * 即使特征CSV创建或分析过程失败，普通CSV仍由本层关闭。
+     */
+    if (flow_csv_output != NULL) {
+        errno = 0;
+
+        if (fclose(flow_csv_output) != 0) {
+            close_error =
+                errno != 0 ? errno : EIO;
+        }
+    }
+
+    /*
+     * 业务错误优先于随后发生的关闭错误。
+     *
+     * 发生业务错误时，context中通常已经保存了更具体的说明。
+     */
+    if (operation_error != 0) {
+        return operation_error;
+    }
+
+    if (close_error != 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "failed to close CSV '%s': %s",
+            context->csv_output_path,
+            strerror(close_error)
+        );
+
+        return close_error;
+    }
+
+    if (context->csv_output_path != NULL &&
+        printf(
+            "CSV output: %s\n",
+            context->csv_output_path
+        ) < 0) {
+        (void)snprintf(
+            context->error_message,
+            sizeof(context->error_message),
+            "CSV was created, "
+            "but confirmation output failed"
+        );
+
+        return EIO;
+    }
 
     return 0;
 }
@@ -2455,7 +3069,9 @@ int app_context_init(app_context_t *context)
         .filter_expression = NULL,
         .flow_full_policy = APP_FLOW_FULL_POLICY_REJECT,
         .packet_limit = 0U,
+        .offline_flow_idle_timeout_seconds = INT64_C(0),
         .csv_output_path = NULL,
+        .feature_csv_output_path = NULL,
         .active_capture = NULL,
         .error_message = {0},
         .stop_requested = 0,
@@ -2473,12 +3089,16 @@ int app_parse_arguments(app_context_t *context,
     const char *parsed_interface_name;
     const char *parsed_filter_expression;
     const char *parsed_csv_output_path;
+    const char *parsed_feature_csv_output_path;
+    
     app_flow_full_policy_t parsed_flow_full_policy;
     bool parsed_flow_full_policy_provided;
     size_t parsed_packet_limit;
 
     int argument_index;
     int error_code;
+
+    int64_t parsed_offline_flow_idle_timeout_seconds;
 
     if (context == NULL ||
         !context->initialized ||
@@ -2497,8 +3117,10 @@ int app_parse_arguments(app_context_t *context,
     context->interface_name = NULL;
     context->filter_expression = NULL;
     context->packet_limit = 0U;
+    context->offline_flow_idle_timeout_seconds = INT64_C(0);
     context->flow_full_policy = APP_FLOW_FULL_POLICY_REJECT;
     context->csv_output_path = NULL;
+    context->feature_csv_output_path = NULL;
     context->error_message[0] = '\0';
 
     /*
@@ -2531,8 +3153,10 @@ int app_parse_arguments(app_context_t *context,
     parsed_interface_name = NULL;
     parsed_filter_expression = NULL;
     parsed_flow_full_policy = APP_FLOW_FULL_POLICY_REJECT;
+    parsed_offline_flow_idle_timeout_seconds = INT64_C(0);
     parsed_flow_full_policy_provided = false;
     parsed_csv_output_path = NULL;
+    parsed_feature_csv_output_path = NULL;
     parsed_packet_limit = 0U;
 
     argument_index = 1;
@@ -2595,6 +3219,23 @@ int app_parse_arguments(app_context_t *context,
             if (error_code != 0) {
                 return EINVAL;
             }
+        } else if (strcmp(option,"--flow-idle-timeout") == 0) {
+            /*
+             * 0既表示尚未提供，也是非法超时值。
+             */
+            if (parsed_offline_flow_idle_timeout_seconds !=
+                INT64_C(0)) {
+                return EINVAL;
+            }
+
+            error_code = app_parse_positive_int64(
+                option_value,
+                &parsed_offline_flow_idle_timeout_seconds
+            );
+
+            if (error_code != 0) {
+                return EINVAL;
+            }
         } else if (strcmp(option, "--filter") == 0) {
             /*
              * 重复提供过滤器会导致最终使用哪一个表达式不明确。
@@ -2633,12 +3274,25 @@ int app_parse_arguments(app_context_t *context,
             }
 
             parsed_flow_full_policy_provided = true;
-        } else if (strcmp(option, "--csv") == 0){
+        } else if (strcmp(option, "--csv") == 0) {
             if (parsed_csv_output_path != NULL) {
                 return EINVAL;
             }
 
             parsed_csv_output_path = option_value;
+        } else if (strcmp(option, "--feature-csv") == 0) {
+            if (parsed_feature_csv_output_path !=
+                NULL) {
+                return EINVAL;
+            }
+
+            /*
+             * 路径直接借用argv中的字符串。
+             *
+             * 循环开头已经拒绝NULL和空字符串。
+             */
+            parsed_feature_csv_output_path =
+                option_value;
         } else {
             return EINVAL;
         }
@@ -2664,6 +3318,17 @@ int app_parse_arguments(app_context_t *context,
      */
     if (parsed_capture_path == NULL &&
         parsed_interface_name == NULL) {
+        return EINVAL;
+    }
+
+    /*
+     * 第一版只允许离线PCAP配置流空闲超时。
+     *
+     * 实时模式继续使用经过开发板验证的固定30秒策略。
+     */
+    if (parsed_interface_name != NULL &&
+        parsed_offline_flow_idle_timeout_seconds !=
+            INT64_C(0)) {
         return EINVAL;
     }
 
@@ -2697,6 +3362,32 @@ int app_parse_arguments(app_context_t *context,
     }
 
     /*
+     * 实时特征CSV必须具有明确的数据包上限。
+     *
+     * 否则程序可能无限运行并持续增加输出文件，
+     * 最终耗尽开发板存储空间。
+     */
+    if (parsed_interface_name != NULL &&
+        parsed_feature_csv_output_path != NULL &&
+        parsed_packet_limit == 0U) {
+        return EINVAL;
+    }
+
+    /*
+     * 普通流记录CSV和特征CSV不能使用相同路径。
+     *
+     * 否则两个不同格式会争用同一个输出文件。
+     */
+    if (parsed_csv_output_path != NULL &&
+        parsed_feature_csv_output_path != NULL &&
+        strcmp(
+            parsed_csv_output_path,
+            parsed_feature_csv_output_path
+        ) == 0) {
+        return EINVAL;
+    }
+
+    /*
      * 满表策略第一版只属于实时监控。
      *
      * 离线分析仍保持完整文件聚合和现有容量拒绝语义，
@@ -2713,7 +3404,9 @@ int app_parse_arguments(app_context_t *context,
     context->capture_path = parsed_capture_path;
     context->interface_name = parsed_interface_name;
     context->filter_expression = parsed_filter_expression;
+    context->offline_flow_idle_timeout_seconds = parsed_offline_flow_idle_timeout_seconds;
     context->csv_output_path = parsed_csv_output_path;
+    context->feature_csv_output_path = parsed_feature_csv_output_path;
     context->packet_limit = parsed_packet_limit;
     context->flow_full_policy = parsed_flow_full_policy;
 
@@ -2813,6 +3506,42 @@ int app_run(app_context_t *context)
             return EINVAL;
         }
 
+        /*
+         * NULL表示不导出特征；非NULL路径不能为空字符串。
+         *
+         * app_context_t只借用路径字符串，不负责释放它。
+         */
+        if (context->feature_csv_output_path != NULL &&
+            context->feature_csv_output_path[0] == '\0') {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "feature CSV output path is empty"
+            );
+
+            return EINVAL;
+        }
+
+        /*
+         * 两种CSV格式不能写入同一个文件。
+         *
+         * strcmp比较路径内容，而不是比较两个指针地址。
+         */
+        if (context->csv_output_path != NULL &&
+            context->feature_csv_output_path != NULL &&
+            strcmp(
+                context->csv_output_path,
+                context->feature_csv_output_path
+            ) == 0) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "flow CSV and feature CSV output paths must differ"
+            );
+
+            return EINVAL;
+        }
+
         if (context->flow_full_policy !=
             APP_FLOW_FULL_POLICY_REJECT) {
             (void)snprintf(
@@ -2825,7 +3554,17 @@ int app_run(app_context_t *context)
             return EINVAL;
         }
 
-        return app_run_capture_analysis(context);
+        if (context->offline_flow_idle_timeout_seconds < INT64_C(0)) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "offline flow idle timeout must not be negative"
+            );
+
+            return EINVAL;
+        }
+
+        return app_run_capture_analysis_with_csv_outputs(context);
 
         case APP_COMMAND_CAPTURE_INTERFACE:
         if (context->interface_name == NULL ||
@@ -2834,6 +3573,18 @@ int app_run(app_context_t *context)
                 context->error_message,
                 sizeof(context->error_message),
                 "capture interface is missing"
+            );
+
+            return EINVAL;
+        }
+
+        if (context->offline_flow_idle_timeout_seconds !=
+            INT64_C(0)) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "offline flow idle timeout is only supported "
+                "for offline capture"
             );
 
             return EINVAL;
@@ -2853,7 +3604,49 @@ int app_run(app_context_t *context)
             return EINVAL;
         }
 
-            if (context->flow_full_policy != APP_FLOW_FULL_POLICY_REJECT &&
+        /*
+         * 普通流记录CSV仍然只支持离线模式。
+         *
+         * 这里防止调用者绕过app_parse_arguments手工构造非法状态。
+         */
+        if (context->csv_output_path != NULL) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "flow CSV output is only supported for offline capture"
+            );
+
+            return EINVAL;
+        }
+
+        if (context->feature_csv_output_path != NULL &&
+            context->feature_csv_output_path[0] == '\0') {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "feature CSV output path is empty"
+            );
+
+            return EINVAL;
+        }
+
+        /*
+         * packet_limit为0表示实时模式没有包数上限。
+         *
+         * 第一版不允许无上限实时任务持续增长特征文件。
+         */
+        if (context->feature_csv_output_path != NULL &&
+            context->packet_limit == 0U) {
+            (void)snprintf(
+                context->error_message,
+                sizeof(context->error_message),
+                "live feature CSV output requires a packet limit"
+            );
+
+            return EINVAL;
+        }
+
+        if (context->flow_full_policy != APP_FLOW_FULL_POLICY_REJECT &&
                 context->flow_full_policy != APP_FLOW_FULL_POLICY_EVICT_OLDEST) {
             (void)snprintf(
                 context->error_message,
@@ -2864,7 +3657,7 @@ int app_run(app_context_t *context)
             return EINVAL;
         }
 
-        return app_run_capture_analysis(context);
+        return app_run_capture_analysis_with_csv_outputs(context);
 
     default:
         (void)snprintf(

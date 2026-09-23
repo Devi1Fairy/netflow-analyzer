@@ -84,8 +84,10 @@ add_library(
     src/protocol/ipv4_dispatch.c
     src/flow/flow_key.c
     src/flow/flow_record.c
+    src/flow/flow_features.c
     src/flow/flow_table.c
     src/output/flow_export.c
+    src/output/flow_feature_export.c
     src/flow/flow_expiration.c
     src/metrics/runtime_metrics.c
     src/flow/tcp_flow_state.c
@@ -556,6 +558,137 @@ if(BUILD_TESTING)
             TIMEOUT 10
     )
 
+    # 使用确定性合成CSV验证CTU-13标签审计工具。
+    #
+    # 测试不依赖仓库外的公开数据集文件，因此开发机、
+    # 目标板和未来CI环境都可以重复运行。
+    add_test(
+        NAME ctu13_label_audit_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_ctu13_label_audit.py
+            --script
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/inspect_ctu13_labels.py
+            --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}
+    )
+
+    set_tests_properties(
+        ctu13_label_audit_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
+    # 验证CTU-13时间、协议和双向五元组规范化规则。
+    #
+    # 测试使用合成字段，不依赖仓库外的大型公开数据文件。
+    add_test(
+        NAME ctu13_flow_identity_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_ctu13_flow_identity.py
+            --scripts-dir
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+    )
+
+    set_tests_properties(
+        ctu13_flow_identity_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
+    # 使用确定性合成Zeek文本验证IoT-23标签审计工具。
+    #
+    # 测试不依赖仓库外的公开PCAP或标签文件。
+    add_test(
+        NAME iot23_label_audit_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_iot23_label_audit.py
+            --script
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/inspect_iot23_labels.py
+            --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}
+    )
+
+    set_tests_properties(
+        iot23_label_audit_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
+    # 验证IoT-23时间、协议和双向五元组规范化规则。
+    #
+    # 测试使用合成字段，不依赖仓库外的公开数据文件。
+    add_test(
+        NAME iot23_flow_identity_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_iot23_flow_identity.py
+            --scripts-dir
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+    )
+
+    set_tests_properties(
+        iot23_flow_identity_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
+    # 验证同键多候选、协议隔离和监督标签过滤。
+    add_test(
+        NAME iot23_label_index_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_iot23_label_index.py
+            --scripts-dir
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+            --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}
+    )
+
+    set_tests_properties(
+        iot23_label_index_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
+    # 验证稳定流样本ID的序列化、摘要和输入边界。
+    #
+    # 测试只使用确定性合成身份，不依赖外部CTU-13数据文件。
+    add_test(
+        NAME flow_sample_metadata_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_flow_sample_metadata.py
+            --scripts-dir
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+    )
+
+    set_tests_properties(
+        flow_sample_metadata_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
+    # 使用合成标签和流CSV验证唯一、缺失及歧义匹配分类。
+    add_test(
+        NAME ctu13_flow_match_audit_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_ctu13_flow_match_audit.py
+            --script
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/audit_ctu13_flow_matches.py
+            --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}
+    )
+
+    set_tests_properties(
+        ctu13_flow_match_audit_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
     # 创建CSV流记录导出单元测试程序。
     add_executable(
         flow_export_tests
@@ -658,6 +791,60 @@ if(BUILD_TESTING)
 
     set_tests_properties(
         tcp_flow_state_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+    # 创建流特征提取单元测试程序。
+    add_executable(
+        flow_features_tests
+        tests/unit/test_flow_features.c
+    )
+
+    # 特征提取实现位于核心静态库中。
+    target_link_libraries(
+        flow_features_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    # 测试使用与正式代码相同的严格警告。
+    enable_project_warnings(flow_features_tests)
+
+    # 注册为CTest测试。
+    add_test(
+        NAME flow_features_tests
+        COMMAND flow_features_tests
+    )
+
+    set_tests_properties(
+        flow_features_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+    # 创建版本化流特征CSV导出单元测试程序。
+    add_executable(
+        flow_feature_export_tests
+        tests/unit/test_flow_feature_export.c
+    )
+
+    # 特征CSV导出器位于核心静态库中。
+    target_link_libraries(
+        flow_feature_export_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    enable_project_warnings(flow_feature_export_tests)
+
+    add_test(
+        NAME flow_feature_export_tests
+        COMMAND flow_feature_export_tests
+    )
+
+    set_tests_properties(
+        flow_feature_export_tests
         PROPERTIES
             TIMEOUT 5
     )

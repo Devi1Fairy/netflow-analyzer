@@ -3,6 +3,7 @@
 
 #include "analyzer/capture.h"
 
+#include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <signal.h>
@@ -118,6 +119,17 @@ typedef struct {
     size_t packet_limit;
 
     /**
+     * 离线PCAP使用的可选流空闲超时，单位为秒。
+     *
+     * 0表示保持完整文件级聚合，不启用离线流过期。
+     * 大于0表示同一双向五元组在空闲达到该时间后结束当前
+     * 生命周期，后续相同五元组将创建新流。
+     *
+     * 第一版只供APP_COMMAND_READ_CAPTURE使用。
+     */
+    int64_t offline_flow_idle_timeout_seconds;
+
+    /**
      * CSV流记录输出文件路径。
      *
      * 该指针借用argv中的字符串地址，不拥有字符串，也不能free。
@@ -125,6 +137,18 @@ typedef struct {
      * NULL表示只显示终端文本，不生成CSV文件。
      */
     const char *csv_output_path;
+
+    /**
+     * 版本化流特征CSV输出文件路径。
+     *
+     * 该指针借用argv中的字符串地址，不拥有字符串，也不能free。
+     *
+     * NULL表示不生成模型特征CSV。
+     *
+     * 离线PCAP可以使用该路径；实时抓包只有设置了非零
+     * packet_limit时才允许使用，避免无限运行持续占用磁盘。
+     */
+    const char *feature_csv_output_path;
 
     /**
      * 当前正在使用的采集对象。
@@ -184,8 +208,17 @@ int app_context_init(app_context_t *context);
  * - --help或-h；
  * - --version或-V。
  * - --read FILE或-r FILE
- * - --read FILE --csv CSV_FILE
- * - --interface NAME [--count PACKETS] [--filter EXPRESSION] [--flow-full-policy reject|evict-oldest]
+ *   [--flow-idle-timeout SECONDS]
+ *   [--csv CSV_FILE]
+ *   [--feature-csv FEATURE_CSV_FILE]
+ * - --interface NAME
+ *   [--count PACKETS]
+ *   [--filter EXPRESSION]
+ *   [--flow-full-policy reject|evict-oldest]
+ *   [--feature-csv FEATURE_CSV_FILE]
+ *
+ * 实时模式只有在提供非零--count上限时才允许特征CSV输出。
+ * 两类CSV使用独占创建模式，不覆盖已有文件，也不能使用同一路径。
  *
  * @param context 指向已经初始化的应用上下文。
  * @param argc main函数收到的参数数量。
