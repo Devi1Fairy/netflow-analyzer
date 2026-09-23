@@ -635,6 +635,22 @@ if(BUILD_TESTING)
             TIMEOUT 10
     )
 
+    # 验证同键多候选、协议隔离和监督标签过滤。
+    add_test(
+        NAME iot23_label_index_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_iot23_label_index.py
+            --scripts-dir
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+    )
+
+    set_tests_properties(
+        iot23_label_index_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
     # 验证稳定流样本ID的序列化、摘要和输入边界。
     #
     # 测试只使用确定性合成身份，不依赖外部CTU-13数据文件。
