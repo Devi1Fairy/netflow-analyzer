@@ -7,6 +7,8 @@ import sys
 import tempfile
 from pathlib import Path
 from test_iot23_label_audit import build_record, write_log
+import csv
+from io import StringIO
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -203,6 +205,70 @@ def main() -> int:
         pass
     else:
         raise RuntimeError("reversed flow interval was accepted")
+
+    from audit_ctu13_flow_matches import EXPECTED_FLOW_COLUMNS
+    from audit_iot23_flow_matches import audit_flow_csv
+
+    audit_index = build_label_index(
+        [
+            (first, "malicious"),
+            (overlapping_malicious, "malicious"),
+            (second, "benign"),
+            (udp, "benign"),
+        ]
+    )
+
+    # StringIO是内存中的文本流，不需要创建真实CSV文件。
+    flow_stream = StringIO()
+    writer = csv.writer(flow_stream)
+    writer.writerow(EXPECTED_FLOW_COLUMNS)
+
+    for protocol, start, end in (
+        (6, 100, 100),   # 唯一恶意
+        (6, 106, 106),   # 两个同为恶意的候选
+        (6, 100, 200),   # 恶意与正常候选冲突
+        (6, 150, 160),   # 未匹配
+        (17, 300, 300),  # 唯一正常
+    ):
+        writer.writerow(
+            (
+                protocol,
+                "established"
+                if protocol == 6
+                else "not-applicable",
+                "192.168.2.5",
+                1234,
+                "198.51.100.20",
+                80,
+                1, 60, 60,
+                0, 0, 0,
+                0, start,
+                0, end,
+            )
+        )
+
+    # 写完后读写位置在末尾；读CSV前必须回到开头。
+    flow_stream.seek(0)
+
+    audit_counts = audit_flow_csv(
+        audit_index,
+        flow_stream,
+    )
+
+    expected_counts = {
+        "flows_total": 5,
+        "matches_unique": 2,
+        "matches_unique_malicious": 1,
+        "matches_unique_benign": 1,
+        "matches_unmatched": 1,
+        "matches_ambiguous_same_label": 1,
+        "matches_ambiguous_conflicting_labels": 1,
+    }
+
+    if audit_counts != expected_counts:
+        raise RuntimeError(
+            f"unexpected audit counts: {audit_counts!r}"
+        )
 
     if not arguments.work_dir.is_dir():
         raise RuntimeError("work directory does not exist")
