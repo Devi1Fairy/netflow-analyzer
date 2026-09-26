@@ -31,7 +31,8 @@ def main() -> int:
     from iot23_label_index import (
         build_label_index,
         flow_key_from_identity,
-        load_label_index
+        load_label_index,
+        classify_flow_interval
     )
 
     endpoint_a = FlowEndpoint(
@@ -114,6 +115,94 @@ def main() -> int:
         pass
     else:
         raise RuntimeError("unknown label was accepted")
+
+    tcp_key = flow_key_from_identity(first)
+    udp_key = flow_key_from_identity(udp)
+
+    overlapping_malicious = Iot23FlowIdentity(
+        protocol=6,
+        endpoint_a=endpoint_a,
+        endpoint_b=endpoint_b,
+        start_time_microseconds=105,
+        end_time_microseconds=115,
+    )
+    same_label_index = build_label_index(
+        [
+            (first, "malicious"),
+            (overlapping_malicious, "malicious"),
+        ]
+    )
+
+    cases = (
+        # 区间端点相等仍算匹配。
+        (index, tcp_key, 110, 110, "unique", 1, "malicious"),
+        # 同键但时间不相交。
+        (index, tcp_key, 111, 199, "unmatched", 0, None),
+        # 零时长标签。
+        (index, tcp_key, 200, 200, "unique", 1, "benign"),
+        # 两个候选给出相反标签。
+        (
+            index,
+            tcp_key,
+            100,
+            200,
+            "ambiguous_conflicting_labels",
+            2,
+            None,
+        ),
+        # 两个候选标签相同，仍不是唯一匹配。
+        (
+            same_label_index,
+            tcp_key,
+            106,
+            106,
+            "ambiguous_same_label",
+            2,
+            "malicious",
+        ),
+        # 相同端点但协议不同，不能串到TCP候选。
+        (index, udp_key, 300, 300, "unique", 1, "benign"),
+    )
+
+    for (
+        current_index,
+        current_key,
+        start,
+        end,
+        expected_status,
+        expected_count,
+        expected_group,
+    ) in cases:
+        result = classify_flow_interval(
+            current_index,
+            current_key,
+            start,
+            end,
+        )
+
+        actual = (
+            result.status,
+            result.candidate_count,
+            result.label_group,
+        )
+        expected = (
+            expected_status,
+            expected_count,
+            expected_group,
+        )
+
+        if actual != expected:
+            raise RuntimeError(
+                f"unexpected match classification: "
+                f"{actual!r} != {expected!r}"
+            )
+
+    try:
+        classify_flow_interval(index, tcp_key, 201, 200)
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError("reversed flow interval was accepted")
 
     if not arguments.work_dir.is_dir():
         raise RuntimeError("work directory does not exist")

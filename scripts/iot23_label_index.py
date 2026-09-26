@@ -8,9 +8,19 @@ from pathlib import Path
 
 from inspect_iot23_labels import inspect_label_file
 
-from iot23_flow_identity import Iot23FlowIdentity
+from iot23_flow_identity import (
+    Iot23FlowIdentity,
+    MAX_TIMESTAMP_MICROSECONDS,
+)
 from iot23_label import LABEL_GROUPS
 
+from flow_sample_metadata import (
+    MATCH_STATUS_AMBIGUOUS_CONFLICTING_LABELS,
+    MATCH_STATUS_AMBIGUOUS_SAME_LABEL,
+    MATCH_STATUS_UNIQUE,
+    MATCH_STATUS_UNMATCHED,
+    SUPPORTED_LABEL_GROUPS,
+)
 
 # 协议号、A端IP/端口、B端IP/端口；时间不属于流键。
 FlowKey = Tuple[int, int, int, int, int]
@@ -25,6 +35,13 @@ class LabelInterval:
     end_microseconds: int
     label_group: str
 
+@dataclass(frozen=True)
+class FlowMatchClassification:
+    """一条C流与IoT-23标签候选的匹配结果。"""
+
+    status: str
+    candidate_count: int
+    label_group: Optional[str]
 
 def flow_key_from_identity(
     identity: Iot23FlowIdentity,
@@ -99,3 +116,84 @@ def load_label_index(
     )
 
     return index
+
+def classify_flow_interval(
+    index: Dict[FlowKey, List[LabelInterval]],
+    key: FlowKey,
+    first_seen_microseconds: int,
+    last_seen_microseconds: int,
+) -> FlowMatchClassification:
+    """
+    根据双向流键和闭时间区间分类标签候选。
+
+    index由调用者拥有；本函数只读取，不修改它。
+    key不含时间，同键的不同生命周期靠时间区间区分。
+    返回的新对象由调用者持有；无文件或内存释放责任。
+    """
+
+    if (
+        isinstance(first_seen_microseconds, bool)
+        or not isinstance(first_seen_microseconds, int)
+        or isinstance(last_seen_microseconds, bool)
+        or not isinstance(last_seen_microseconds, int)
+    ):
+        raise TypeError(
+            "flow interval timestamps must be integers"
+        )
+
+    if (
+        first_seen_microseconds < 0
+        or first_seen_microseconds > last_seen_microseconds
+        or last_seen_microseconds > MAX_TIMESTAMP_MICROSECONDS
+    ):
+        raise ValueError("invalid flow interval")
+
+    # 闭区间相交：两端恰好相等也算候选；
+    # 这让零时长Zeek标签仍可与同一时刻的C流匹配。
+    candidates = [
+        candidate
+        for candidate in index.get(key, ())
+        if (
+            first_seen_microseconds <= candidate.end_microseconds
+            and candidate.start_microseconds <= last_seen_microseconds
+        )
+    ]
+
+    candidate_count = len(candidates)
+
+    if candidate_count == 0:
+        return FlowMatchClassification(
+            status=MATCH_STATUS_UNMATCHED,
+            candidate_count=0,
+            label_group=None,
+        )
+
+    groups = {
+        candidate.label_group
+        for candidate in candidates
+    }
+
+    if not groups.issubset(SUPPORTED_LABEL_GROUPS):
+        raise ValueError(
+            "match candidates contain unsupported labels"
+        )
+
+    if candidate_count == 1:
+        return FlowMatchClassification(
+            status=MATCH_STATUS_UNIQUE,
+            candidate_count=1,
+            label_group=candidates[0].label_group,
+        )
+
+    if len(groups) == 1:
+        return FlowMatchClassification(
+            status=MATCH_STATUS_AMBIGUOUS_SAME_LABEL,
+            candidate_count=candidate_count,
+            label_group=next(iter(groups)),
+        )
+
+    return FlowMatchClassification(
+        status=MATCH_STATUS_AMBIGUOUS_CONFLICTING_LABELS,
+        candidate_count=candidate_count,
+        label_group=None,
+    )
