@@ -2,7 +2,10 @@
 
 """审计C程序导出的流CSV与IoT-23标签索引的匹配质量。"""
 
+import argparse
 import csv
+import sys
+from pathlib import Path
 from typing import Dict, List, TextIO
 
 from audit_ctu13_flow_matches import (
@@ -16,6 +19,7 @@ from iot23_label_index import (
     FlowKey,
     LabelInterval,
     classify_flow_interval,
+    load_label_index
 )
 
 
@@ -81,3 +85,64 @@ def audit_flow_csv(
         raise ValueError("flow CSV contains no records")
 
     return counts
+
+def main() -> int:
+    """加载标签、打开C流CSV，并打印稳定的审计摘要。"""
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Audit IoT-23 labels against "
+            "Netflow Analyzer flow CSV."
+        )
+    )
+    parser.add_argument(
+        "label_file",
+        type=Path,
+        help="IoT-23 Zeek labeled connection log.",
+    )
+    parser.add_argument(
+        "flow_csv",
+        type=Path,
+        help="Flow CSV produced by netflow-analyzer --csv.",
+    )
+    arguments = parser.parse_args()
+
+    try:
+        index = load_label_index(arguments.label_file)
+
+        with arguments.flow_csv.open(
+            "r",
+            encoding="utf-8",
+            newline="",
+        ) as input_stream:
+            counts = audit_flow_csv(index, input_stream)
+
+    except (
+        OSError,
+        UnicodeError,
+        csv.Error,
+        ValueError,
+    ) as error:
+        print(
+            f"IoT-23 flow match audit failed: {error}",
+            file=sys.stderr,
+        )
+        return 1
+
+    # 只在完整读取成功后输出，避免失败时留下半份摘要。
+    for field in (
+        "flows_total",
+        "matches_unique",
+        "matches_unique_malicious",
+        "matches_unique_benign",
+        "matches_unmatched",
+        "matches_ambiguous_same_label",
+        "matches_ambiguous_conflicting_labels",
+    ):
+        print(f"{field}={counts[field]}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
