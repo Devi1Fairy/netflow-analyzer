@@ -689,6 +689,25 @@ if(BUILD_TESTING)
             TIMEOUT 10
     )
 
+    # 使用合成Zeek标签和C流CSV验证IoT-23审计CLI。
+    # 不依赖仓库外的公开数据集。
+    add_test(
+        NAME iot23_flow_match_audit_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_iot23_flow_match_audit.py
+            --script
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/audit_iot23_flow_matches.py
+            --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}
+    )
+
+    set_tests_properties(
+        iot23_flow_match_audit_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
     # 创建CSV流记录导出单元测试程序。
     add_executable(
         flow_export_tests
