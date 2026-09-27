@@ -45,10 +45,10 @@ def main() -> int:
     if not arguments.work_dir.is_dir():
         raise RuntimeError("test work directory does not exist")
 
-    # 当前C流CSV格式定义暂位于CTU-13审计模块；
-    # 本测试关注CLI行为，后续再抽取数据集无关的解析模块。
+    # C流CSV格式由数据集无关的flow_csv_identity模块定义；
+    # 本测试只验证CLI行为，不依赖CTU-13审计器。
     sys.path.insert(0, str(arguments.script.parent.resolve()))
-    from audit_ctu13_flow_matches import EXPECTED_FLOW_COLUMNS
+    from flow_csv_identity  import EXPECTED_FLOW_COLUMNS
 
     with tempfile.TemporaryDirectory(
         prefix="iot23-flow-match-",

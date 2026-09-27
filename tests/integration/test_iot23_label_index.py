@@ -206,7 +206,7 @@ def main() -> int:
     else:
         raise RuntimeError("reversed flow interval was accepted")
 
-    from audit_ctu13_flow_matches import EXPECTED_FLOW_COLUMNS
+    from flow_csv_identity  import EXPECTED_FLOW_COLUMNS
     from audit_iot23_flow_matches import audit_flow_csv
 
     audit_index = build_label_index(
