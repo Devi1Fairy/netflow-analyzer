@@ -227,6 +227,10 @@ def main() -> int:
         raise RuntimeError("reversed flow interval was accepted")
 
     from flow_csv_identity  import EXPECTED_FLOW_COLUMNS
+    from flow_feature_alignment import (
+        EXPECTED_FEATURE_COLUMNS,
+        validate_flow_feature_alignment,
+    )
     from audit_iot23_flow_matches import (
             audit_flow_csv,
             audit_flow_csv_with_unreused_rows,
@@ -560,6 +564,96 @@ def main() -> int:
     if bad_output.getvalue():
         raise RuntimeError(
             "malformed flow CSV produced review output"
+        )
+
+    feature_stream = StringIO()
+    feature_writer = csv.writer(
+        feature_stream,
+        lineterminator="\n",
+    )
+    feature_writer.writerow(EXPECTED_FEATURE_COLUMNS)
+
+    for flow in csv.DictReader(
+        StringIO(flow_stream.getvalue())
+    ):
+        protocol = int(flow["protocol"])
+
+        first_seen = (
+            int(flow["first_seen_seconds"]) * 1_000_000
+            + int(flow["first_seen_microseconds"])
+        )
+        last_seen = (
+            int(flow["last_seen_seconds"]) * 1_000_000
+            + int(flow["last_seen_microseconds"])
+        )
+
+        feature_writer.writerow(
+            (
+                "flow_features_v1",
+                protocol,
+                last_seen - first_seen,
+                1,       # 总包数
+                60,      # 总捕获字节
+                60,      # 总线路字节
+                60,      # 平均捕获包长
+                60,      # 平均线路包长
+                1,       # 包数方向不平衡度
+                1,       # 字节方向不平衡度
+                int(protocol == 6),
+                flow["tcp_state"],
+                int(protocol == 6),
+            )
+        )
+
+    checked = validate_flow_feature_alignment(
+        StringIO(flow_stream.getvalue()),
+        StringIO(feature_stream.getvalue()),
+    )
+
+    if checked != 6:
+        raise RuntimeError(
+            f"expected six aligned rows, got {checked}"
+        )
+
+    # 数据行数相同，但把唯一一条UDP特征伪装成TCP：必须拒绝。
+    wrong_rows = list(
+        csv.reader(StringIO(feature_stream.getvalue()))
+    )
+    wrong_rows[5][1] = "6"
+
+    wrong_feature_stream = StringIO()
+    csv.writer(
+        wrong_feature_stream,
+        lineterminator="\n",
+    ).writerows(wrong_rows)
+
+    try:
+        validate_flow_feature_alignment(
+            StringIO(flow_stream.getvalue()),
+            StringIO(wrong_feature_stream.getvalue()),
+        )
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError(
+            "misaligned feature protocol was accepted"
+        )
+
+    # 少一条特征数据行：不能让zip悄悄忽略多出的流。
+    short_feature_text = "".join(
+        feature_stream.getvalue().splitlines(keepends=True)[:-1]
+    )
+
+    try:
+        validate_flow_feature_alignment(
+            StringIO(flow_stream.getvalue()),
+            StringIO(short_feature_text),
+        )
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError(
+            "short feature CSV was accepted"
         )
 
     if not arguments.work_dir.is_dir():

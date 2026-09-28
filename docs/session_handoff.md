@@ -23,7 +23,7 @@ cmake -E chdir build ctest --output-on-failure
 
 - 当前功能分支：`feature/flow-features`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前分支在既有非root systemd、TCP状态和流表生命周期功能之上，已提交流特征模型、版本化特征CSV、CLI参数、文件生命周期、数据集标签审计、身份规范化、稳定样本ID和元数据sidecar；本次文档更新前最新已推送提交为`f0f99ba feat(ml): write IoT-23 review CSV records`，批量审查写出代码及本次文档仍未提交，实际接手时须以`git log`和`git status`为准；
+- 当前分支在既有非root systemd、TCP状态和流表生命周期功能之上，已提交流特征模型、版本化特征CSV、CLI参数、文件生命周期、数据集标签审计、身份规范化、稳定样本ID和元数据sidecar；本次文档更新前最新已推送提交为`9e0cfdb feat(ml): batch-write IoT-23 review CSV`，特征对齐校验代码及本次文档仍未提交，实际接手时须以`git log`和`git status`为准；
 - TCP状态机、流记录接入、终端显示、CSV字段和确定性三次握手验收均已提交；接手时仍须先检查工作区，不能覆盖用户后续未提交改动；
 - 离线CLI已新增可选`--flow-idle-timeout SECONDS`，默认继续整文件聚合；确定性6包ICMP验收已证明30秒阈值会导出2包旧流，并把同键后续4包建立为新流。普通流CSV和特征CSV均精确产生两条顺序一致的记录；
 - 当前正式版本宏为`0.2.0`；
@@ -51,6 +51,7 @@ cmake -E chdir build ctest --output-on-failure
 - `validate_iot23_review_record`新增写出前结构校验：先用`build_sample_metadata`重新验证不可变身份和四态匹配信息，再验证三态审查值与`unique`／非唯一状态的组合；审查常量已移至`iot23_flow_review.py`，审计模块只导入。合成测试覆盖三种合法组合和三种非法组合，x86_64 Debug 28项CTest通过。它既不写数据行，也不负责从标签索引证明复用真假；真实审查值仍须来自同次完整审计。
 - `write_iot23_review_csv_record`现先执行上述验证，再向借用的文本流写出一条16列记录；IPv4由整数转为点分地址，缺失标签为CSV空字段。测试核对两条完整数据行，并证明非法组合或损坏的元数据不会改变原有输出；本机x86_64 Debug完整28项CTest通过。它不从Zeek索引推导审查状态，也不保证底层写入异常时文件级原子性；文件级批量生成、同次特征文件绑定和失败清理仍待实现。
 - `write_iot23_review_csv`现对可定位的C流CSV做两遍处理：先完整审计并取得未复用唯一行号，再重读同一输入，按流行号生成身份、三态审查结果及16列CSV；返回值沿用原审计摘要。六行合成测试核对表头、逐行状态和摘要，缺字段行在第一遍失败且不写输出；本机x86_64 Debug 28项CTest通过。输入与索引在两遍之间必须不变，行数一致检查不能证明相同行数的内容未变；尚无CLI落盘、特征CSV配对验证或I/O失败的文件级清理。
+- `validate_flow_feature_alignment`现可只读核对普通流CSV和特征CSV的完整表头、版本、数据行数及逐行协议、时长、包／字节合计和TCP阶段；合成六行匹配、同数错位及缺行测试和本机x86_64 Debug 28项CTest通过。该函数只借用输入流，不证明两文件必由同一运行生成，也不验证均值等全部特征字段；下一步将它作为落盘CLI的前置检查，仍须保证成对保存源文件。
 - 实时`--count`已改为可选上限；本机`lo`在省略上限后能于静默期正常报告，随后处理4个`complete` ICMP包，并在`SIGTERM`后完成统计、流汇总与清理。
 - 主程序已在stdout首次I/O前显式启用行缓冲；严格普通文件重定向测试在进程结束前读到5秒周期报告，避免systemd journal日志延迟到缓冲区填满或服务退出。
 - 提交`740d5ab`的官方SDK ARM64部署包已在LubanCat-2N完成首次非root systemd手工启停：进程使用专用用户，能力仅为`CAP_NET_RAW`，`NoNewPrivs=1`；真实4包ICMP得到1条双向流且两个drop字段为0，SIGTERM正常收尾。
@@ -1507,4 +1508,4 @@ IoT-23逐行审查函数已把“逐流唯一但标签被另一条C流复用”�
 
 独立IoT-23审查文件现固定为`iot23_flow_review_v1`的16列格式：与现有通用元数据一样保留特征行号、稳定样本ID和可追溯身份，但将末列改为三态`review_status`，不输出可能误导IoT-23复用流的`is_trainable`。表头阶段先固定了版本和列顺序；当前单条记录序列化和借用流批量写出也已完成，同次特征文件绑定和完整文件失败处理仍未实现。x86_64 Debug 28项CTest通过。
 
-审查模块现有`validate_iot23_review_record(metadata, review_status)`，在写行之前重新调用通用元数据构造器校验身份、候选数和标签组，再检查`unique`不能对应`not_unique`、非唯一不能对应任一唯一审查状态。函数只借用不可变输入，返回新的已验证元数据；两种唯一审查状态之间的真假仍由完整标签审计与未复用行号集合决定。`write_iot23_review_csv_record`复用这层校验，然后写出完整的16列CSV数据行。新增`write_iot23_review_csv`先审计完整输入，再回到表头逐行分类并调用单行接口；六行测试得到预期的三态序列和原摘要，坏CSV在第一遍失败不留文本输出。本机x86_64 Debug 28项CTest通过。下一步应在文件级入口校验与同次特征CSV的对应关系，采用独占创建和失败清理后才写真实sidecar；当前借用流接口不保证文件原子性，更没有形成训练集。
+审查模块现有`validate_iot23_review_record(metadata, review_status)`，在写行之前重新调用通用元数据构造器校验身份、候选数和标签组，再检查`unique`不能对应`not_unique`、非唯一不能对应任一唯一审查状态。函数只借用不可变输入，返回新的已验证元数据；两种唯一审查状态之间的真假仍由完整标签审计与未复用行号集合决定。`write_iot23_review_csv_record`复用这层校验，然后写出完整的16列CSV数据行。新增`write_iot23_review_csv`先审计完整输入，再回到表头逐行分类并调用单行接口；六行测试得到预期的三态序列和原摘要，坏CSV在第一遍失败不留文本输出。独立`validate_flow_feature_alignment`进一步拒绝两份CSV表头、版本、行数及核心统计字段不一致。本机x86_64 Debug 28项CTest通过。下一步应在文件级入口调用该预检，采用独占创建和失败清理后才写真实sidecar；当前借用流接口不保证文件原子性，也没有形成训练集。
