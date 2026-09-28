@@ -52,6 +52,10 @@ def main() -> int:
     # C流CSV格式由数据集无关的flow_csv_identity模块定义；
     # 本测试只验证CLI行为，不依赖CTU-13审计器。
     sys.path.insert(0, str(arguments.script.parent.resolve()))
+    from audit_iot23_flow_matches import (
+        audit_candidate_boundaries_with_exact_rows,
+    )
+    from iot23_label_index import load_label_index
     from flow_csv_identity  import EXPECTED_FLOW_COLUMNS
     from flow_feature_alignment import EXPECTED_FEATURE_COLUMNS
 
@@ -140,6 +144,53 @@ def main() -> int:
             raise RuntimeError(
                 f"unexpected boundary CLI result: {boundary_result!r}"
             )
+
+        index = load_label_index(label_file)
+
+        # 原有C流只落在Zeek标签内部：是唯一候选，但不是exact。
+        with good_flow_csv.open(
+            "r", encoding="utf-8", newline=""
+        ) as input_stream:
+            counts, boundaries, exact_rows = (
+                audit_candidate_boundaries_with_exact_rows(
+                    index, input_stream
+                )
+            )
+
+        if (
+            counts["matches_unique_unreused"] != 1
+            or boundaries["flow_inside_label"] != 1
+            or exact_rows != frozenset()
+        ):
+            raise RuntimeError("non-exact candidate was selected")
+
+        # 标签时间为1526756261.000000～1526756262.000000；
+        # 让C流首末时间完全一致，数据行1才应进入集合。
+        exact_flow_csv = work_dir / "exact-flows.csv"
+        with exact_flow_csv.open(
+            "w", encoding="utf-8", newline=""
+        ) as output_stream:
+            writer = csv.writer(output_stream, lineterminator="\n")
+            writer.writerow(EXPECTED_FLOW_COLUMNS)
+            writer.writerow(
+                flow_row[:-2] + (1526756262, 0)
+            )
+
+        with exact_flow_csv.open(
+            "r", encoding="utf-8", newline=""
+        ) as input_stream:
+            counts, boundaries, exact_rows = (
+                audit_candidate_boundaries_with_exact_rows(
+                    index, input_stream
+                )
+            )
+
+        if (
+            counts["matches_unique_unreused"] != 1
+            or boundaries["exact"] != 1
+            or exact_rows != frozenset({1})
+        ):
+            raise RuntimeError("exact candidate row was not selected")
 
         if (
             success.returncode != 0

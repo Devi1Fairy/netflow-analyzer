@@ -325,16 +325,16 @@ def audit_flow_csv(
     )
     return counts
 
-def audit_candidate_boundaries(
+def audit_candidate_boundaries_with_exact_rows(
     index: Dict[FlowKey, List[LabelInterval]],
     input_stream: TextIO,
-) -> Tuple[Dict[str, int], Dict[str, int]]:
+) -> Tuple[Dict[str, int], Dict[str, int], FrozenSet[int]]:
     """
     只审计“逐流唯一且标签未被其他C流复用”的时间边界。
 
     第一遍确定完整文件中的未复用行号；第二遍按相同行号
     找回唯一Zeek候选。借用输入流和索引，不关闭或修改它们。
-    返回原有审计摘要及五类边界计数，不决定训练资格。
+    返回审计摘要、五类边界计数，以及从 1 开始的 exact 数据行号集合，不决定训练资格。
     """
 
     if not input_stream.seekable():
@@ -355,6 +355,11 @@ def audit_candidate_boundaries(
     boundary_counts = {
         relation: 0 for relation in BOUNDARY_RELATIONS
     }
+
+    # 行号与流CSV、特征CSV的数据行号一致；表头不计入。
+    # 仅记录未复用唯一候选中边界完全一致的行。
+    exact_rows = set()
+
     row_number = 0
 
     for row in reader:
@@ -403,6 +408,9 @@ def audit_candidate_boundaries(
 
         boundary_counts[relation] += 1
 
+        if relation == "exact":
+            exact_rows.add(row_number)
+
     if (
         row_number != counts["flows_total"]
         or sum(boundary_counts.values())
@@ -412,6 +420,24 @@ def audit_candidate_boundaries(
             "flow CSV changed between boundary audit passes"
         )
 
+    if len(exact_rows) != boundary_counts["exact"]:
+        raise ValueError("exact boundary row count differs")
+
+    return counts, boundary_counts, frozenset(exact_rows)
+
+
+def audit_candidate_boundaries(
+    index: Dict[FlowKey, List[LabelInterval]],
+    input_stream: TextIO,
+) -> Tuple[Dict[str, int], Dict[str, int]]:
+    """保持原有CLI使用的双返回值接口。"""
+
+    counts, boundary_counts, _ = (
+        audit_candidate_boundaries_with_exact_rows(
+            index,
+            input_stream,
+        )
+    )
     return counts, boundary_counts
 
 def main() -> int:
