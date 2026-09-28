@@ -708,6 +708,24 @@ if(BUILD_TESTING)
             TIMEOUT 10
     )
 
+    # 用合成抓包来源验证训练/验证隔离，不依赖外部数据集。
+    add_test(
+        NAME ml_split_manifest_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_ml_split_manifest.py
+            --script
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate_ml_split_manifest.py
+            --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}
+    )
+
+    set_tests_properties(
+        ml_split_manifest_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
     # 创建CSV流记录导出单元测试程序。
     add_executable(
         flow_export_tests

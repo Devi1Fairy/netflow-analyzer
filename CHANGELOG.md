@@ -6,6 +6,7 @@
 
 ### 新增
 
+- 新增机器学习切分清单校验器，按原始PCAP来源阻止重叠前缀跨训练、验证和测试集合；合成回归后x86_64 Debug共29项CTest通过，真实独立验证集尚未建立。
 - 采集模块新增`capture_break_loop()`，在不关闭句柄的情况下请求libpcap中断阻塞读取；
 - 应用上下文使用`volatile sig_atomic_t`保存停止请求，并在读取前后检查停止状态；
 - 实时模式通过`sigaction()`接管`SIGINT`和`SIGTERM`，不启用`SA_RESTART`，退出前恢复原信号处理方式；
