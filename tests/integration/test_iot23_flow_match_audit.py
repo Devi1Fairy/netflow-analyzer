@@ -4,6 +4,7 @@
 
 import argparse
 import csv
+import io
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,144 @@ def run_cli(
     )
 
 
+def make_csv_stream(columns, rows):
+    """构造从表头开始的内存CSV，避免测试依赖外部数据文件。"""
+
+    stream = io.StringIO()
+    writer = csv.writer(stream, lineterminator="\n")
+    writer.writerow(columns)
+    writer.writerows(rows)
+    stream.seek(0)
+    return stream
+
+
+def run_selection_contract_tests(
+    collect_candidates,
+    feature_columns,
+    review_columns,
+):
+    """验证特征与审查记录的逐行连接及失败时拒绝行为。"""
+
+    capture_id = "capture-a"
+    feature_rows = (
+        (
+            "flow_features_v1", "6", "100", "2", "120", "120",
+            "60", "60", "0", "0", "1", "established", "1",
+        ),
+        (
+            "flow_features_v1", "17", "200", "1", "60", "60",
+            "60", "60", "0", "0", "0", "not-applicable", "0",
+        ),
+    )
+    review_rows = (
+        (
+            "iot23_flow_review_v1", "flow_features_v1", "1",
+            "flow_sample_id_v1:" + "a" * 64, capture_id, "6",
+            "192.0.2.1", "1234", "192.0.2.2", "80",
+            "1000", "1100", "unique", "1", "malicious",
+            "unique_unreused_candidate",
+        ),
+        (
+            "iot23_flow_review_v1", "flow_features_v1", "2",
+            "flow_sample_id_v1:" + "b" * 64, capture_id, "17",
+            "198.51.100.1", "40000", "198.51.100.2", "53",
+            "2000", "2200", "unique", "1", "benign",
+            "unique_unreused_candidate",
+        ),
+    )
+
+    def select(features, reviews, exact_rows):
+        """每次用新的借用流运行，避免读指针位置影响下一个用例。"""
+
+        with make_csv_stream(feature_columns, features) as feature_stream:
+            with make_csv_stream(review_columns, reviews) as review_stream:
+                selected = collect_candidates(
+                    feature_stream,
+                    review_stream,
+                    capture_id,
+                    exact_rows,
+                )
+                if feature_stream.closed or review_stream.closed:
+                    raise RuntimeError("selector closed borrowed CSV streams")
+                return selected
+
+    def require_value_error(features, reviews, exact_rows, message):
+        """错误输入必须抛错，而不是返回看似有效的部分样本。"""
+
+        try:
+            select(features, reviews, exact_rows)
+        except ValueError as error:
+            if message not in str(error):
+                raise RuntimeError(
+                    f"unexpected selection error: {error}"
+                ) from error
+        else:
+            raise RuntimeError(
+                f"selector accepted invalid input: {message}"
+            )
+
+    # 两行都是唯一未复用候选，但只有第1行的边界属于exact_rows。
+    selected = select(feature_rows, review_rows, frozenset({1}))
+    if (
+        not isinstance(selected, tuple)
+        or len(selected) != 1
+        or selected[0].capture_id != capture_id
+        or selected[0].feature_row_number != 1
+        or selected[0].sample_id != review_rows[0][3]
+        or selected[0].label_group != "malicious"
+        or selected[0].feature_values != feature_rows[0][1:]
+    ):
+        raise RuntimeError(f"unexpected exact-row selection: {selected!r}")
+
+    if select(feature_rows, review_rows, frozenset()) != ():
+        raise RuntimeError("non-exact candidates were selected")
+
+    wrong_protocol = list(feature_rows[0])
+    wrong_protocol[1] = "17"
+    require_value_error(
+        (tuple(wrong_protocol), feature_rows[1]),
+        review_rows,
+        frozenset({1}),
+        "feature and review differ at row 1",
+    )
+
+    # zip_longest必须发现review缺少末行；相同长度的错位也必须发现。
+    require_value_error(
+        feature_rows,
+        review_rows[:1],
+        frozenset({1}),
+        "feature and review row counts differ at 2",
+    )
+
+    wrong_row_number = list(review_rows[1])
+    wrong_row_number[2] = "3"
+    require_value_error(
+        feature_rows,
+        (review_rows[0], tuple(wrong_row_number)),
+        frozenset({1}),
+        "review identity differs at row 2",
+    )
+
+    # 即使某行号被错误加入exact集合，非唯一审查状态也不能通过。
+    not_unique = list(review_rows[1])
+    not_unique[12] = "ambiguous_same_label"
+    not_unique[13] = "2"
+    not_unique[15] = "not_unique"
+    require_value_error(
+        feature_rows,
+        (review_rows[0], tuple(not_unique)),
+        frozenset({1, 2}),
+        "exact row is not an unreused candidate: 2",
+    )
+
+    require_value_error(
+        feature_rows,
+        review_rows,
+        frozenset({1, 3}),
+        "some exact row numbers were not found",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--script", required=True, type=Path)
@@ -58,6 +197,14 @@ def main() -> int:
     from iot23_label_index import load_label_index
     from flow_csv_identity  import EXPECTED_FLOW_COLUMNS
     from flow_feature_alignment import EXPECTED_FEATURE_COLUMNS
+    from iot23_flow_review import IOT23_REVIEW_CSV_COLUMNS
+    from iot23_sample_selection import collect_exact_reviewed_candidates
+
+    run_selection_contract_tests(
+        collect_exact_reviewed_candidates,
+        EXPECTED_FEATURE_COLUMNS,
+        IOT23_REVIEW_CSV_COLUMNS,
+    )
 
     with tempfile.TemporaryDirectory(
         prefix="iot23-flow-match-",

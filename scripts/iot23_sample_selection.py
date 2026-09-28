@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+
+"""按同一数据行号连接特征与IoT-23审查记录；不训练模型。"""
+
+import csv
+from dataclasses import dataclass
+from itertools import zip_longest
+from typing import FrozenSet, TextIO, Tuple
+
+from flow_csv_identity import validate_row_shape
+from flow_feature_alignment import EXPECTED_FEATURE_COLUMNS
+from flow_sample_metadata import (
+    CAPTURE_ID_PATTERN,
+    SAMPLE_ID_SCHEMA_VERSION,
+    SUPPORTED_FEATURE_SCHEMA_VERSION,
+    SUPPORTED_LABEL_GROUPS,
+)
+from iot23_flow_review import (
+    IOT23_REVIEW_CSV_COLUMNS,
+    IOT23_REVIEW_SCHEMA_VERSION,
+    REVIEW_NOT_UNIQUE,
+    REVIEW_UNIQUE_REUSED,
+    REVIEW_UNIQUE_UNREUSED_CANDIDATE,
+)
+
+
+@dataclass(frozen=True)
+class ExactReviewedCandidate:
+    """保留来源与标签，但模型特征只放在feature_values中。"""
+
+    capture_id: str
+    feature_row_number: int
+    sample_id: str
+    label_group: str
+    feature_values: Tuple[str, ...]
+
+
+def collect_exact_reviewed_candidates(
+    feature_stream: TextIO,
+    review_stream: TextIO,
+    capture_id: str,
+    exact_rows: FrozenSet[int],
+) -> Tuple[ExactReviewedCandidate, ...]:
+    """
+    读取调用者借用的两个文本流，返回通过检查的候选元组。
+
+    exact_rows必须来自同一份流CSV的边界审计。函数不关闭输入流，
+    不修改输入文件；任一行有问题就抛出ValueError，不返回部分结果。
+    """
+
+    if feature_stream is review_stream:
+        raise ValueError("feature and review streams must differ")
+
+    if CAPTURE_ID_PATTERN.fullmatch(capture_id) is None:
+        raise ValueError("invalid capture_id")
+
+    if (
+        not isinstance(exact_rows, frozenset)
+        or any(
+            isinstance(number, bool)
+            or not isinstance(number, int)
+            or number < 1
+            for number in exact_rows
+        )
+    ):
+        raise ValueError("invalid exact row set")
+
+    feature_reader = csv.DictReader(feature_stream)
+    review_reader = csv.DictReader(review_stream)
+
+    if tuple(feature_reader.fieldnames or ()) != EXPECTED_FEATURE_COLUMNS:
+        raise ValueError("unexpected feature CSV columns")
+
+    if tuple(review_reader.fieldnames or ()) != IOT23_REVIEW_CSV_COLUMNS:
+        raise ValueError("unexpected review CSV columns")
+
+    selected = []
+    seen_sample_ids = set()
+    row_count = 0
+    sample_id_prefix = f"{SAMPLE_ID_SCHEMA_VERSION}:"
+
+    # zip_longest能发现任意一侧提前结束；zip会悄悄丢弃较长文件的尾部。
+    for row_count, (feature, review) in enumerate(
+        zip_longest(feature_reader, review_reader),
+        start=1,
+    ):
+        if feature is None or review is None:
+            raise ValueError(
+                f"feature and review row counts differ at {row_count}"
+            )
+
+        validate_row_shape(
+            feature,
+            EXPECTED_FEATURE_COLUMNS,
+            "feature CSV",
+            feature_reader.line_num,
+        )
+        validate_row_shape(
+            review,
+            IOT23_REVIEW_CSV_COLUMNS,
+            "review CSV",
+            review_reader.line_num,
+        )
+
+        if (
+            feature["schema_version"]
+            != SUPPORTED_FEATURE_SCHEMA_VERSION
+            or review["review_schema_version"]
+            != IOT23_REVIEW_SCHEMA_VERSION
+            or review["feature_schema_version"]
+            != SUPPORTED_FEATURE_SCHEMA_VERSION
+        ):
+            raise ValueError(f"unsupported schema at row {row_count}")
+
+        if (
+            review["feature_row_number"] != str(row_count)
+            or review["capture_id"] != capture_id
+        ):
+            raise ValueError(f"review identity differs at row {row_count}")
+
+        sample_id = review["sample_id"]
+        digest = sample_id[len(sample_id_prefix):]
+        if (
+            not sample_id.startswith(sample_id_prefix)
+            or len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest)
+            or sample_id in seen_sample_ids
+        ):
+            raise ValueError(f"invalid sample_id at row {row_count}")
+        seen_sample_ids.add(sample_id)
+
+        first_seen = int(review["first_seen_unix_microseconds"])
+        last_seen = int(review["last_seen_unix_microseconds"])
+        duration = int(feature["duration_microseconds"])
+
+        if (
+            first_seen < 0
+            or last_seen < first_seen
+            or duration != last_seen - first_seen
+            or feature["protocol"] != review["protocol"]
+        ):
+            raise ValueError(f"feature and review differ at row {row_count}")
+
+        status = review["review_status"]
+        match_status = review["match_status"]
+
+        if status in (
+            REVIEW_UNIQUE_UNREUSED_CANDIDATE,
+            REVIEW_UNIQUE_REUSED,
+        ):
+            if (
+                match_status != "unique"
+                or review["candidate_count"] != "1"
+                or review["label_group"] not in SUPPORTED_LABEL_GROUPS
+            ):
+                raise ValueError(f"invalid unique review at row {row_count}")
+        elif status == REVIEW_NOT_UNIQUE:
+            if match_status == "unique":
+                raise ValueError(f"invalid non-unique review at row {row_count}")
+        else:
+            raise ValueError(f"unknown review status at row {row_count}")
+
+        if row_count in exact_rows:
+            if status != REVIEW_UNIQUE_UNREUSED_CANDIDATE:
+                raise ValueError(
+                    f"exact row is not an unreused candidate: {row_count}"
+                )
+
+            selected.append(
+                ExactReviewedCandidate(
+                    capture_id=capture_id,
+                    feature_row_number=row_count,
+                    sample_id=sample_id,
+                    label_group=review["label_group"],
+                    # 版本字段不是模型数值特征；身份字段也不混进来。
+                    feature_values=tuple(
+                        feature[column]
+                        for column in EXPECTED_FEATURE_COLUMNS[1:]
+                    ),
+                )
+            )
+
+    if row_count == 0:
+        raise ValueError("feature and review CSV contain no records")
+
+    # 同时发现exact_rows含有超出文件末尾的行号。
+    if len(selected) != len(exact_rows):
+        raise ValueError("some exact row numbers were not found")
+
+    return tuple(selected)
