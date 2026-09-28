@@ -34,7 +34,9 @@ def main() -> int:
         build_label_index,
         flow_key_from_identity,
         load_label_index,
-        classify_flow_interval
+        classify_flow_interval,
+        LabelInterval,
+        classify_interval_boundary
     )
     from iot23_flow_review import (
         IOT23_REVIEW_SCHEMA_VERSION,
@@ -218,6 +220,43 @@ def main() -> int:
                 f"unexpected match classification: "
                 f"{actual!r} != {expected!r}"
             )
+
+    boundary_cases = (
+        (100, 110, 100, 110, "exact"),
+        (102, 108, 100, 110, "flow_inside_label"),
+        (95, 115, 100, 110, "label_inside_flow"),
+        (95, 105, 100, 110, "partial_overlap"),
+        (110, 120, 100, 110, "partial_overlap"),
+        (111, 120, 100, 110, "disjoint"),
+        (200, 200, 200, 200, "exact"),
+    )
+
+    for flow_start, flow_end, label_start, label_end, expected in boundary_cases:
+        label = LabelInterval(
+            start_microseconds=label_start,
+            end_microseconds=label_end,
+            label_group="benign",
+        )
+        actual = classify_interval_boundary(
+            flow_start,
+            flow_end,
+            label,
+        )
+        if actual != expected:
+            raise RuntimeError(
+                f"unexpected boundary relation: {actual!r} != {expected!r}"
+            )
+
+    try:
+        classify_interval_boundary(
+            111,
+            100,
+            LabelInterval(100, 110, "benign"),
+        )
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError("reversed interval was accepted")
 
     try:
         classify_flow_interval(index, tcp_key, 201, 200)

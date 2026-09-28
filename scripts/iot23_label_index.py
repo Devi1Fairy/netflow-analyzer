@@ -44,6 +44,65 @@ class FlowMatchClassification:
     label_group: Optional[str]
     unique_candidate_index: Optional[int]
 
+def classify_interval_boundary(
+    first_seen_microseconds: int,
+    last_seen_microseconds: int,
+    label: LabelInterval,
+) -> str:
+    """
+    比较一条C流与一条Zeek标签的时间边界。
+
+    返回 exact、flow_inside_label、label_inside_flow、
+    partial_overlap 或 disjoint。只描述时间关系，
+    不判断标签真假，也不修改输入。
+    """
+
+    if not isinstance(label, LabelInterval):
+        raise TypeError("label must be LabelInterval")
+
+    intervals = (
+        (first_seen_microseconds, last_seen_microseconds),
+        (label.start_microseconds, label.end_microseconds),
+    )
+
+    for start, end in intervals:
+        if (
+            isinstance(start, bool)
+            or not isinstance(start, int)
+            or isinstance(end, bool)
+            or not isinstance(end, int)
+        ):
+            raise TypeError("interval timestamps must be integers")
+
+        if start < 0 or start > end or end > MAX_TIMESTAMP_MICROSECONDS:
+            raise ValueError("invalid interval")
+
+    label_start = label.start_microseconds
+    label_end = label.end_microseconds
+
+    if last_seen_microseconds < label_start or label_end < first_seen_microseconds:
+        return "disjoint"
+
+    if (
+        first_seen_microseconds == label_start
+        and last_seen_microseconds == label_end
+    ):
+        return "exact"
+
+    if (
+        label_start <= first_seen_microseconds
+        and last_seen_microseconds <= label_end
+    ):
+        return "flow_inside_label"
+
+    if (
+        first_seen_microseconds <= label_start
+        and label_end <= last_seen_microseconds
+    ):
+        return "label_inside_flow"
+
+    return "partial_overlap"
+
 def flow_key_from_identity(
     identity: Iot23FlowIdentity,
 ) -> FlowKey:
