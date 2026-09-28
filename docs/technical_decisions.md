@@ -1113,6 +1113,7 @@ FNV-1a不是加密算法，也不抵抗恶意碰撞。如果程序以后直接�
 - 用现有`iot23-s3-1-first500-idle3s`作为唯一训练来源手工喂入清单时，命令返回1并报告`train and validation each need a source capture`；这符合单来源不足以形成独立验证集的预期，没有伪造第二份真实抓包。
 - 新取得的Scenario 8-1是另一份原始抓包，且标签同时包含正常与恶意组；完整C端处理、零容量拒绝、成对CSV逐行对齐、只读标签匹配摘要及逐行审查sidecar现已核对。两个真实来源后来已接入切分清单；后续逐行筛选仍须排除`not_unique`、`unique_reused`及非精确边界，不能仅凭独立文件、两类标签或8187条时间精确候选就宣布模型验证集可用。
 - 仓库外`iot23-v2/splits/source-split-v1.csv`现声明`iot23-s3-1-first500-idle3s`属于来源`iot23-s3-1-original`、集合`train`，`iot23-s8-1-full-idle3s`属于另一来源`iot23-s8-1-original`、集合`validation`。真实文件经`validate_ml_split_manifest.py`校验得到`captures_total=2`、`source_groups=2`、`train=1`、`validation=1`、`test=0`。这仅证明清单格式及声明的来源分组自洽：Scenario 3-1仍为前500包小样本，其中133条未复用唯一候选里只有132条时间精确；Scenario 8-1的8187条时间精确候选也尚未进入最终样本表。下一步逐行连接特征与审查记录并复核边界；最终测试仍需第三个未参与调参的独立来源。
+- 在原边界摘要接口之外，`audit_candidate_boundaries_with_exact_rows`现额外返回不可变的、从1开始且不计表头的`exact`数据行号集合；原`audit_candidate_boundaries`保留双返回值，CLI输出不变。合成测试区分唯一但边界内含的空集合与唯一且精确的`{1}`。真实只读验收：Scenario 3-1前500包有174条流、133条未复用唯一候选、132个精确行号，已知非精确的该文件第173行不在集合中；Scenario 8-1完整抓包有9295条流、8187条未复用唯一候选、8187个精确行号。行号只在对应的单份CSV内有意义，不同抓包的相同行号无关联；此接口尚未连接特征CSV与审查sidecar，也不判定最终训练资格。
 
 ## 9. 硬件与部署环境
 
