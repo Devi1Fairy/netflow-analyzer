@@ -36,6 +36,11 @@ def main() -> int:
         load_label_index,
         classify_flow_interval
     )
+    from iot23_flow_review import (
+        IOT23_REVIEW_SCHEMA_VERSION,
+        IOT23_REVIEW_CSV_COLUMNS,
+        write_iot23_review_csv_header,
+    )
 
     endpoint_a = FlowEndpoint(
         ipv4_address=0xC0A80205,
@@ -313,6 +318,29 @@ def main() -> int:
         (5, "unique", "unique_unreused_candidate"),
         (6, "unique", "unique_reused"),
     )
+
+    review_output = StringIO()
+    write_iot23_review_csv_header(review_output)
+
+    expected_header = (
+        "review_schema_version,feature_schema_version,"
+        "feature_row_number,sample_id,capture_id,protocol,"
+        "endpoint_a_ip,endpoint_a_port,endpoint_b_ip,"
+        "endpoint_b_port,first_seen_unix_microseconds,"
+        "last_seen_unix_microseconds,match_status,"
+        "candidate_count,label_group,review_status\n"
+    )
+
+    if IOT23_REVIEW_SCHEMA_VERSION != "iot23_flow_review_v1":
+        raise RuntimeError("unexpected review schema version")
+
+    if review_output.getvalue() != expected_header:
+        raise RuntimeError("unexpected IoT-23 review CSV header")
+
+    if IOT23_REVIEW_CSV_COLUMNS != tuple(
+        expected_header.strip().split(",")
+    ):
+        raise RuntimeError("review CSV columns differ from header")
 
     for row_number, match_status, expected in review_cases:
         actual = classify_iot23_row_review(
