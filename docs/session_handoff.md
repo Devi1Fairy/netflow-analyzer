@@ -46,6 +46,7 @@ cmake -E chdir build ctest --output-on-failure
 - IoT-23正式CLI新增按C流统计的`matches_unique_unreused`／`matches_unique_reused`：前500包3秒模式为`133/27`，其中27条是命中5条复用标签的全部C流，而不只是22次额外分配。合成混合用例、CLI单流与复用用例及完整x86_64 Debug 28项CTest通过；当前仍只报告摘要，未执行逐行训练筛选、未输出IoT-23 sidecar，也未修改元数据的`is_trainable`语义。
 - 新增`audit_flow_csv_with_unreused_rows`返回摘要和从1开始的未复用唯一流数据行号集合；旧`audit_flow_csv`保持只返回摘要，CLI输出不变。合成6行得到`{5}`；真实前500包3秒模式返回133个行号，第37数据行（复用长TCP首段）不在其中。初次回归曾因`unique_label_records`赋值缩进在`raise`之后导致两项测试失败，修正后针对性2项及完整28项CTest通过。行号只是普通流CSV内的位置，不能单独证明与特征CSV逐行对应或成为最终训练名单；尚无IoT-23 sidecar。
 - 离线生命周期集成测试现额外按数据行号配对普通流CSV和特征CSV，并用流CSV重算协议、时长、包数、捕获字节和线路字节，覆盖过期流及结束时剩余流；本机x86_64 Debug 28项CTest通过。同一次IoT-23前500包离线运行的默认69对和3秒174对记录也已只读逐行核对，五项均一致。这是当前输出顺序的验证，不允许把不同运行或不同参数生成的CSV按行连接，更不代表133条未复用候选已有可靠监督标签。
+- `classify_iot23_row_review`现以同一份审计的从1开始的流数据行号、原始匹配状态和未复用行号集合返回三类审查结果；六行合成样本中第1、6行均为`unique_reused`、第5行为`unique_unreused_candidate`。真实前500包3秒模式只读复核为`not_unique=14`、`unique_reused=27`、`unique_unreused_candidate=133`，合计174；本机完整28项CTest通过。该纯函数不改`FlowSampleMetadata.is_trainable`或CSV模式，不写sidecar；候选仍须后续标签边界和独立样本验证。
 - 实时`--count`已改为可选上限；本机`lo`在省略上限后能于静默期正常报告，随后处理4个`complete` ICMP包，并在`SIGTERM`后完成统计、流汇总与清理。
 - 主程序已在stdout首次I/O前显式启用行缓冲；严格普通文件重定向测试在进程结束前读到5秒周期报告，避免systemd journal日志延迟到缓冲区填满或服务退出。
 - 提交`740d5ab`的官方SDK ARM64部署包已在LubanCat-2N完成首次非root systemd手工启停：进程使用专用用户，能力仅为`CAP_NET_RAW`，`NoNewPrivs=1`；真实4包ICMP得到1条双向流且两个drop字段为0，SIGTERM正常收尾。
@@ -1497,3 +1498,5 @@ IoT-23前200包3秒模式的58条逐流唯一候选只涉及51条不同Zeek记�
 `audit_flow_csv_with_unreused_rows`现把每条逐流唯一C流的数据行号按标签身份暂存，读完整份CSV后才确定未复用集合；旧`audit_flow_csv`兼容返回摘要。真实前500包3秒模式集合大小为133，范围4～174，已知复用长TCP的数据行37被排除。它只提供普通流CSV位置，没有生成逐行sidecar或跨文件身份验证；大规模审计的额外行号内存仍待测。
 
 离线生命周期集成测试新增两份CSV的同序行校验：一条已过期流和一条最终剩余流的协议、微秒时长、包数及两种字节总量互相吻合。另对IoT-23前500包两次同运行成对输出只读核对，默认模式69对、3秒模式174对，五项均无差异。此结果只支持这些同次离线输出的行号连接；特征不含流键，单靠相同统计值不能证明任意两条流的身份，更不能用来连接不同运行的文件。x86_64 Debug完整28项CTest通过；IoT-23逐行sidecar和训练准入仍未实现。
+
+IoT-23逐行审查函数已把“逐流唯一但标签被另一条C流复用”与“唯一且未复用的候选”分开。六行合成测试和前500包真实样本分别得到`3/2/1`与`14/27/133`（非唯一／唯一但复用／唯一未复用候选）；后者三类相加为174。函数要求未复用集合来自同一份流CSV审计，不更改通用`FlowSampleMetadata.is_trainable`或`flow_sample_metadata_v1`语义；IoT-23逐行文件与最终训练准入仍待实现。

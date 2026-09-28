@@ -14,7 +14,10 @@ from flow_csv_identity  import (
     parse_flow_timestamp,
     validate_row_shape,
 )
-from flow_sample_metadata import MATCH_STATUS_UNIQUE
+from flow_sample_metadata import (
+    MATCH_STATUS_UNIQUE,
+    SUPPORTED_MATCH_STATUSES,
+)
 from iot23_label_index import (
     FlowKey,
     LabelInterval,
@@ -22,6 +25,9 @@ from iot23_label_index import (
     load_label_index
 )
 
+REVIEW_NOT_UNIQUE = "not_unique"
+REVIEW_UNIQUE_REUSED = "unique_reused"
+REVIEW_UNIQUE_UNREUSED_CANDIDATE = "unique_unreused_candidate"
 
 def audit_flow_csv_with_unreused_rows(
     index: Dict[FlowKey, List[LabelInterval]],
@@ -121,6 +127,44 @@ def audit_flow_csv_with_unreused_rows(
     )
 
     return counts, unreused_rows
+
+def classify_iot23_row_review(
+    row_number: int,
+    match_status: str,
+    unreused_rows: FrozenSet[int],
+) -> str:
+    """
+    根据同一次审计的未复用集合，给一条流确定审查状态。
+
+    row_number从1开始，不计CSV表头。unreused_rows必须来自
+    这份流CSV的audit_flow_csv_with_unreused_rows结果。
+    返回值不是最终训练准入结论。
+    """
+
+    if (
+        isinstance(row_number, bool)
+        or not isinstance(row_number, int)
+        or row_number < 1
+    ):
+        raise ValueError("invalid flow data row number")
+
+    if (
+        not isinstance(match_status, str)
+        or match_status not in SUPPORTED_MATCH_STATUSES
+    ):
+        raise ValueError("invalid flow match status")
+
+    if row_number in unreused_rows:
+        if match_status != MATCH_STATUS_UNIQUE:
+            raise ValueError(
+                "non-unique flow appears in unreused rows"
+            )
+        return REVIEW_UNIQUE_UNREUSED_CANDIDATE
+
+    if match_status == MATCH_STATUS_UNIQUE:
+        return REVIEW_UNIQUE_REUSED
+
+    return REVIEW_NOT_UNIQUE
 
 def audit_flow_csv(
     index: Dict[FlowKey, List[LabelInterval]],

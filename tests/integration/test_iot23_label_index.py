@@ -215,6 +215,7 @@ def main() -> int:
     from audit_iot23_flow_matches import (
             audit_flow_csv,
             audit_flow_csv_with_unreused_rows,
+            classify_iot23_row_review,
         )
 
     audit_index = build_label_index(
@@ -303,6 +304,26 @@ def main() -> int:
         raise RuntimeError(
             f"unexpected unreused rows: {unreused_rows!r}"
         )
+
+    review_cases = (
+        (1, "unique", "unique_reused"),
+        (2, "ambiguous_same_label", "not_unique"),
+        (3, "ambiguous_conflicting_labels", "not_unique"),
+        (4, "unmatched", "not_unique"),
+        (5, "unique", "unique_unreused_candidate"),
+        (6, "unique", "unique_reused"),
+    )
+
+    for row_number, match_status, expected in review_cases:
+        actual = classify_iot23_row_review(
+            row_number,
+            match_status,
+            unreused_rows,
+        )
+        if actual != expected:
+            raise RuntimeError(
+                f"row {row_number}: {actual!r} != {expected!r}"
+            )
 
     if not arguments.work_dir.is_dir():
         raise RuntimeError("work directory does not exist")
