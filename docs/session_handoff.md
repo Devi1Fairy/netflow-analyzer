@@ -23,7 +23,7 @@ cmake -E chdir build ctest --output-on-failure
 
 - 当前功能分支：`feature/flow-features`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前分支在既有非root systemd、TCP状态和流表生命周期功能之上，已提交流特征模型、版本化特征CSV、CLI参数、文件生命周期、数据集标签审计、身份规范化、稳定样本ID和元数据sidecar；本次文档更新前最新已推送提交为`8da46ff docs(ml): inspect IoT-23 reused label boundaries`，实际接手时仍须以`git log`为准；
+- 当前分支在既有非root systemd、TCP状态和流表生命周期功能之上，已提交流特征模型、版本化特征CSV、CLI参数、文件生命周期、数据集标签审计、身份规范化、稳定样本ID和元数据sidecar；本次文档更新前最新已推送提交为`3df7214 docs(ml): trace IoT-23 label reuse in first 500 packets`，实际接手时仍须以`git log`为准；
 - TCP状态机、流记录接入、终端显示、CSV字段和确定性三次握手验收均已提交；接手时仍须先检查工作区，不能覆盖用户后续未提交改动；
 - 离线CLI已新增可选`--flow-idle-timeout SECONDS`，默认继续整文件聚合；确定性6包ICMP验收已证明30秒阈值会导出2包旧流，并把同键后续4包建立为新流。普通流CSV和特征CSV均精确产生两条顺序一致的记录；
 - 当前正式版本宏为`0.2.0`；
@@ -43,6 +43,7 @@ cmake -E chdir build ctest --output-on-failure
 - 前200包的5条复用标签已做只读包级抽查：3条Benign NTP和1条Malicious TCP C&C标签的Zeek包数分别与多个C流分段之和相等，首末时间一致；另一条TCP C&C的完整Zeek记录有592包，样本前缀只覆盖其中21包。代表性TCP流后两段无新SYN，支持“3秒空闲阈值将同一Zeek记录切开”的解释；不能据此认定全场景匹配正确或将58条逐流唯一流作为58个独立训练样本。下一步扩大有界样本时先监测256槽流表拒绝和输出完整性。
 - 同一PCAP前500包扩样已完成：452包完整处理、48包不支持、零流表拒绝，CSV行数与导出流数相符。默认模式导出69条流，4条逐流唯一、65条同标签歧义；3秒模式过期171条、剩余3条，共导出174条流，其中160条逐流唯一（116恶意、44正常）、14条同标签歧义。160条逐流唯一流仅涉及138条不同Zeek记录，5条标签被复用、22次额外分配；默认模式4条逐流唯一流对应4条不同记录。完整计数、样本指纹和边界见TD-040；不得把138视作可靠训练样本，也不得把同一连续前缀当作阈值泛化验证。
 - 前500包复用来源已只读定位：22次额外分配中17次来自同一条恶意TCP标签被18条C流命中，另一条恶意TCP标签贡献2次，3条正常UDP标签各贡献1次。该长TCP标签的时间区间远超前500包跨度，仍须保留前缀与逐流匹配边界；不能将未复用的133条记录直接宣布为可靠训练集。
+- IoT-23正式CLI新增按C流统计的`matches_unique_unreused`／`matches_unique_reused`：前500包3秒模式为`133/27`，其中27条是命中5条复用标签的全部C流，而不只是22次额外分配。合成混合用例、CLI单流与复用用例及完整x86_64 Debug 28项CTest通过；当前仍只报告摘要，未执行逐行训练筛选、未输出IoT-23 sidecar，也未修改元数据的`is_trainable`语义。
 - 实时`--count`已改为可选上限；本机`lo`在省略上限后能于静默期正常报告，随后处理4个`complete` ICMP包，并在`SIGTERM`后完成统计、流汇总与清理。
 - 主程序已在stdout首次I/O前显式启用行缓冲；严格普通文件重定向测试在进程结束前读到5秒周期报告，避免systemd journal日志延迟到缓冲区填满或服务退出。
 - 提交`740d5ab`的官方SDK ARM64部署包已在LubanCat-2N完成首次非root systemd手工启停：进程使用专用用户，能力仅为`CAP_NET_RAW`，`NoNewPrivs=1`；真实4包ICMP得到1条双向流且两个drop字段为0，SIGTERM正常收尾。
@@ -618,7 +619,7 @@ CSV在协议号后使用稳定的`tcp_state`字段。TCP流通过`tcp_flow_phase
 
 `flow_sample_id_v1`把模式版本和全部身份字段按固定顺序序列化为紧凑ASCII JSON，再计算SHA-256摘要。它是确定性的低碰撞标识，不是标签、密码或数字签名。身份对象使用冻结的dataclass，端点必须已经按C端流键规则排序；ICMP端口固定为0。
 
-`flow_sample_metadata_v1` sidecar包含完整身份、`sample_id`、`feature_row_number`、匹配质量和`is_trainable`。只有`unique`且标签为`benign`或`malicious`时可训练；`unmatched`、`ambiguous_same_label`和`ambiguous_conflicting_labels`都保留为不可训练证据。
+`flow_sample_metadata_v1` sidecar包含完整身份、`sample_id`、`feature_row_number`、匹配质量和`is_trainable`。当前`is_trainable`属性只检查逐流`unique`且标签为`benign`或`malicious`；`unmatched`、`ambiguous_same_label`和`ambiguous_conflicting_labels`都保留为不可训练证据。IoT-23另有跨C流复用风险，不能直接把这个逐流属性当作最终训练准入结果；当前尚无IoT-23 sidecar。
 
 Python写出函数借用调用者提供的`TextIO`，不负责关闭或刷新。审计CLI才拥有目标文件：`--capture-id`和`--metadata-output`必须成对提供，目标以`"x"`模式独占创建，失败时尝试删除本次产生的不完整文件，已有文件不会被覆盖。
 
@@ -1439,6 +1440,7 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 然后只读检查git status、最近提交和CTest基线，不要直接修改C源码。
 周期PPS、Mbps、流表占用率、静默报告、五种应用处理结果、流表探测统计、实时容量策略、TCP生命周期，以及普通流CSV和`flow_features_v1`特征CSV已经完成。当前`feature/flow-features`分支的x86_64 Debug构建28项CTest全部通过；Release和ASan/UBSan仍为新增数据集测试前的20项通过基线。LubanCat-2N最新已验证基线仍为新增特征前的18项，不能宣称板端28项已通过。CTU-13标签与C流匹配审计揭示截断和流边界歧义；IoT-23 v2 Scenario 3-1的156103条真实标签已全部完成身份规范化，其中73944条为零时长，候选索引得到81404个规范化双向流键。定向8包试点已由独立CLI重跑：默认模式2条同标签歧义、3秒分段后4条唯一恶意候选；前200包连续样本在零流表拒绝下，默认模式27条流有4条唯一候选，3秒分段后60条流有58条唯一候选、2条同标签歧义。四状态纯内存分类、借用文本流的C流CSV统计以及CLI端到端成功/失败均有合成测试。公共流CSV解析已抽离，CTU-13与IoT-23回归保持28项通过；唯一候选尚非已验证正确标签，全场景质量评估仍未完成，也没有训练、异常判定或在线推理。下一步扩大有界样本并保留容量、数据完整性和逐流边界审计。
 跨C流复用审计已接入CLI；前200包3秒模式的58条逐流唯一候选只对应51条不同Zeek记录，5条复用标签的包级边界已抽查。前500包3秒模式处理452个完整包、无流表拒绝，导出174条流，其中160条逐流唯一仅涉及138条不同Zeek记录，5条记录被复用且产生22次额外分配。它们都不是独立留出集或可靠训练样本；下一步扩样仍须先核对流表容量、输出完整性和复用边界。
+正式CLI还报告前500包`matches_unique_unreused=133`和`matches_unique_reused=27`，后者排除的是复用标签命中的全部流而不只是22次额外分配。当前仅有计数，尚未做逐行筛选或IoT-23 sidecar；133也不是可靠训练样本数。
 仍然由我自己输入C代码，你负责完整说明、测试步骤、Git步骤以及测试通过后的日志文档更新。
 ```
 
@@ -1486,3 +1488,5 @@ BPF过滤
 IoT-23前200包3秒模式的58条逐流唯一候选只涉及51条不同Zeek记录；5条标签被复用，其中3条各被2条C流指向、2条各被3条指向。包级抽查支持空闲阈值切开Zeek生命周期，且一条长TCP标签延续到样本之外。当前CLI已报告复用但尚不执行全局一对一筛选，扩大样本或构建IoT-23监督元数据前仍须审计这一边界。
 
 同一PCAP前500包扩样保持`flow_rejected=0`：默认模式69条流有4条逐流唯一及65条同标签歧义；3秒模式累计174条流有160条逐流唯一及14条同标签歧义，160条唯一流只指向138条不同Zeek记录，5条标签被复用，产生22次额外分配。`175`行CSV含表头，与171条过期流加3条剩余流相符；48个不支持包已由独立ARP计数交叉核对。完整样本指纹和分项见TD-040。下一步仍要以容量、行数和跨流复用为门槛，不能把逐流唯一数或不同标签数直接当作可信训练样本数。
+
+新增的按C流复用审计字段把160条逐流唯一分成133条未复用和27条复用；`27=5+22`，不能只剔除22条额外命中而保留每组第一条。合成混合用例和独立CLI测试均已覆盖，x86_64 Debug 28项CTest通过。CLI尚未输出逐行准入判断，`FlowSampleMetadata.is_trainable`仍只表达逐流唯一性；IoT-23监督元数据生成与可靠性筛选均未实现。

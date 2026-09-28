@@ -46,6 +46,8 @@ def audit_flow_csv(
         "unique_label_records": 0,
         "reused_label_records": 0,
         "duplicate_unique_assignments": 0,
+        "matches_unique_unreused": 0,
+        "matches_unique_reused": 0,
     }
 
     unique_label_hits: Dict[Tuple[FlowKey, int], int] = {}
@@ -105,6 +107,18 @@ def audit_flow_csv(
         hits - 1 for hits in unique_label_hits.values()
     )
 
+    # 一条标签只命中一条C流，才通过“未复用”这一道门槛。
+    counts["matches_unique_unreused"] = sum(
+        1 for hits in unique_label_hits.values()
+        if hits == 1
+    )
+
+    # 被复用标签命中的所有C流都暂时排除，而不只排除“额外”的流。
+    counts["matches_unique_reused"] = sum(
+        hits for hits in unique_label_hits.values()
+        if hits > 1
+    )
+
     return counts
 
 def main() -> int:
@@ -161,7 +175,9 @@ def main() -> int:
         "matches_ambiguous_conflicting_labels",
         "unique_label_records",
         "reused_label_records",
-        "duplicate_unique_assignments"
+        "duplicate_unique_assignments",
+        "matches_unique_unreused",
+        "matches_unique_reused",
     ):
         print(f"{field}={counts[field]}")
 

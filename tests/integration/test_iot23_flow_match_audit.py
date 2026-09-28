@@ -108,6 +108,8 @@ def main() -> int:
             "unique_label_records=1\n"
             "reused_label_records=0\n"
             "duplicate_unique_assignments=0\n"
+            "matches_unique_unreused=1\n"
+            "matches_unique_reused=0\n"
         )
 
         if (
@@ -156,6 +158,8 @@ def main() -> int:
             "unique_label_records=1\n"
             "reused_label_records=1\n"
             "duplicate_unique_assignments=1\n"
+            "matches_unique_unreused=0\n"
+            "matches_unique_reused=2\n"
         )
 
         if (

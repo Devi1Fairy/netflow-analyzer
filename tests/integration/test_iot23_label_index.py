@@ -234,6 +234,7 @@ def main() -> int:
         (6, 100, 200),   # 恶意与正常候选冲突
         (6, 150, 160),   # 未匹配
         (17, 300, 300),  # 唯一正常
+        (6, 101, 102),   # 与首条TCP流复用同一标签
     ):
         writer.writerow(
             (
@@ -261,16 +262,18 @@ def main() -> int:
     )
 
     expected_counts = {
-        "flows_total": 5,
-        "matches_unique": 2,
-        "matches_unique_malicious": 1,
+        "flows_total": 6,
+        "matches_unique": 3,
+        "matches_unique_malicious": 2,
         "matches_unique_benign": 1,
         "matches_unmatched": 1,
         "matches_ambiguous_same_label": 1,
         "matches_ambiguous_conflicting_labels": 1,
         "unique_label_records": 2,
-        "reused_label_records": 0,
-        "duplicate_unique_assignments": 0,
+        "reused_label_records": 1,
+        "duplicate_unique_assignments": 1,
+        "matches_unique_unreused": 1,
+        "matches_unique_reused": 2,
     }
 
     if audit_counts != expected_counts:
