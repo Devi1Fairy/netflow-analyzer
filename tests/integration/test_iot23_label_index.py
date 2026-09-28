@@ -40,6 +40,14 @@ def main() -> int:
         IOT23_REVIEW_SCHEMA_VERSION,
         IOT23_REVIEW_CSV_COLUMNS,
         write_iot23_review_csv_header,
+        REVIEW_NOT_UNIQUE,
+        REVIEW_UNIQUE_REUSED,
+        REVIEW_UNIQUE_UNREUSED_CANDIDATE,
+        validate_iot23_review_record,
+    )
+    from flow_sample_metadata import (
+        FlowSampleIdentity,
+        build_sample_metadata,
     )
 
     endpoint_a = FlowEndpoint(
@@ -351,6 +359,62 @@ def main() -> int:
         if actual != expected:
             raise RuntimeError(
                 f"row {row_number}: {actual!r} != {expected!r}"
+            )
+
+    identity = FlowSampleIdentity(
+        capture_id="iot23-scenario-3-1",
+        protocol=6,
+        endpoint_a_ipv4=endpoint_a.ipv4_address,
+        endpoint_a_port=endpoint_a.port,
+        endpoint_b_ipv4=endpoint_b.ipv4_address,
+        endpoint_b_port=endpoint_b.port,
+        first_seen_microseconds=100,
+        last_seen_microseconds=110,
+    )
+
+    unique_metadata = build_sample_metadata(
+        identity=identity,
+        feature_row_number=1,
+        match_status="unique",
+        candidate_count=1,
+        label_group="malicious",
+    )
+    unmatched_metadata = build_sample_metadata(
+        identity=identity,
+        feature_row_number=4,
+        match_status="unmatched",
+        candidate_count=0,
+        label_group=None,
+    )
+
+    valid_cases = (
+        (unique_metadata, REVIEW_UNIQUE_REUSED),
+        (unique_metadata, REVIEW_UNIQUE_UNREUSED_CANDIDATE),
+        (unmatched_metadata, REVIEW_NOT_UNIQUE),
+    )
+
+    for metadata, review_status in valid_cases:
+        if validate_iot23_review_record(
+            metadata, review_status
+        ) != metadata:
+            raise RuntimeError("valid review record changed")
+
+    invalid_cases = (
+        (unique_metadata, REVIEW_NOT_UNIQUE),
+        (unmatched_metadata, REVIEW_UNIQUE_REUSED),
+        (unique_metadata, "unknown"),
+    )
+
+    for metadata, review_status in invalid_cases:
+        try:
+            validate_iot23_review_record(
+                metadata, review_status
+            )
+        except ValueError:
+            pass
+        else:
+            raise RuntimeError(
+                "invalid review combination was accepted"
             )
 
     if not arguments.work_dir.is_dir():

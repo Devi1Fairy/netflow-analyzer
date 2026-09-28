@@ -1071,6 +1071,7 @@ FNV-1a不是加密算法，也不抵抗恶意碰撞。如果程序以后直接�
 - 为验证同次离线运行的行号连接，生命周期集成测试现将过期流和最终剩余流的两份CSV按数据行配对，从普通流记录重算协议、微秒时长、包数、捕获字节和线路字节，与特征行比较。另对前500包的成对输出只读核对：默认模式69对、3秒模式174对，五项均无差异；x86_64 Debug 28项CTest通过。该核对不能识别统计值完全相同的流互换，也不能证明不同运行／参数输出可按行连接；`feature_row_number`必须对应同次、同参数、完整输出的特征文件。标签正确性和训练准入是另外的验证问题。
 - `classify_iot23_row_review(row_number, match_status, unreused_rows)`把逐流匹配状态和完整审计后的未复用行号集合组合成`not_unique`、`unique_reused`、`unique_unreused_candidate`三类；集合必须来自同一份流CSV，表头不计行号。六行合成样本得到3／2／1；前500包3秒模式只读重扫原流CSV与标签索引，得到14／27／133，合计174。该分层避免将27条命中复用标签的流误当作独立监督样本；133条仅通过当前两道审查门槛，并非标签已核实或可训练。x86_64 Debug 28项CTest通过；尚未生成IoT-23逐行sidecar，也未改变通用`FlowSampleMetadata.is_trainable`和版本化CSV契约。
 - 为避免暗中改变`flow_sample_metadata_v1`对`is_trainable`的既有定义，IoT-23另设`iot23_flow_review_v1`的16列审查CSV：保留同次特征行号、稳定ID、抓包与流身份、匹配状态／候选数／标签组，把末列明确命名为`review_status`，不包含训练准入布尔值。当前只实现表头写出，并用独立固定预期核对版本、列名和顺序；x86_64 Debug 28项CTest通过。后续记录写出必须验证状态组合和身份，完整文件生成须绑定同次输出并处理失败路径，不能因表头存在便宣称真实sidecar或训练集完成。
+- 新增`validate_iot23_review_record`作为记录写出前的纯校验层：要求`FlowSampleMetadata`对象，调用`build_sample_metadata`重新验证身份、行号和匹配状态不变量，并拒绝`unique`配`not_unique`及非唯一配任一唯一审查状态；三态常量移至审查模块供审计器导入。合成测试覆盖三种合法及三种非法组合，x86_64 Debug 28项CTest通过。该层不读取Zeek索引，无法自行区分唯一复用与唯一未复用，调用者必须使用同次完整审计产生的状态；不使用通用对象的`is_trainable`作为IoT-23训练准入。本步仍没有CSV数据行写出或真实sidecar。
 
 边界与下一步：
 

@@ -25,9 +25,11 @@ from iot23_label_index import (
     load_label_index
 )
 
-REVIEW_NOT_UNIQUE = "not_unique"
-REVIEW_UNIQUE_REUSED = "unique_reused"
-REVIEW_UNIQUE_UNREUSED_CANDIDATE = "unique_unreused_candidate"
+from iot23_flow_review import (
+    REVIEW_NOT_UNIQUE,
+    REVIEW_UNIQUE_REUSED,
+    REVIEW_UNIQUE_UNREUSED_CANDIDATE,
+)
 
 def audit_flow_csv_with_unreused_rows(
     index: Dict[FlowKey, List[LabelInterval]],
