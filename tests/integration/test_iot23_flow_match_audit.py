@@ -16,16 +16,20 @@ def run_cli(
     script: Path,
     label_file: Path,
     flow_csv: Path,
+    extra_args=(),
 ) -> subprocess.CompletedProcess:
     """启动独立进程，捕获退出码、stdout和stderr。"""
 
+    command = [
+        sys.executable,
+        str(script),
+        str(label_file),
+        str(flow_csv),
+    ]
+    command.extend(extra_args)
+
     return subprocess.run(
-        [
-            sys.executable,
-            str(script),
-            str(label_file),
-            str(flow_csv),
-        ],
+        command,
         capture_output=True,
         text=True,
         check=False,
@@ -49,6 +53,7 @@ def main() -> int:
     # 本测试只验证CLI行为，不依赖CTU-13审计器。
     sys.path.insert(0, str(arguments.script.parent.resolve()))
     from flow_csv_identity  import EXPECTED_FLOW_COLUMNS
+    from flow_feature_alignment import EXPECTED_FEATURE_COLUMNS
 
     with tempfile.TemporaryDirectory(
         prefix="iot23-flow-match-",
@@ -127,6 +132,166 @@ def main() -> int:
         second_flow_row = list(flow_row)
         second_flow_row[13] = 100000
         second_flow_row[15] = 300000
+
+        good_feature_csv = work_dir / "good-features.csv"
+        bad_feature_csv = work_dir / "bad-features.csv"
+        review_output = work_dir / "review.csv"
+
+        with good_feature_csv.open(
+            "w",
+            encoding="utf-8",
+            newline="",
+        ) as output_stream:
+            writer = csv.writer(
+                output_stream,
+                lineterminator="\n",
+            )
+            writer.writerow(EXPECTED_FEATURE_COLUMNS)
+            writer.writerow(
+                (
+                    "flow_features_v1",
+                    6,
+                    500000,
+                    2,
+                    120,
+                    120,
+                    60,
+                    60,
+                    0,
+                    0,
+                    1,
+                    "established",
+                    1,
+                )
+            )
+
+        review_args = (
+            "--feature-csv",
+            str(good_feature_csv),
+            "--capture-id",
+            "iot23-scenario-3-1",
+            "--review-output",
+            str(review_output),
+        )
+
+        review_success = run_cli(
+            arguments.script,
+            label_file,
+            good_flow_csv,
+            extra_args=review_args,
+        )
+
+        if (
+            review_success.returncode != 0
+            or review_success.stdout != expected_stdout
+            or review_success.stderr
+        ):
+            raise RuntimeError(
+                "unexpected review CLI result: "
+                f"{review_success!r}"
+            )
+
+        with review_output.open(
+            "r",
+            encoding="utf-8",
+            newline="",
+        ) as input_stream:
+            review_rows = list(csv.DictReader(input_stream))
+
+        if (
+            len(review_rows) != 1
+            or review_rows[0]["feature_row_number"] != "1"
+            or review_rows[0]["match_status"] != "unique"
+            or review_rows[0]["review_status"]
+            != "unique_unreused_candidate"
+            or review_rows[0]["label_group"] != "malicious"
+        ):
+            raise RuntimeError(
+                f"unexpected review sidecar: {review_rows!r}"
+            )
+
+        # 已有文件绝不能被覆盖，也不能在失败清理时被删除。
+        original_review = review_output.read_bytes()
+
+        existing_result = run_cli(
+            arguments.script,
+            label_file,
+            good_flow_csv,
+            extra_args=review_args,
+        )
+
+        if (
+            existing_result.returncode == 0
+            or existing_result.stdout
+            or review_output.read_bytes() != original_review
+        ):
+            raise RuntimeError(
+                "existing review file was not preserved"
+            )
+
+        # 同样只有一行，但协议不匹配：预检应在创建前失败。
+        bad_feature_csv.write_text(
+            good_feature_csv.read_text(
+                encoding="utf-8"
+            ).replace(
+                "flow_features_v1,6,",
+                "flow_features_v1,17,",
+                1,
+            ),
+            encoding="utf-8",
+        )
+
+        bad_review_output = work_dir / "bad-review.csv"
+
+        mismatch_result = run_cli(
+            arguments.script,
+            label_file,
+            good_flow_csv,
+            extra_args=(
+                "--feature-csv",
+                str(bad_feature_csv),
+                "--capture-id",
+                "iot23-scenario-3-1",
+                "--review-output",
+                str(bad_review_output),
+            ),
+        )
+
+        if (
+            mismatch_result.returncode == 0
+            or mismatch_result.stdout
+            or bad_review_output.exists()
+        ):
+            raise RuntimeError(
+                "misaligned feature CSV created a review file"
+            )
+
+        # 预检通过、输出文件已创建，但非法capture-id使写出失败；
+        # CLI必须删除本次创建的不完整文件。
+        invalid_id_output = work_dir / "invalid-id-review.csv"
+
+        invalid_id_result = run_cli(
+            arguments.script,
+            label_file,
+            good_flow_csv,
+            extra_args=(
+                "--feature-csv",
+                str(good_feature_csv),
+                "--capture-id",
+                "invalid capture id",
+                "--review-output",
+                str(invalid_id_output),
+            ),
+        )
+
+        if (
+            invalid_id_result.returncode == 0
+            or invalid_id_result.stdout
+            or invalid_id_output.exists()
+        ):
+            raise RuntimeError(
+                "failed review output was not cleaned up"
+            )
 
         with reused_flow_csv.open(
             "w",

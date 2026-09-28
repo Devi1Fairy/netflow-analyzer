@@ -7,6 +7,7 @@ import csv
 import sys
 from pathlib import Path
 from typing import Dict, FrozenSet, List, TextIO, Tuple
+from flow_feature_alignment import validate_flow_feature_alignment
 
 from flow_csv_identity  import (
     EXPECTED_FLOW_COLUMNS,
@@ -316,7 +317,7 @@ def audit_flow_csv(
     return counts
 
 def main() -> int:
-    """加载标签、打开C流CSV，并打印稳定的审计摘要。"""
+    """审计IoT-23流；可选地生成逐行审查sidecar。"""
 
     parser = argparse.ArgumentParser(
         description=(
@@ -334,9 +335,64 @@ def main() -> int:
         type=Path,
         help="Flow CSV produced by netflow-analyzer --csv.",
     )
+    parser.add_argument(
+        "--feature-csv",
+        type=Path,
+        help="Matching flow_features_v1 CSV.",
+    )
+    parser.add_argument(
+        "--capture-id",
+        help="Stable identifier of the source capture.",
+    )
+    parser.add_argument(
+        "--review-output",
+        type=Path,
+        help="Create a new IoT-23 review sidecar CSV.",
+    )
+
     arguments = parser.parse_args()
 
+    review_options = (
+        arguments.feature_csv,
+        arguments.capture_id,
+        arguments.review_output,
+    )
+
+    if (
+        any(value is not None for value in review_options)
+        and not all(
+            value is not None for value in review_options
+        )
+    ):
+        parser.error(
+            "--feature-csv, --capture-id and "
+            "--review-output must be used together"
+        )
+
+    review_output_created = False
+
     try:
+        aligned_rows = None
+
+        if arguments.review_output is not None:
+            # 校验失败时还没有创建目标文件。
+            with arguments.flow_csv.open(
+                "r",
+                encoding="utf-8",
+                newline="",
+            ) as flow_stream:
+                with arguments.feature_csv.open(
+                    "r",
+                    encoding="utf-8",
+                    newline="",
+                ) as feature_stream:
+                    aligned_rows = (
+                        validate_flow_feature_alignment(
+                            flow_stream,
+                            feature_stream,
+                        )
+                    )
+
         index = load_label_index(arguments.label_file)
 
         with arguments.flow_csv.open(
@@ -344,21 +400,63 @@ def main() -> int:
             encoding="utf-8",
             newline="",
         ) as input_stream:
-            counts = audit_flow_csv(index, input_stream)
+            if arguments.review_output is None:
+                # 不带新参数时，保持原有只审计、不写文件的行为。
+                counts = audit_flow_csv(
+                    index,
+                    input_stream,
+                )
+            else:
+                # x表示独占创建：目标已存在时直接失败，不覆盖。
+                with arguments.review_output.open(
+                    "x",
+                    encoding="utf-8",
+                    newline="",
+                ) as output_stream:
+                    review_output_created = True
+
+                    counts = write_iot23_review_csv(
+                        index=index,
+                        input_stream=input_stream,
+                        output_stream=output_stream,
+                        capture_id=arguments.capture_id,
+                    )
+
+                    if counts["flows_total"] != aligned_rows:
+                        raise ValueError(
+                            "review and feature CSV row counts differ"
+                        )
 
     except (
         OSError,
         UnicodeError,
         csv.Error,
+        TypeError,
         ValueError,
     ) as error:
+        cleanup_error = None
+
+        if review_output_created:
+            try:
+                arguments.review_output.unlink()
+            except OSError as current_cleanup_error:
+                cleanup_error = current_cleanup_error
+
         print(
             f"IoT-23 flow match audit failed: {error}",
             file=sys.stderr,
         )
+
+        if cleanup_error is not None:
+            print(
+                "Additionally failed to remove incomplete "
+                f"review output: {cleanup_error}",
+                file=sys.stderr,
+            )
+
         return 1
 
-    # 只在完整读取成功后输出，避免失败时留下半份摘要。
+    # 只在全部成功后输出摘要；失败时stdout保持为空。
     for field in (
         "flows_total",
         "matches_unique",
