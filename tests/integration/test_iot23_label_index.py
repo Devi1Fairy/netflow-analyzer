@@ -268,6 +268,9 @@ def main() -> int:
         "matches_unmatched": 1,
         "matches_ambiguous_same_label": 1,
         "matches_ambiguous_conflicting_labels": 1,
+        "unique_label_records": 2,
+        "reused_label_records": 0,
+        "duplicate_unique_assignments": 0,
     }
 
     if audit_counts != expected_counts:

@@ -6,7 +6,7 @@ import argparse
 import csv
 import sys
 from pathlib import Path
-from typing import Dict, List, TextIO
+from typing import Dict, List, TextIO, Tuple
 
 from flow_csv_identity  import (
     EXPECTED_FLOW_COLUMNS,
@@ -43,7 +43,12 @@ def audit_flow_csv(
         "matches_unmatched": 0,
         "matches_ambiguous_same_label": 0,
         "matches_ambiguous_conflicting_labels": 0,
+        "unique_label_records": 0,
+        "reused_label_records": 0,
+        "duplicate_unique_assignments": 0,
     }
+
+    unique_label_hits: Dict[Tuple[FlowKey, int], int] = {}
 
     reader = csv.DictReader(input_stream)
 
@@ -81,8 +86,24 @@ def audit_flow_csv(
                 f"matches_unique_{result.label_group}"
             ] += 1
 
+            if result.unique_candidate_index is None:
+                raise ValueError("unique match lacks candidate index")
+
+            label_identity = (key, result.unique_candidate_index)
+            unique_label_hits[label_identity] = (
+                unique_label_hits.get(label_identity, 0) + 1
+        )
+
     if counts["flows_total"] == 0:
         raise ValueError("flow CSV contains no records")
+
+    counts["unique_label_records"] = len(unique_label_hits)
+    counts["reused_label_records"] = sum(
+        hits > 1 for hits in unique_label_hits.values()
+    )
+    counts["duplicate_unique_assignments"] = sum(
+        hits - 1 for hits in unique_label_hits.values()
+    )
 
     return counts
 
@@ -138,6 +159,9 @@ def main() -> int:
         "matches_unmatched",
         "matches_ambiguous_same_label",
         "matches_ambiguous_conflicting_labels",
+        "unique_label_records",
+        "reused_label_records",
+        "duplicate_unique_assignments"
     ):
         print(f"{field}={counts[field]}")
 

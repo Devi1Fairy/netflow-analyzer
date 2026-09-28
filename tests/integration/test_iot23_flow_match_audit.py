@@ -57,6 +57,7 @@ def main() -> int:
         work_dir = Path(temporary_directory)
         label_file = work_dir / "labels.log"
         good_flow_csv = work_dir / "good-flows.csv"
+        reused_flow_csv = work_dir / "reused-flows.csv"
         bad_flow_csv = work_dir / "bad-flows.csv"
 
         # build_record的默认五元组和时间是固定的。
@@ -104,6 +105,9 @@ def main() -> int:
             "matches_unmatched=0\n"
             "matches_ambiguous_same_label=0\n"
             "matches_ambiguous_conflicting_labels=0\n"
+            "unique_label_records=1\n"
+            "reused_label_records=0\n"
+            "duplicate_unique_assignments=0\n"
         )
 
         if (
@@ -114,6 +118,54 @@ def main() -> int:
             raise RuntimeError(
                 "unexpected successful CLI result: "
                 f"{success!r}"
+            )
+
+        # 复制已有TCP流，只改变首末时间；两条C流仍与同一条
+        # 1526756261.0～1526756262.0的Zeek标签记录相交。
+        second_flow_row = list(flow_row)
+        second_flow_row[13] = 100000
+        second_flow_row[15] = 300000
+
+        with reused_flow_csv.open(
+            "w",
+            encoding="utf-8",
+            newline="",
+        ) as output_stream:
+            writer = csv.writer(
+                output_stream,
+                lineterminator="\n",
+            )
+            writer.writerow(EXPECTED_FLOW_COLUMNS)
+            writer.writerow(flow_row)
+            writer.writerow(second_flow_row)
+
+        reuse_result = run_cli(
+            arguments.script,
+            label_file,
+            reused_flow_csv,
+        )
+
+        expected_reuse_stdout = (
+            "flows_total=2\n"
+            "matches_unique=2\n"
+            "matches_unique_malicious=2\n"
+            "matches_unique_benign=0\n"
+            "matches_unmatched=0\n"
+            "matches_ambiguous_same_label=0\n"
+            "matches_ambiguous_conflicting_labels=0\n"
+            "unique_label_records=1\n"
+            "reused_label_records=1\n"
+            "duplicate_unique_assignments=1\n"
+        )
+
+        if (
+            reuse_result.returncode != 0
+            or reuse_result.stdout != expected_reuse_stdout
+            or reuse_result.stderr
+        ):
+            raise RuntimeError(
+                "unexpected reused-label CLI result: "
+                f"{reuse_result!r}"
             )
 
         # 第一行有效，第二行字段不足：验证处理到一半失败时，
