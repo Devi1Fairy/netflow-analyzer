@@ -106,6 +106,7 @@
 - IoT-23审计CLI新增成组的`--feature-csv`、`--capture-id`和`--review-output`：先只读校验流／特征CSV，再加载标签索引，使用独占创建拒绝覆盖，调用两遍审计写出逐行`iot23_flow_review_v1`文件；正常异常会清理本次创建的不完整输出，成功后才打印原有摘要。合成端到端测试覆盖旧模式、成功落盘、已有文件保全、预检失败不创建和创建后失败清理，本机x86_64 Debug 28项CTest通过。真实IoT-23文件尚待运行；断电或`SIGKILL`下不保证文件原子性，也未形成训练集。
 - 真实IoT-23 Scenario 3-1前500包的3秒模式已通过审查sidecar手工验收：审计CLI报告174条流、160条逐流唯一（116恶意／44正常）、14条同标签歧义、138条不同Zeek记录、5条复用标签和22次额外分配；160条唯一流分为133条未复用及27条复用。仓库外`pilot-first500.cD1Uq1/idle-3s-review.csv`有175个物理行（表头加174条数据），三态计数精确为`not_unique=14`、`unique_reused=27`、`unique_unreused_candidate=133`，文件SHA-256为`4cfd7af6213d2d5b1a00217e4fa9e17a43d359a314806a44f501191ffdf81baa`。该检查只验证文件格式、行数与当前审计分类一致，不等于标签逐条正确或133条已可用于训练；数据文件不纳入Git。
 - 新增只读时间边界分类函数，区分C流与单条Zeek标签的`exact`、两种包含、部分相交和不相交，含零时长、端点接触及逆序区间的确定性测试；本机x86_64 Debug 28项CTest全部通过。用该函数重查前500包3秒模式的133条`unique_unreused_candidate`：132条`exact`、1条`flow_inside_label`，其余三类均为0。唯一非精确者是特征行173，C流结束于PCAP最后包时间`1526756934497363`微秒，Zeek标签再延续`1999915`微秒；这支持前缀截断解释，但时间吻合不证明标签真值或训练准入。
+- IoT-23审计CLI新增只读`--boundary-summary`模式：先完整审计并取得未复用唯一C流行号，再重读流CSV，复用标签索引与边界分类函数输出五类计数；不带选项的旧摘要及已有sidecar格式保持不变。合成CLI测试覆盖1条`flow_inside_label`、坏CSV失败时stdout为空，以及`--boundary-summary`与`--review-output`冲突在创建文件前被拒绝；本机x86_64 Debug 28项CTest通过。真实前500包3秒模式重跑为`candidate_boundary_total=133`、`exact=132`、`flow_inside_label=1`，其余为0。两遍读取仍要求输入不变；这些计数不是训练准入结论。
 
 ## [0.2.0] - 2026-08-26
 

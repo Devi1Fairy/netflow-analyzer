@@ -117,6 +117,30 @@ def main() -> int:
             "matches_unique_reused=0\n"
         )
 
+        boundary_result = run_cli(
+            arguments.script,
+            label_file,
+            good_flow_csv,
+            extra_args=("--boundary-summary",),
+        )
+        expected_boundary_stdout = expected_stdout + (
+            "candidate_boundary_total=1\n"
+            "candidate_boundary_exact=0\n"
+            "candidate_boundary_flow_inside_label=1\n"
+            "candidate_boundary_label_inside_flow=0\n"
+            "candidate_boundary_partial_overlap=0\n"
+            "candidate_boundary_disjoint=0\n"
+        )
+
+        if (
+            boundary_result.returncode != 0
+            or boundary_result.stdout != expected_boundary_stdout
+            or boundary_result.stderr
+        ):
+            raise RuntimeError(
+                f"unexpected boundary CLI result: {boundary_result!r}"
+            )
+
         if (
             success.returncode != 0
             or success.stdout != expected_stdout
@@ -132,7 +156,7 @@ def main() -> int:
         second_flow_row = list(flow_row)
         second_flow_row[13] = 100000
         second_flow_row[15] = 300000
-    
+
         good_feature_csv = work_dir / "good-features.csv"
         bad_feature_csv = work_dir / "bad-features.csv"
         review_output = work_dir / "review.csv"
@@ -173,6 +197,33 @@ def main() -> int:
             "--review-output",
             str(review_output),
         )
+
+        mixed_review_output = work_dir / "mixed-review.csv"
+        mixed_result = run_cli(
+            arguments.script,
+            label_file,
+            good_flow_csv,
+            extra_args=(
+                "--feature-csv",
+                str(good_feature_csv),
+                "--capture-id",
+                "iot23-scenario-3-1",
+                "--review-output",
+                str(mixed_review_output),
+                "--boundary-summary",
+            ),
+        )
+
+        if (
+            mixed_result.returncode == 0
+            or mixed_result.stdout
+            or mixed_review_output.exists()
+            or "cannot be combined" not in mixed_result.stderr
+        ):
+            raise RuntimeError(
+                f"mixed options were not rejected safely: "
+                f"{mixed_result!r}"
+            )
 
         review_success = run_cli(
             arguments.script,
@@ -366,6 +417,22 @@ def main() -> int:
             raise RuntimeError(
                 "malformed CSV was not rejected cleanly: "
                 f"{failure!r}"
+            )
+
+        boundary_failure = run_cli(
+            arguments.script,
+            label_file,
+            bad_flow_csv,
+            extra_args=("--boundary-summary",),
+        )
+        if (
+            boundary_failure.returncode == 0
+            or boundary_failure.stdout
+            or "missing fields" not in boundary_failure.stderr
+        ):
+            raise RuntimeError(
+                f"boundary audit did not fail cleanly: "
+                f"{boundary_failure!r}"
             )
 
     print("[PASS] IoT-23 flow audit CLI tests")

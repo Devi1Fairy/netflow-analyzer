@@ -26,7 +26,16 @@ from iot23_label_index import (
     FlowKey,
     LabelInterval,
     classify_flow_interval,
-    load_label_index
+    load_label_index,
+    classify_interval_boundary
+)
+
+BOUNDARY_RELATIONS = (
+    "exact",
+    "flow_inside_label",
+    "label_inside_flow",
+    "partial_overlap",
+    "disjoint",
 )
 
 from iot23_flow_review import (
@@ -316,6 +325,95 @@ def audit_flow_csv(
     )
     return counts
 
+def audit_candidate_boundaries(
+    index: Dict[FlowKey, List[LabelInterval]],
+    input_stream: TextIO,
+) -> Tuple[Dict[str, int], Dict[str, int]]:
+    """
+    只审计“逐流唯一且标签未被其他C流复用”的时间边界。
+
+    第一遍确定完整文件中的未复用行号；第二遍按相同行号
+    找回唯一Zeek候选。借用输入流和索引，不关闭或修改它们。
+    返回原有审计摘要及五类边界计数，不决定训练资格。
+    """
+
+    if not input_stream.seekable():
+        raise ValueError("flow CSV input stream must be seekable")
+
+    start_position = input_stream.tell()
+    counts, candidate_rows = audit_flow_csv_with_unreused_rows(
+        index,
+        input_stream,
+    )
+
+    input_stream.seek(start_position)
+    reader = csv.DictReader(input_stream)
+
+    if tuple(reader.fieldnames or ()) != EXPECTED_FLOW_COLUMNS:
+        raise ValueError("unexpected flow CSV columns")
+
+    boundary_counts = {
+        relation: 0 for relation in BOUNDARY_RELATIONS
+    }
+    row_number = 0
+
+    for row in reader:
+        row_number += 1
+        validate_row_shape(
+            row,
+            EXPECTED_FLOW_COLUMNS,
+            "flow CSV",
+            reader.line_num,
+        )
+
+        if row_number not in candidate_rows:
+            continue
+
+        key = parse_flow_key(row, reader.line_num)
+        first_seen = parse_flow_timestamp(
+            row, "first_seen", reader.line_num
+        )
+        last_seen = parse_flow_timestamp(
+            row, "last_seen", reader.line_num
+        )
+
+        match = classify_flow_interval(
+            index, key, first_seen, last_seen
+        )
+        if (
+            match.status != MATCH_STATUS_UNIQUE
+            or match.unique_candidate_index is None
+        ):
+            raise ValueError(
+                "unreused row is no longer a unique match"
+            )
+
+        label = index[key][match.unique_candidate_index]
+        relation = classify_interval_boundary(
+            first_seen,
+            last_seen,
+            label,
+        )
+
+        # 唯一“相交”候选不可能与C流完全不相交。
+        if relation == "disjoint":
+            raise ValueError(
+                "unique match has disjoint time intervals"
+            )
+
+        boundary_counts[relation] += 1
+
+    if (
+        row_number != counts["flows_total"]
+        or sum(boundary_counts.values())
+        != counts["matches_unique_unreused"]
+    ):
+        raise ValueError(
+            "flow CSV changed between boundary audit passes"
+        )
+
+    return counts, boundary_counts
+
 def main() -> int:
     """审计IoT-23流；可选地生成逐行审查sidecar。"""
 
@@ -349,6 +447,11 @@ def main() -> int:
         type=Path,
         help="Create a new IoT-23 review sidecar CSV.",
     )
+    parser.add_argument(
+        "--boundary-summary",
+        action="store_true",
+        help="Read-only boundary counts for unreused unique matches.",
+    )
 
     arguments = parser.parse_args()
 
@@ -369,7 +472,13 @@ def main() -> int:
             "--review-output must be used together"
         )
 
+    if arguments.boundary_summary and arguments.review_output is not None:
+        parser.error(
+            "--boundary-summary cannot be combined with --review-output"
+        )
+
     review_output_created = False
+    boundary_counts = None
 
     try:
         aligned_rows = None
@@ -401,11 +510,16 @@ def main() -> int:
             newline="",
         ) as input_stream:
             if arguments.review_output is None:
-                # 不带新参数时，保持原有只审计、不写文件的行为。
-                counts = audit_flow_csv(
-                    index,
-                    input_stream,
-                )
+                if arguments.boundary_summary:
+                    counts, boundary_counts = audit_candidate_boundaries(
+                        index,
+                        input_stream,
+                    )
+                else:
+                    counts = audit_flow_csv(
+                        index,
+                        input_stream,
+                    )
             else:
                 # x表示独占创建：目标已存在时直接失败，不覆盖。
                 with arguments.review_output.open(
@@ -472,6 +586,17 @@ def main() -> int:
         "matches_unique_reused",
     ):
         print(f"{field}={counts[field]}")
+
+    if boundary_counts is not None:
+        print(
+            "candidate_boundary_total="
+            f"{sum(boundary_counts.values())}"
+        )
+        for relation in BOUNDARY_RELATIONS:
+            print(
+                f"candidate_boundary_{relation}="
+                f"{boundary_counts[relation]}"
+            )
 
     return 0
 
