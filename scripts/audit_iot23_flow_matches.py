@@ -6,7 +6,7 @@ import argparse
 import csv
 import sys
 from pathlib import Path
-from typing import Dict, List, TextIO, Tuple
+from typing import Dict, FrozenSet, List, TextIO, Tuple
 
 from flow_csv_identity  import (
     EXPECTED_FLOW_COLUMNS,
@@ -23,12 +23,12 @@ from iot23_label_index import (
 )
 
 
-def audit_flow_csv(
+def audit_flow_csv_with_unreused_rows(
     index: Dict[FlowKey, List[LabelInterval]],
     input_stream: TextIO,
-) -> Dict[str, int]:
+) -> Tuple[Dict[str, int], FrozenSet[int]]:
     """
-    逐行审计C流CSV，返回四类匹配数量。
+    逐行审计C流CSV，返回统计摘要和未复用唯一流的数据行号集合。
 
     index和input_stream都由调用者拥有；本函数只借用，
     不关闭文件，也不修改索引。第一条数据行对应流行号1，
@@ -50,7 +50,7 @@ def audit_flow_csv(
         "matches_unique_reused": 0,
     }
 
-    unique_label_hits: Dict[Tuple[FlowKey, int], int] = {}
+    unique_label_rows: Dict[Tuple[FlowKey, int], List[int]] = {}
 
     reader = csv.DictReader(input_stream)
 
@@ -92,33 +92,46 @@ def audit_flow_csv(
                 raise ValueError("unique match lacks candidate index")
 
             label_identity = (key, result.unique_candidate_index)
-            unique_label_hits[label_identity] = (
-                unique_label_hits.get(label_identity, 0) + 1
-        )
+            unique_label_rows.setdefault(
+                label_identity, []
+            ).append(counts["flows_total"])
 
     if counts["flows_total"] == 0:
         raise ValueError("flow CSV contains no records")
 
-    counts["unique_label_records"] = len(unique_label_hits)
+    counts["unique_label_records"] = len(unique_label_rows)
     counts["reused_label_records"] = sum(
-        hits > 1 for hits in unique_label_hits.values()
+        len(rows) > 1 for rows in unique_label_rows.values()
     )
     counts["duplicate_unique_assignments"] = sum(
-        hits - 1 for hits in unique_label_hits.values()
+        len(rows) - 1 for rows in unique_label_rows.values()
     )
-
-    # 一条标签只命中一条C流，才通过“未复用”这一道门槛。
     counts["matches_unique_unreused"] = sum(
-        1 for hits in unique_label_hits.values()
-        if hits == 1
+        1 for rows in unique_label_rows.values()
+        if len(rows) == 1
     )
-
-    # 被复用标签命中的所有C流都暂时排除，而不只排除“额外”的流。
     counts["matches_unique_reused"] = sum(
-        hits for hits in unique_label_hits.values()
-        if hits > 1
+        len(rows) for rows in unique_label_rows.values()
+        if len(rows) > 1
     )
 
+    unreused_rows = frozenset(
+        rows[0] for rows in unique_label_rows.values()
+        if len(rows) == 1
+    )
+
+    return counts, unreused_rows
+
+def audit_flow_csv(
+    index: Dict[FlowKey, List[LabelInterval]],
+    input_stream: TextIO,
+) -> Dict[str, int]:
+    """保留现有只返回摘要的调用接口。"""
+
+    counts, _ = audit_flow_csv_with_unreused_rows(
+        index,
+        input_stream,
+    )
     return counts
 
 def main() -> int:

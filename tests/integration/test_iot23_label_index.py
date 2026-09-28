@@ -212,7 +212,10 @@ def main() -> int:
         raise RuntimeError("reversed flow interval was accepted")
 
     from flow_csv_identity  import EXPECTED_FLOW_COLUMNS
-    from audit_iot23_flow_matches import audit_flow_csv
+    from audit_iot23_flow_matches import (
+            audit_flow_csv,
+            audit_flow_csv_with_unreused_rows,
+        )
 
     audit_index = build_label_index(
         [
@@ -279,6 +282,26 @@ def main() -> int:
     if audit_counts != expected_counts:
         raise RuntimeError(
             f"unexpected audit counts: {audit_counts!r}"
+        )
+
+    # 重新从开头读取：上面的audit_flow_csv已经消费了文本流。
+    flow_stream.seek(0)
+
+    detailed_counts, unreused_rows = (
+        audit_flow_csv_with_unreused_rows(
+            audit_index,
+            flow_stream,
+        )
+    )
+
+    if detailed_counts != expected_counts:
+        raise RuntimeError(
+            f"unexpected detailed counts: {detailed_counts!r}"
+        )
+
+    if unreused_rows != frozenset({5}):
+        raise RuntimeError(
+            f"unexpected unreused rows: {unreused_rows!r}"
         )
 
     if not arguments.work_dir.is_dir():
