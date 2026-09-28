@@ -17,6 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import List, Tuple
+import csv
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -981,6 +982,49 @@ def run_idle_timeout_lifecycle_test(
                 f"expected: {expected_feature_records!r}\n"
                 f"actual: {feature_csv_lines[1:]!r}"
             )
+
+        flow_rows = list(csv.DictReader(csv_lines))
+        feature_rows = list(csv.DictReader(feature_csv_lines))
+
+        if len(flow_rows) != len(feature_rows):
+            raise RuntimeError(
+                "flow and feature CSV row counts differ"
+            )
+
+        for row_number, (flow, feature) in enumerate(
+            zip(flow_rows, feature_rows),
+            start=1,
+        ):
+            expected = {
+                "protocol": flow["protocol"],
+                "duration_microseconds": str(
+                    (
+                        int(flow["last_seen_seconds"])
+                        - int(flow["first_seen_seconds"])
+                    ) * 1_000_000
+                    + int(flow["last_seen_microseconds"])
+                    - int(flow["first_seen_microseconds"])
+                ),
+                "total_packet_count": str(
+                    int(flow["a_to_b_packets"])
+                    + int(flow["b_to_a_packets"])
+                ),
+                "total_captured_byte_count": str(
+                    int(flow["a_to_b_captured_bytes"])
+                    + int(flow["b_to_a_captured_bytes"])
+                ),
+                "total_wire_byte_count": str(
+                    int(flow["a_to_b_wire_bytes"])
+                    + int(flow["b_to_a_wire_bytes"])
+                ),
+            }
+
+            for column, expected_value in expected.items():
+                if feature[column] != expected_value:
+                    raise RuntimeError(
+                        f"CSV row {row_number} differs at {column}: "
+                        f"{feature[column]!r} != {expected_value!r}"
+                    )
 
 def run_tcp_state_output_test(
     program: Path,
