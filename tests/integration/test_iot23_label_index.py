@@ -44,10 +44,12 @@ def main() -> int:
         REVIEW_UNIQUE_REUSED,
         REVIEW_UNIQUE_UNREUSED_CANDIDATE,
         validate_iot23_review_record,
+        write_iot23_review_csv_record
     )
     from flow_sample_metadata import (
         FlowSampleIdentity,
         build_sample_metadata,
+        FlowSampleMetadata
     )
 
     endpoint_a = FlowEndpoint(
@@ -399,10 +401,48 @@ def main() -> int:
         ) != metadata:
             raise RuntimeError("valid review record changed")
 
+    write_iot23_review_csv_record(
+        review_output,
+        unique_metadata,
+        REVIEW_UNIQUE_REUSED,
+    )
+    write_iot23_review_csv_record(
+        review_output,
+        unmatched_metadata,
+        REVIEW_NOT_UNIQUE,
+    )
+
+    expected_records = (
+        "iot23_flow_review_v1,flow_features_v1,1,"
+        f"{unique_metadata.sample_id},"
+        "iot23-scenario-3-1,6,192.168.2.5,1234,"
+        "198.51.100.20,80,100,110,unique,1,malicious,"
+        "unique_reused\n"
+        "iot23_flow_review_v1,flow_features_v1,4,"
+        f"{unmatched_metadata.sample_id},"
+        "iot23-scenario-3-1,6,192.168.2.5,1234,"
+        "198.51.100.20,80,100,110,unmatched,0,,not_unique\n"
+    )
+
+    if review_output.getvalue() != expected_header + expected_records:
+        raise RuntimeError("unexpected IoT-23 review CSV records")
+
+    invalid_metadata = FlowSampleMetadata(
+        feature_row_number=7,
+        identity=identity,
+        match_status="unique",
+        candidate_count=0,
+        label_group="malicious",
+    )
+
     invalid_cases = (
         (unique_metadata, REVIEW_NOT_UNIQUE),
         (unmatched_metadata, REVIEW_UNIQUE_REUSED),
         (unique_metadata, "unknown"),
+        (
+            invalid_metadata,
+            REVIEW_UNIQUE_UNREUSED_CANDIDATE,
+        ),
     )
 
     for metadata, review_status in invalid_cases:
@@ -415,6 +455,27 @@ def main() -> int:
         else:
             raise RuntimeError(
                 "invalid review combination was accepted"
+            )
+
+    before_invalid = review_output.getvalue()
+
+    for metadata, review_status in invalid_cases:
+        try:
+            write_iot23_review_csv_record(
+                review_output,
+                metadata,
+                review_status,
+            )
+        except ValueError:
+            pass
+        else:
+            raise RuntimeError(
+                "invalid review record was written"
+            )
+
+        if review_output.getvalue() != before_invalid:
+            raise RuntimeError(
+                "invalid review record changed the output"
             )
 
     if not arguments.work_dir.is_dir():

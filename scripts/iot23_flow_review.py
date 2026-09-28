@@ -8,7 +8,9 @@ from flow_sample_metadata import (
     FlowSampleMetadata,
     MATCH_STATUS_UNIQUE,
     build_sample_metadata,
+    SUPPORTED_FEATURE_SCHEMA_VERSION,
 )
+from ipaddress import IPv4Address
 
 IOT23_REVIEW_SCHEMA_VERSION = "iot23_flow_review_v1"
 REVIEW_NOT_UNIQUE = "not_unique"
@@ -93,3 +95,43 @@ def validate_iot23_review_record(
         )
 
     return validated
+
+def write_iot23_review_csv_record(
+    output_stream: TextIO,
+    metadata: FlowSampleMetadata,
+    review_status: str,
+) -> None:
+    """先验证，再向借用的文本流写出一条完整审查记录。"""
+
+    validated = validate_iot23_review_record(
+        metadata,
+        review_status,
+    )
+    identity = validated.identity
+
+    row = (
+        IOT23_REVIEW_SCHEMA_VERSION,
+        SUPPORTED_FEATURE_SCHEMA_VERSION,
+        validated.feature_row_number,
+        validated.sample_id,
+        identity.capture_id,
+        identity.protocol,
+        str(IPv4Address(identity.endpoint_a_ipv4)),
+        identity.endpoint_a_port,
+        str(IPv4Address(identity.endpoint_b_ipv4)),
+        identity.endpoint_b_port,
+        identity.first_seen_microseconds,
+        identity.last_seen_microseconds,
+        validated.match_status,
+        validated.candidate_count,
+        validated.label_group
+        if validated.label_group is not None
+        else "",
+        review_status,
+    )
+
+    writer = csv.writer(
+        output_stream,
+        lineterminator="\n",
+    )
+    writer.writerow(row)
