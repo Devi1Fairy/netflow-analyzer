@@ -15,8 +15,11 @@ from flow_csv_identity  import (
     validate_row_shape,
 )
 from flow_sample_metadata import (
+    CAPTURE_ID_PATTERN,
+    FlowSampleIdentity,
     MATCH_STATUS_UNIQUE,
     SUPPORTED_MATCH_STATUSES,
+    build_sample_metadata,
 )
 from iot23_label_index import (
     FlowKey,
@@ -29,6 +32,8 @@ from iot23_flow_review import (
     REVIEW_NOT_UNIQUE,
     REVIEW_UNIQUE_REUSED,
     REVIEW_UNIQUE_UNREUSED_CANDIDATE,
+    write_iot23_review_csv_header,
+    write_iot23_review_csv_record,
 )
 
 def audit_flow_csv_with_unreused_rows(
@@ -167,6 +172,136 @@ def classify_iot23_row_review(
         return REVIEW_UNIQUE_REUSED
 
     return REVIEW_NOT_UNIQUE
+
+def write_iot23_review_csv(
+    index: Dict[FlowKey, List[LabelInterval]],
+    input_stream: TextIO,
+    output_stream: TextIO,
+    capture_id: str,
+) -> Dict[str, int]:
+    """
+    根据完整流CSV审计结果，写出逐行IoT-23审查CSV。
+
+    input_stream必须可定位，并且当前位置应在CSV表头之前。
+    两遍读取期间，输入内容和标签索引都不能变化。
+
+    index、input_stream和output_stream由调用者拥有；
+    本函数不关闭或刷新它们。返回完整审计摘要。
+
+    底层写入失败可能留下部分输出；文件级清理由后续CLI负责。
+    """
+
+    if input_stream is output_stream:
+        raise ValueError(
+            "input and output streams must differ"
+        )
+
+    if (
+        not isinstance(capture_id, str)
+        or CAPTURE_ID_PATTERN.fullmatch(capture_id) is None
+    ):
+        raise ValueError("invalid capture_id")
+
+    if not input_stream.seekable():
+        raise ValueError(
+            "flow CSV input stream must be seekable"
+        )
+
+    start_position = input_stream.tell()
+
+    # 第一遍：必须读完整份文件，才能知道哪些Zeek标签被复用。
+    counts, unreused_rows = (
+        audit_flow_csv_with_unreused_rows(
+            index,
+            input_stream,
+        )
+    )
+
+    # 第二遍：回到原来的表头位置，逐行生成审查记录。
+    input_stream.seek(start_position)
+    reader = csv.DictReader(input_stream)
+
+    if tuple(reader.fieldnames or ()) != EXPECTED_FLOW_COLUMNS:
+        raise ValueError("unexpected flow CSV columns")
+
+    write_iot23_review_csv_header(output_stream)
+
+    row_number = 0
+
+    for row in reader:
+        validate_row_shape(
+            row,
+            EXPECTED_FLOW_COLUMNS,
+            "flow CSV",
+            reader.line_num,
+        )
+
+        key = parse_flow_key(row, reader.line_num)
+        first_seen = parse_flow_timestamp(
+            row,
+            "first_seen",
+            reader.line_num,
+        )
+        last_seen = parse_flow_timestamp(
+            row,
+            "last_seen",
+            reader.line_num,
+        )
+
+        classification = classify_flow_interval(
+            index,
+            key,
+            first_seen,
+            last_seen,
+        )
+
+        row_number += 1
+
+        (
+            protocol,
+            endpoint_a_ipv4,
+            endpoint_a_port,
+            endpoint_b_ipv4,
+            endpoint_b_port,
+        ) = key
+
+        identity = FlowSampleIdentity(
+            capture_id=capture_id,
+            protocol=protocol,
+            endpoint_a_ipv4=endpoint_a_ipv4,
+            endpoint_a_port=endpoint_a_port,
+            endpoint_b_ipv4=endpoint_b_ipv4,
+            endpoint_b_port=endpoint_b_port,
+            first_seen_microseconds=first_seen,
+            last_seen_microseconds=last_seen,
+        )
+
+        metadata = build_sample_metadata(
+            identity=identity,
+            feature_row_number=row_number,
+            match_status=classification.status,
+            candidate_count=classification.candidate_count,
+            label_group=classification.label_group,
+        )
+
+        review_status = classify_iot23_row_review(
+            row_number,
+            classification.status,
+            unreused_rows,
+        )
+
+        write_iot23_review_csv_record(
+            output_stream,
+            metadata,
+            review_status,
+        )
+
+    if row_number != counts["flows_total"]:
+        raise ValueError(
+            "flow CSV changed between audit and review passes"
+        )
+
+    return counts
 
 def audit_flow_csv(
     index: Dict[FlowKey, List[LabelInterval]],

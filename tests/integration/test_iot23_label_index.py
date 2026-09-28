@@ -231,6 +231,7 @@ def main() -> int:
             audit_flow_csv,
             audit_flow_csv_with_unreused_rows,
             classify_iot23_row_review,
+            write_iot23_review_csv,
         )
 
     audit_index = build_label_index(
@@ -477,6 +478,89 @@ def main() -> int:
             raise RuntimeError(
                 "invalid review record changed the output"
             )
+
+    # 现有flow_stream包含六行合成C流。此前审计已经把位置读到末尾。
+    flow_stream.seek(0)
+    batch_output = StringIO()
+
+    batch_counts = write_iot23_review_csv(
+        index=audit_index,
+        input_stream=flow_stream,
+        output_stream=batch_output,
+        capture_id="iot23-scenario-3-1",
+    )
+
+    if batch_counts != expected_counts:
+        raise RuntimeError(
+            f"unexpected batch audit counts: {batch_counts!r}"
+        )
+
+    batch_reader = csv.DictReader(
+        StringIO(batch_output.getvalue())
+    )
+
+    if tuple(batch_reader.fieldnames or ()) != (
+        IOT23_REVIEW_CSV_COLUMNS
+    ):
+        raise RuntimeError(
+            "unexpected batch review CSV header"
+        )
+
+    batch_rows = list(batch_reader)
+
+    if len(batch_rows) != 6:
+        raise RuntimeError(
+            "batch review CSV must contain six data rows"
+        )
+
+    if [
+        row["feature_row_number"]
+        for row in batch_rows
+    ] != [str(number) for number in range(1, 7)]:
+        raise RuntimeError(
+            "batch feature row numbers are incorrect"
+        )
+
+    if [
+        row["match_status"]
+        for row in batch_rows
+    ] != [case[1] for case in review_cases]:
+        raise RuntimeError(
+            "batch match statuses are incorrect"
+        )
+
+    if [
+        row["review_status"]
+        for row in batch_rows
+    ] != [case[2] for case in review_cases]:
+        raise RuntimeError(
+            "batch review statuses are incorrect"
+        )
+
+    # 第一遍遇到坏CSV时，批量函数不应开始写审查文件。
+    bad_flow_stream = StringIO(
+        flow_stream.getvalue() + "6\n"
+    )
+    bad_output = StringIO()
+
+    try:
+        write_iot23_review_csv(
+            index=audit_index,
+            input_stream=bad_flow_stream,
+            output_stream=bad_output,
+            capture_id="iot23-scenario-3-1",
+        )
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError(
+            "malformed flow CSV was accepted"
+        )
+
+    if bad_output.getvalue():
+        raise RuntimeError(
+            "malformed flow CSV produced review output"
+        )
 
     if not arguments.work_dir.is_dir():
         raise RuntimeError("work directory does not exist")
