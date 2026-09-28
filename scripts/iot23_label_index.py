@@ -42,6 +42,7 @@ class FlowMatchClassification:
     status: str
     candidate_count: int
     label_group: Optional[str]
+    unique_candidate_index: Optional[int]
 
 def flow_key_from_identity(
     identity: Iot23FlowIdentity,
@@ -151,8 +152,10 @@ def classify_flow_interval(
     # 闭区间相交：两端恰好相等也算候选；
     # 这让零时长Zeek标签仍可与同一时刻的C流匹配。
     candidates = [
-        candidate
-        for candidate in index.get(key, ())
+        (candidate_index, candidate)
+        for candidate_index, candidate in enumerate(
+            index.get(key, ())
+        )
         if (
             first_seen_microseconds <= candidate.end_microseconds
             and candidate.start_microseconds <= last_seen_microseconds
@@ -166,11 +169,11 @@ def classify_flow_interval(
             status=MATCH_STATUS_UNMATCHED,
             candidate_count=0,
             label_group=None,
+            unique_candidate_index=None,
         )
-
     groups = {
         candidate.label_group
-        for candidate in candidates
+        for _, candidate in candidates
     }
 
     if not groups.issubset(SUPPORTED_LABEL_GROUPS):
@@ -182,7 +185,8 @@ def classify_flow_interval(
         return FlowMatchClassification(
             status=MATCH_STATUS_UNIQUE,
             candidate_count=1,
-            label_group=candidates[0].label_group,
+            label_group=candidates[0][1].label_group,
+            unique_candidate_index=candidates[0][0],
         )
 
     if len(groups) == 1:
@@ -190,10 +194,12 @@ def classify_flow_interval(
             status=MATCH_STATUS_AMBIGUOUS_SAME_LABEL,
             candidate_count=candidate_count,
             label_group=next(iter(groups)),
+            unique_candidate_index=None,
         )
 
     return FlowMatchClassification(
         status=MATCH_STATUS_AMBIGUOUS_CONFLICTING_LABELS,
         candidate_count=candidate_count,
         label_group=None,
+        unique_candidate_index=None,
     )

@@ -137,11 +137,11 @@ def main() -> int:
 
     cases = (
         # 区间端点相等仍算匹配。
-        (index, tcp_key, 110, 110, "unique", 1, "malicious"),
+        (index, tcp_key, 110, 110, "unique", 1, "malicious", 0),
         # 同键但时间不相交。
-        (index, tcp_key, 111, 199, "unmatched", 0, None),
+        (index, tcp_key, 111, 199, "unmatched", 0, None, None),
         # 零时长标签。
-        (index, tcp_key, 200, 200, "unique", 1, "benign"),
+        (index, tcp_key, 200, 200, "unique", 1, "benign", 1),
         # 两个候选给出相反标签。
         (
             index,
@@ -150,6 +150,7 @@ def main() -> int:
             200,
             "ambiguous_conflicting_labels",
             2,
+            None,
             None,
         ),
         # 两个候选标签相同，仍不是唯一匹配。
@@ -161,9 +162,10 @@ def main() -> int:
             "ambiguous_same_label",
             2,
             "malicious",
+            None,
         ),
         # 相同端点但协议不同，不能串到TCP候选。
-        (index, udp_key, 300, 300, "unique", 1, "benign"),
+        (index, udp_key, 300, 300, "unique", 1, "benign", 0),
     )
 
     for (
@@ -174,6 +176,7 @@ def main() -> int:
         expected_status,
         expected_count,
         expected_group,
+        expected_candidate_index,
     ) in cases:
         result = classify_flow_interval(
             current_index,
@@ -186,11 +189,13 @@ def main() -> int:
             result.status,
             result.candidate_count,
             result.label_group,
+            result.unique_candidate_index,
         )
         expected = (
             expected_status,
             expected_count,
             expected_group,
+            expected_candidate_index,
         )
 
         if actual != expected:
