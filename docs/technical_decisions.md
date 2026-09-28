@@ -1080,6 +1080,7 @@ FNV-1a不是加密算法，也不抵抗恶意碰撞。如果程序以后直接�
 - 真实文件验收使用与前500包3秒模式同次输出的普通流CSV和特征CSV，固定`capture_id=iot23-s3-1-first500-idle3s`，将`iot23_flow_review_v1`写到仓库外`pilot-first500.cD1Uq1/idle-3s-review.csv`。CLI成功输出`flows_total=174`、`matches_unique=160`、`matches_ambiguous_same_label=14`、`unique_label_records=138`、`reused_label_records=5`、`duplicate_unique_assignments=22`、`matches_unique_unreused=133`和`matches_unique_reused=27`；CSV有16列表头及174条数据，三态审查为14／27／133，文件SHA-256为`4cfd7af6213d2d5b1a00217e4fa9e17a43d359a314806a44f501191ffdf81baa`。这证明既有小样本的文件落盘和计数守恒，未验证其他时间段、所有标签真实正确性或多遍读入时文件被并发改写的风险；`unique_unreused_candidate`仍不是训练准入结论。
 - 时间相交的`unique`不足以判定两端生命周期边界一致，因此新增`classify_interval_boundary`作为只读纯函数，返回`exact`、`flow_inside_label`、`label_inside_flow`、`partial_overlap`或`disjoint`；函数拒绝布尔值、非整数、逆序和越界时间，闭区间仅端点相接属于部分相交。7个合成边界场景及逆序拒绝测试、定向CTest与完整28项CTest通过。用同一标签索引重查真实sidecar的133条未复用唯一候选，得到`exact=132`、`flow_inside_label=1`、其余为0。唯一非精确者是特征行173：C流时间`1526756933503110`～`1526756934497363`微秒，Zeek时间`1526756933503110`～`1526756936497278`微秒；`capinfos`确认C流终点即前500包PCAP最后包时间，标签还延续`1999915`微秒。前缀截断是有证据的解释，但不等于已验证完整连接或标签真值；该函数不改sidecar模式和`is_trainable`，训练准入与独立数据切分仍需另定。
 - 为把临时只读核对变成可重跑命令，在既有IoT-23审计CLI增加可选`--boundary-summary`，只对完整审计得出的未复用唯一行号第二遍重算候选标签的五类时间关系。它复用原标签索引和流CSV解析，返回原12项摘要后才打印`candidate_boundary_total`与五项计数；行数及候选计数不守恒、唯一候选变更或出现不相交时拒绝输出，失败时stdout为空。初版把与`--review-output`的互斥检查放在sidecar写出后，存在先创建文件再由`parser.error()`退出且绕过清理的风险；现移到任何文件操作前，并用尚不存在的目标文件测试“不创建”。定向及完整x86_64 Debug 28项CTest通过；真实前500包3秒模式稳定输出133／132／1／0／0／0。两遍读取的同数内容变化仍非原子检测，此命令不写sidecar或给出训练标签。
+- 已从IoT-23 v2官方场景目录另取Scenario 8-1作为独立来源候选，文件均留在仓库外`/home/zcb/datasets/netflow-analyzer/iot23-v2/scenario-8-1`。PCAP SHA-256为`80dcc2602519479ddcde889fa902fee19a76696630811452f8df38888af894f2`，Zeek标签SHA-256为`4877ca8f0f01902fbd18d28b7d06cb3d0be082355b7f2c8862c9deef1782eb8a`；二者已在本机重新计算并与下载后的记录相符。`capinfos`确认单接口Ethernet、微秒时间精度、严格时间有序、23623包、持续86395.260731秒。标签审计成功：10403条中`malicious=8222`、`benign=2181`、`exclude=0`，身份支持10403、不支持0、零时长6185；协议TCP 8224、UDP 2179。此处只证明文件可读且标签模式可解析，尚未运行C分析器、核对每包处理与导出行数、审计跨流复用和时间边界，因此不能称为可靠验证集。
 
 边界与下一步：
 
@@ -1089,7 +1090,7 @@ FNV-1a不是加密算法，也不抵抗恶意碰撞。如果程序以后直接�
 
 ### TD-041：按原始抓包来源隔离机器学习训练与验证数据
 
-状态：切分清单校验已采用；当前仅有一份独立的IoT-23 Scenario 3-1抓包，真实训练／验证划分尚未建立。
+状态：切分清单校验已采用；Scenario 3-1和Scenario 8-1两份不同来源的PCAP已在本机，但8-1仅完成文件与标签初检，真实训练／验证划分尚未建立。
 
 决定：
 
@@ -1107,6 +1108,7 @@ FNV-1a不是加密算法，也不抵抗恶意碰撞。如果程序以后直接�
 - 合成测试覆盖同源两个前缀都在训练集的合法清单、同源前缀跨训练／验证的拒绝、只有单一来源导致缺少验证集的拒绝，以及重复`capture_id`的拒绝；失败路径要求stdout为空；
 - 本机x86_64 Debug构建完整29项CTest通过，其中新增`ml_split_manifest_tests`通过。尚未在ARM64、Release或Sanitizer配置重跑新增测试，也未对真实多来源清单执行验证。
 - 用现有`iot23-s3-1-first500-idle3s`作为唯一训练来源手工喂入清单时，命令返回1并报告`train and validation each need a source capture`；这符合单来源不足以形成独立验证集的预期，没有伪造第二份真实抓包。
+- 新取得的Scenario 8-1是另一份原始抓包，且标签同时包含正常与恶意组；下一步仍须核对该场景的C端完整处理、容量拒绝、成对CSV和标签匹配质量，再决定是否将其写入真实切分清单。不能仅以文件不同或两类标签均存在就宣布验证集可用。
 
 ## 9. 硬件与部署环境
 
