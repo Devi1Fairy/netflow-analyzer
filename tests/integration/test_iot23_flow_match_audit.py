@@ -253,6 +253,81 @@ def run_split_binding_tests(
         assignments,
     )
 
+    return bound
+
+def run_candidate_csv_contract_tests(
+    bound,
+    columns,
+    write_candidates,
+    feature_columns,
+):
+    """检查表头、逐列内容以及失败时不写半份CSV。"""
+
+    expected_columns = (
+        "candidate_schema_version",
+        "feature_schema_version",
+        "sample_id",
+        "capture_id",
+        "source_capture_id",
+        "feature_row_number",
+        "split",
+        "candidate_label_group",
+    ) + feature_columns[1:]
+
+    if columns != expected_columns:
+        raise RuntimeError("candidate CSV column contract changed")
+
+    output = io.StringIO()
+    written = write_candidates(output, bound)
+    records = list(csv.reader(io.StringIO(output.getvalue())))
+
+    if (
+        written != 2
+        or len(records) != 3
+        or tuple(records[0]) != expected_columns
+        or output.closed
+    ):
+        raise RuntimeError("unexpected candidate CSV output")
+
+    for record, item in zip(records[1:], bound):
+        candidate = item.candidate
+        expected_record = (
+            "iot23_candidate_samples_v1",
+            "flow_features_v1",
+            candidate.sample_id,
+            candidate.capture_id,
+            item.source_capture_id,
+            str(candidate.feature_row_number),
+            item.split,
+            candidate.label_group,
+        ) + candidate.feature_values
+
+        if tuple(record) != expected_record:
+            raise RuntimeError(
+                f"candidate CSV row differs: {record!r}"
+            )
+
+    duplicate = (
+        bound[0],
+        replace(
+            bound[1],
+            candidate=replace(
+                bound[1].candidate,
+                sample_id=bound[0].candidate.sample_id,
+            ),
+        ),
+    )
+    rejected_output = io.StringIO()
+    try:
+        write_candidates(rejected_output, duplicate)
+    except ValueError:
+        if rejected_output.getvalue() != "":
+            raise RuntimeError(
+                "invalid candidates produced partial CSV output"
+            )
+    else:
+        raise RuntimeError("duplicate sample ID was accepted")
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--script", required=True, type=Path)
@@ -279,6 +354,8 @@ def main() -> int:
         ExactReviewedCandidate,
         assign_candidates_to_splits,
         collect_exact_reviewed_candidates,
+        IOT23_CANDIDATE_CSV_COLUMNS,
+        write_iot23_candidate_csv,
     )
 
     run_selection_contract_tests(
@@ -287,9 +364,15 @@ def main() -> int:
         IOT23_REVIEW_CSV_COLUMNS,
     )
 
-    run_split_binding_tests(
+    bound = run_split_binding_tests(
         ExactReviewedCandidate,
         assign_candidates_to_splits,
+        EXPECTED_FEATURE_COLUMNS,
+    )
+    run_candidate_csv_contract_tests(
+        bound,
+        IOT23_CANDIDATE_CSV_COLUMNS,
+        write_iot23_candidate_csv,
         EXPECTED_FEATURE_COLUMNS,
     )
 

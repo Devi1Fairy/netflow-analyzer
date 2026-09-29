@@ -43,6 +43,18 @@ class SplitAssignedCandidate:
     source_capture_id: str
     split: str
 
+IOT23_CANDIDATE_SCHEMA_VERSION = "iot23_candidate_samples_v1"
+
+IOT23_CANDIDATE_CSV_COLUMNS = (
+    "candidate_schema_version",
+    "feature_schema_version",
+    "sample_id",
+    "capture_id",
+    "source_capture_id",
+    "feature_row_number",
+    "split",
+    "candidate_label_group",
+) + EXPECTED_FEATURE_COLUMNS[1:]
 
 def assign_candidates_to_splits(
     candidates_by_capture: Mapping[
@@ -108,6 +120,80 @@ def assign_candidates_to_splits(
         raise ValueError("train and validation need selected candidates")
 
     return tuple(result)
+
+def write_iot23_candidate_csv(
+    output_stream: TextIO,
+    samples: Tuple[SplitAssignedCandidate, ...],
+) -> int:
+    """先验证所有候选，再写入借用流；返回数据行数。"""
+
+    if not isinstance(samples, tuple):
+        raise TypeError("samples must be a tuple")
+
+    rows = []
+    seen_sample_ids = set()
+    source_splits = {}
+    split_counts = {split: 0 for split in SPLITS}
+
+    for item in samples:
+        if not isinstance(item, SplitAssignedCandidate):
+            raise ValueError("invalid assigned candidate")
+
+        candidate = item.candidate
+        if (
+            not isinstance(candidate, ExactReviewedCandidate)
+            or item.split not in split_counts
+            or CAPTURE_ID_PATTERN.fullmatch(
+                item.source_capture_id
+            ) is None
+            or CAPTURE_ID_PATTERN.fullmatch(
+                candidate.capture_id
+            ) is None
+            or type(candidate.feature_row_number) is not int
+            or candidate.feature_row_number < 1
+            or candidate.label_group not in SUPPORTED_LABEL_GROUPS
+            or not isinstance(candidate.feature_values, tuple)
+            or len(candidate.feature_values)
+            != len(EXPECTED_FEATURE_COLUMNS) - 1
+            or any(
+                not isinstance(value, str)
+                for value in candidate.feature_values
+            )
+        ):
+            raise ValueError("invalid candidate row")
+
+        if candidate.sample_id in seen_sample_ids:
+            raise ValueError("duplicate sample_id")
+
+        previous_split = source_splits.get(item.source_capture_id)
+        if previous_split is not None and previous_split != item.split:
+            raise ValueError("source capture crosses splits")
+
+        seen_sample_ids.add(candidate.sample_id)
+        source_splits[item.source_capture_id] = item.split
+        split_counts[item.split] += 1
+
+        rows.append(
+            (
+                IOT23_CANDIDATE_SCHEMA_VERSION,
+                SUPPORTED_FEATURE_SCHEMA_VERSION,
+                candidate.sample_id,
+                candidate.capture_id,
+                item.source_capture_id,
+                candidate.feature_row_number,
+                item.split,
+                candidate.label_group,
+            ) + candidate.feature_values
+        )
+
+    if split_counts["train"] == 0 or split_counts["validation"] == 0:
+        raise ValueError("train and validation need selected candidates")
+
+    # 到这里才开始写：上述校验失败时，输出流保持空白。
+    writer = csv.writer(output_stream, lineterminator="\n")
+    writer.writerow(IOT23_CANDIDATE_CSV_COLUMNS)
+    writer.writerows(rows)
+    return len(rows)
 
 def collect_exact_reviewed_candidates(
     feature_stream: TextIO,
