@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-
+from dataclasses import replace
 from test_iot23_label_audit import build_record, write_log
 
 
@@ -175,6 +175,83 @@ def run_selection_contract_tests(
         "some exact row numbers were not found",
     )
 
+def run_split_binding_tests(
+    candidate_type,
+    assign_candidates,
+    feature_columns,
+):
+    """验证来源绑定和失败拒绝，不依赖真实数据集。"""
+
+    values = tuple("0" for _ in feature_columns[1:])
+    first = candidate_type(
+        "capture-a", 1, "flow_sample_id_v1:" + "a" * 64,
+        "malicious", values,
+    )
+    second = replace(
+        first,
+        capture_id="capture-b",
+        sample_id="flow_sample_id_v1:" + "b" * 64,
+        label_group="benign",
+    )
+    candidates = {
+        "capture-a": (first,),
+        "capture-b": (second,),
+    }
+    assignments = {
+        "capture-a": ("source-a", "train"),
+        "capture-b": ("source-b", "validation"),
+    }
+
+    bound = assign_candidates(candidates, assignments)
+    actual = tuple(
+        (
+            item.candidate.sample_id,
+            item.source_capture_id,
+            item.split,
+            item.candidate.feature_values,
+        )
+        for item in bound
+    )
+    expected = (
+        (first.sample_id, "source-a", "train", values),
+        (second.sample_id, "source-b", "validation", values),
+    )
+    if actual != expected:
+        raise RuntimeError(f"unexpected split binding: {actual!r}")
+
+    def require_rejected(candidate_map, assignment_map):
+        try:
+            assign_candidates(candidate_map, assignment_map)
+        except ValueError:
+            return
+        raise RuntimeError("invalid split binding was accepted")
+
+    # 候选与清单覆盖的抓包不一致。
+    require_rejected({"capture-a": (first,)}, assignments)
+
+    # 同一原始PCAP不能同时出现在训练和验证。
+    require_rejected(
+        candidates,
+        {
+            "capture-a": ("same-source", "train"),
+            "capture-b": ("same-source", "validation"),
+        },
+    )
+
+    # 不允许同一个样本身份重复进入结果。
+    require_rejected(
+        {
+            "capture-a": (first,),
+            "capture-b": (replace(second, sample_id=first.sample_id),),
+        },
+        assignments,
+    )
+
+    # 清单有验证来源，但筛选后没有验证样本也不能继续。
+    require_rejected(
+        {"capture-a": (first,), "capture-b": ()},
+        assignments,
+    )
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -198,12 +275,22 @@ def main() -> int:
     from flow_csv_identity  import EXPECTED_FLOW_COLUMNS
     from flow_feature_alignment import EXPECTED_FEATURE_COLUMNS
     from iot23_flow_review import IOT23_REVIEW_CSV_COLUMNS
-    from iot23_sample_selection import collect_exact_reviewed_candidates
+    from iot23_sample_selection import (
+        ExactReviewedCandidate,
+        assign_candidates_to_splits,
+        collect_exact_reviewed_candidates,
+    )
 
     run_selection_contract_tests(
         collect_exact_reviewed_candidates,
         EXPECTED_FEATURE_COLUMNS,
         IOT23_REVIEW_CSV_COLUMNS,
+    )
+
+    run_split_binding_tests(
+        ExactReviewedCandidate,
+        assign_candidates_to_splits,
+        EXPECTED_FEATURE_COLUMNS,
     )
 
     with tempfile.TemporaryDirectory(

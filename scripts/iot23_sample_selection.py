@@ -5,7 +5,8 @@
 import csv
 from dataclasses import dataclass
 from itertools import zip_longest
-from typing import FrozenSet, TextIO, Tuple
+from typing import FrozenSet, Mapping, TextIO, Tuple
+from validate_ml_split_manifest import SPLITS
 
 from flow_csv_identity import validate_row_shape
 from flow_feature_alignment import EXPECTED_FEATURE_COLUMNS
@@ -34,6 +35,79 @@ class ExactReviewedCandidate:
     label_group: str
     feature_values: Tuple[str, ...]
 
+@dataclass(frozen=True)
+class SplitAssignedCandidate:
+    """候选样本及其来源切分；身份字段不属于模型特征。"""
+
+    candidate: ExactReviewedCandidate
+    source_capture_id: str
+    split: str
+
+
+def assign_candidates_to_splits(
+    candidates_by_capture: Mapping[
+        str, Tuple[ExactReviewedCandidate, ...]
+    ],
+    assignments: Mapping[str, Tuple[str, str]],
+) -> Tuple[SplitAssignedCandidate, ...]:
+    """绑定已筛选候选与已验证清单；错误时不返回部分结果。"""
+
+    if set(candidates_by_capture) != set(assignments):
+        raise ValueError("candidate and manifest capture IDs differ")
+
+    result = []
+    seen_sample_ids = set()
+    source_splits = {}
+    split_counts = {split: 0 for split in SPLITS}
+
+    # 排序让结果不依赖字典的插入顺序。
+    for capture_id in sorted(assignments):
+        source_id, split = assignments[capture_id]
+
+        if (
+            CAPTURE_ID_PATTERN.fullmatch(capture_id) is None
+            or CAPTURE_ID_PATTERN.fullmatch(source_id) is None
+            or split not in split_counts
+        ):
+            raise ValueError("invalid split assignment")
+
+        previous_split = source_splits.get(source_id)
+        if previous_split is not None and previous_split != split:
+            raise ValueError("source capture crosses splits")
+        source_splits[source_id] = split
+
+        previous_row_number = 0
+        for candidate in candidates_by_capture[capture_id]:
+            if (
+                not isinstance(candidate, ExactReviewedCandidate)
+                or candidate.capture_id != capture_id
+                or type(candidate.feature_row_number) is not int
+                or candidate.feature_row_number <= previous_row_number
+            ):
+                raise ValueError("candidate capture or row order is invalid")
+
+            if candidate.sample_id in seen_sample_ids:
+                raise ValueError("duplicate sample_id")
+            if candidate.label_group not in SUPPORTED_LABEL_GROUPS:
+                raise ValueError("invalid candidate label")
+            if (
+                not isinstance(candidate.feature_values, tuple)
+                or len(candidate.feature_values)
+                != len(EXPECTED_FEATURE_COLUMNS) - 1
+            ):
+                raise ValueError("invalid candidate feature count")
+
+            seen_sample_ids.add(candidate.sample_id)
+            previous_row_number = candidate.feature_row_number
+            result.append(
+                SplitAssignedCandidate(candidate, source_id, split)
+            )
+            split_counts[split] += 1
+
+    if split_counts["train"] == 0 or split_counts["validation"] == 0:
+        raise ValueError("train and validation need selected candidates")
+
+    return tuple(result)
 
 def collect_exact_reviewed_candidates(
     feature_stream: TextIO,
