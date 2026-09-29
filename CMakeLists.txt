@@ -726,6 +726,21 @@ if(BUILD_TESTING)
             TIMEOUT 10
     )
 
+    # 合成候选数据验证同源开发试验的特征分组；不依赖公开数据集。
+    add_test(
+        NAME iot23_pilot_split_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_iot23_pilot_split.py
+            --scripts-dir
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+    )
+
+    set_tests_properties(
+        iot23_pilot_split_tests
+        PROPERTIES TIMEOUT 10
+    )
+
     # 创建CSV流记录导出单元测试程序。
     add_executable(
         flow_export_tests
