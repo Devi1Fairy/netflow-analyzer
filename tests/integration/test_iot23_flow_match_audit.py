@@ -328,6 +328,63 @@ def run_candidate_csv_contract_tests(
     else:
         raise RuntimeError("duplicate sample ID was accepted")
 
+def run_candidate_file_contract_tests(
+    work_dir,
+    bound,
+    write_file,
+    expected_columns,
+):
+    """验证成功写出、已有目标保全和失败清理。"""
+
+    destination = work_dir / "candidate-samples.csv"
+    written = write_file(destination, bound)
+
+    with destination.open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream)
+        actual_columns = tuple(reader.fieldnames or ())
+        rows = list(reader)
+
+    if (
+        written != 2
+        or actual_columns != expected_columns
+        or len(rows) != 2
+    ):
+        raise RuntimeError("unexpected candidate file contents")
+
+    original_bytes = destination.read_bytes()
+    try:
+        write_file(destination, bound)
+    except FileExistsError:
+        pass
+    else:
+        raise RuntimeError("existing candidate file was accepted")
+
+    if destination.read_bytes() != original_bytes:
+        raise RuntimeError("existing candidate file was changed")
+
+    duplicate = (
+        bound[0],
+        replace(
+            bound[1],
+            candidate=replace(
+                bound[1].candidate,
+                sample_id=bound[0].candidate.sample_id,
+            ),
+        ),
+    )
+    failed_destination = work_dir / "invalid-candidates.csv"
+    try:
+        write_file(failed_destination, duplicate)
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError("invalid candidates were accepted")
+
+    if failed_destination.exists():
+        raise RuntimeError("invalid candidate target was created")
+    if list(work_dir.glob(".*.tmp")):
+        raise RuntimeError("candidate temporary file was left behind")
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--script", required=True, type=Path)
@@ -357,6 +414,9 @@ def main() -> int:
         IOT23_CANDIDATE_CSV_COLUMNS,
         write_iot23_candidate_csv,
     )
+    from iot23_candidate_file import (
+        write_iot23_candidate_file_exclusive,
+    )
 
     run_selection_contract_tests(
         collect_exact_reviewed_candidates,
@@ -381,6 +441,12 @@ def main() -> int:
         dir=arguments.work_dir,
     ) as temporary_directory:
         work_dir = Path(temporary_directory)
+        run_candidate_file_contract_tests(
+            work_dir,
+            bound,
+            write_iot23_candidate_file_exclusive,
+            IOT23_CANDIDATE_CSV_COLUMNS,
+        )
         label_file = work_dir / "labels.log"
         good_flow_csv = work_dir / "good-flows.csv"
         reused_flow_csv = work_dir / "reused-flows.csv"
