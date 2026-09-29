@@ -43,6 +43,11 @@ def main():
     parser.add_argument("--work-dir", required=True, type=Path)
     arguments = parser.parse_args()
 
+    sys.path.insert(0, str(arguments.script.parent.resolve()))
+    from validate_ml_split_manifest import (
+        validate_manifest_with_assignments,
+    )
+
     with tempfile.TemporaryDirectory(
         prefix="ml-split-", dir=arguments.work_dir
     ) as temporary_directory:
@@ -64,6 +69,29 @@ def main():
                 "test=0\n"
             ),
         )
+
+        with manifest.open(
+            "r", encoding="utf-8", newline=""
+        ) as input_stream:
+            counts, source_count, assignments = (
+                validate_manifest_with_assignments(input_stream)
+            )
+            if input_stream.closed:
+                raise RuntimeError("validator closed a borrowed stream")
+
+        expected_assignments = {
+            "s3-first200": ("iot23-s3-1", "train"),
+            "s3-first500": ("iot23-s3-1", "train"),
+            "other-capture": ("iot23-other", "validation"),
+        }
+        if (
+            counts != {"train": 2, "validation": 1, "test": 0}
+            or source_count != 2
+            or assignments != expected_assignments
+        ):
+            raise RuntimeError(
+                f"unexpected validated assignments: {assignments!r}"
+            )
 
         run_case(
             arguments.script,

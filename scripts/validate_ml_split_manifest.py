@@ -13,7 +13,7 @@ COLUMNS = ("capture_id", "source_capture_id", "split")
 SPLITS = ("train", "validation", "test")
 
 
-def validate_manifest(input_stream):
+def validate_manifest_with_assignments(input_stream):
     """读取借用的文本流；成功返回各集合计数和原始抓包数。"""
     reader = csv.DictReader(input_stream)
     if tuple(reader.fieldnames or ()) != COLUMNS:
@@ -21,6 +21,7 @@ def validate_manifest(input_stream):
 
     seen_captures = set()
     source_splits = {}
+    assignments = {}
     counts = {split: 0 for split in SPLITS}
 
     for line_number, row in enumerate(reader, start=2):
@@ -51,12 +52,23 @@ def validate_manifest(input_stream):
 
         seen_captures.add(capture_id)
         source_splits[source_id] = split
+        # 把通过验证的提取结果绑定到原始抓包及数据集合。
+        assignments[capture_id] = (source_id, split)
         counts[split] += 1
 
     if counts["train"] == 0 or counts["validation"] == 0:
         raise ValueError("train and validation each need a source capture")
 
-    return counts, len(source_splits)
+    return counts, len(source_splits), assignments
+
+
+def validate_manifest(input_stream):
+    """兼容现有调用者：仍只返回计数和来源数量。"""
+
+    counts, source_count, _ = validate_manifest_with_assignments(
+        input_stream
+    )
+    return counts, source_count
 
 
 def main():
