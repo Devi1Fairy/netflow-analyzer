@@ -2,7 +2,27 @@
 
 本页记录当前 IoT-23 试点候选 CSV 所用文件的 SHA-256，便于之后核对输入与产物是否仍是同一批字节。它是一次人工核对的文件指纹记录，不是自动化构建配方，也不证明候选标签是真值或样本已经满足正式训练、评估条件。
 
-## 生成背景与核对范围
+## TCP 试点 v2：2026-09-30 已发布
+
+在原试点v1之后，完整Scenario 3-1替代前500包作为训练来源，两侧均仅保留严格筛选后的TCP候选。以下路径仍相对于`/home/zcb/datasets/netflow-analyzer/iot23-v2/`；旧v1文件与旧来源清单保留。本次来源切分在执行命令内声明并经过现有清单校验接口，不存在新建的v2磁盘清单。
+
+| 新增文件 | SHA-256 |
+| --- | --- |
+| `scenario-3-1/full-3s.Tqx2iv/flows.csv` | `a41698a45eccf1f243e27012e277a4fa9b91b0f4c3ca8c7497c7e52c076991e8` |
+| `scenario-3-1/full-3s.Tqx2iv/features.csv` | `6d55bcb2152296d8e857d40267b4310a7d8319b657aff3e20b6df685a41fd85e` |
+| `scenario-3-1/full-3s.Tqx2iv/review.csv` | `42976540df4bbfd317ea013d11c59c3e059ca9c784263c4e34749befef2a42ee` |
+| `splits/tcp-pilot-candidates-v2.csv` | `9fe3b49d52b48ad3bd1a301e1ace8017a499e46b1f061f40cfaac3051795369a` |
+
+原始3-1 PCAP／标签及完整8-1输入仍使用下方v1记录中的路径。v2发布后由本机独立读回：63775条数据、20列、14773716字节；样本ID唯一，协议全部为6。
+
+| 提取结果 | 原始来源 | 集合 | 正常 | 恶意 |
+| --- | --- | --- | ---: | ---: |
+| `iot23-s3-1-full-idle3s` | `iot23-s3-1-original` | train | 2221 | 55546 |
+| `iot23-s8-1-full-idle3s` | `iot23-s8-1-original` | validation | 2 | 6006 |
+
+候选文件名中的v2仅表示数据选择版本，内部格式保持`iot23_candidate_samples_v1`与`flow_features_v1`。前500包未与完整3-1重复合入。模型尚未训练，验证侧仅2条正常TCP不足以估计误报率；Scenario 42-1可用于正常TCP外部诊断，但已在数据准备期间查看，不属于未观察的最终测试。身份、来源和标签列不进入模型特征；后续预处理仅在训练侧拟合。
+
+## 原试点 v1：生成背景与核对范围
 
 - 仓库提交：`e2a5e063b3386144a10b81f0edc810e9fad383f8`；记录指纹前 `git status --short` 为空。
 - 本机程序：`build/bin/netflow-analyzer`，SHA-256 为 `781a5670d603e6764807dd6ace6cc288f27f79d05b1e83a304a139ba73a1aaf4`。该摘要标识二进制文件，但单凭它和提交号不能证明二进制一定由该提交构建。
