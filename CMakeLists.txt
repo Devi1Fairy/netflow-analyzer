@@ -757,6 +757,22 @@ if(BUILD_TESTING)
         PROPERTIES TIMEOUT 10
     )
 
+    # 验证候选CSV的来源隔离、行顺序和分集合加载。
+    # 加载层不依赖PyTorch或仓库外公开数据集。
+    add_test(
+        NAME tcp_candidate_dataset_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_tcp_candidate_dataset.py
+            --scripts-dir
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+    )
+
+    set_tests_properties(
+        tcp_candidate_dataset_tests
+        PROPERTIES TIMEOUT 10
+    )
+
     # 创建CSV流记录导出单元测试程序。
     add_executable(
         flow_export_tests
