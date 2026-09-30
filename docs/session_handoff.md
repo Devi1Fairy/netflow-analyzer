@@ -1,6 +1,6 @@
 # Netflow Analyzer会话交接文档
 
-最后更新：2026-09-28（Asia/Shanghai）
+最后更新：2026-09-30（Asia/Shanghai）
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
@@ -23,7 +23,7 @@ cmake -E chdir build ctest --output-on-failure
 
 - 当前功能分支：`feature/flow-features`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前分支在既有非root systemd、TCP状态和流表生命周期功能之上，已提交流特征模型、版本化特征CSV、CLI参数、文件生命周期、数据集标签审计、身份规范化、稳定样本ID和元数据sidecar；本次文档更新前最新提交为`2b6ef97 docs(ml): record IoT-23 scenario 8-1 flow audit`，Scenario 8-1逐行审查结果及本次文档仍未提交，实际接手时须以`git log`和`git status`为准；
+- 当前分支在既有非root systemd、TCP状态和流表生命周期功能之上，已提交流特征模型、版本化特征CSV、CLI参数、文件生命周期、数据集标签审计、身份规范化、稳定样本ID和元数据sidecar；本次文档更新前最新提交为`ca031d6 test(ml): cover pilot split and document protocol bias`，工作树干净；本次仅更新完整Scenario 3-1审计文档，实际接手时须以`git log`和`git status`为准；
 - TCP状态机、流记录接入、终端显示、CSV字段和确定性三次握手验收均已提交；接手时仍须先检查工作区，不能覆盖用户后续未提交改动；
 - 离线CLI已新增可选`--flow-idle-timeout SECONDS`，默认继续整文件聚合；确定性6包ICMP验收已证明30秒阈值会导出2包旧流，并把同键后续4包建立为新流。普通流CSV和特征CSV均精确产生两条顺序一致的记录；
 - 当前正式版本宏为`0.2.0`；
@@ -32,7 +32,7 @@ cmake -E chdir build ctest --output-on-failure
 - 本地主程序：`build/bin/netflow-analyzer`；
 - 官方SDK交叉构建目录：`/home/zcb/build/netflow-analyzer-lubancat-sdk-release-v2`；
 - 通用GCC交叉构建目录：`/home/zcb/build/netflow-analyzer-generic-sysroot-release`；
-- 当前`feature/flow-features`工作树的x86_64 Debug构建共有29项CTest并全部通过；LubanCat-2N ARM64原生Debug仍以此前18项基线为已验证状态，新增特征与数据集模块尚未上板回归，不能写成板端29项已通过。此前单次扫描优化已完成Ubuntu `lo`和LubanCat-2N物理网卡300流手工验收；优化版官方SDK ARM64产物只要求`GLIBC_2.17`，板端得到300次操作、44次淘汰、256条最终流和零drop；TCP状态功能也已在`lo`真实HTTP/1.0连接中处理12包并最终输出`closed`，两个drop字段均为0。
+- 当前`feature/flow-features`的x86_64 Debug最近已验证基线为30项CTest全部通过；LubanCat-2N ARM64原生Debug仍以此前18项基线为已验证状态，新增特征与数据集模块尚未上板回归，不能写成板端30项已通过。此次真实数据复核未改源码，也未重复运行CTest。此前单次扫描优化已完成Ubuntu `lo`和LubanCat-2N物理网卡300流手工验收；优化版官方SDK ARM64产物只要求`GLIBC_2.17`，板端得到300次操作、44次淘汰、256条最终流和零drop；TCP状态功能也已在`lo`真实HTTP/1.0连接中处理12包并最终输出`closed`，两个drop字段均为0。
 - 第一版流特征链已经完成：`flow_features_t`从双向流记录提取版本化模型输入，`--feature-csv`支持离线和带`--count`的有限实时模式；运行期间的过期流与淘汰流立即导出，停止时再导出最终剩余流。Ubuntu手工验收分别得到“2包过期流+4包剩余流”以及“44条淘汰流+256条剩余流=300条数据行”。CTU-13标签规则和匹配质量审计已经固化，但当前没有可靠的一对一训练样本、模型训练、异常检测或在线推理。
 - `flow_sample_id_v1`现已根据抓包来源、规范化流键和生命周期时间生成稳定SHA-256标识；`flow_sample_metadata_v1` sidecar通过`feature_row_number`把特征行连接到样本身份、匹配状态、候选数量、监督标签和可训练标志。当前契约仅把逐流唯一匹配的正常或恶意样本标为可训练；IoT-23实测存在跨流复用，仍需额外筛选和边界验证，不能直接沿用这一标志生成可靠训练集。身份字段不进入`flow_features_v1`。
 - 新增标签审计测试前，当前分支已经通过x86_64 Release优化构建的20项CTest；独立`build-sanitize`以ASan和UBSan插桩重新构建并通过相同20项测试，没有Sanitizer或泄漏报告。新增的标签审计、身份规范化、样本元数据和匹配审计四项Python数据契约测试目前只在x86_64 Debug测试树执行；Release和Sanitizer构建尚未重新配置。Sanitizer配置通过CMake命令行参数临时建立，尚未成为仓库Preset。
@@ -67,6 +67,7 @@ cmake -E chdir build ctest --output-on-failure
 - Scenario 8-1单来源二分类开发试验已新增只读分组切分脚本`split_iot23_single_source_pilot.py`，但没有修改正式跨来源切分清单、候选CSV或C源码。真实候选8187条只有1188种完整特征模式，最大的一组5058条恶意流都呈单包74字节、`syn-seen`；它们是不同流而非应直接删除的重复事件。脚本按完整特征模式成组、每类最大组留训练侧、其余组按稳定摘要分配，得到训练7447条（正常1728、恶意5719，832组）及验证740条（正常453、恶意287，356组），相同模式不会跨侧。`py_compile`、真实文件运行和新增不依赖外部数据集的合成分组测试已通过，本机完整CTest为30/30；新增测试尚未在ARM64、Release或Sanitizer构建重跑。该切分仅可供后续验证模型输入流程，仍是同一个原始PCAP，不能用于声称跨场景泛化或异常预警；训练模型前须先确认下述协议捷径，并计划独立来源测试。
 - 训练前的只读协议捷径审计进一步发现：Scenario 8-1的6006条恶意候选全是TCP，2181条正常候选中2179条是UDP、只有2条是TCP；当前同源分组验证侧更是453条正常全为UDP、287条恶意全为TCP。只按协议判别即可得到740/740验证正确，故在该切分上训练复杂模型即使高分也不能证明识别异常。拿另一来源Scenario 42-1的3764条严格精确正常候选做反例，协议规则会误报其中1440条正常TCP（约38.3%）；该来源严格准入的恶意候选为0，不能据此测恶意召回。下一步先把协议单列基线作为显式对照，再寻找同时含正常TCP与恶意TCP等反例且可独立验证的来源；本发现不改变正式来源隔离清单，也不表示已训练模型或实现预警。
 - IoT-23 v2 Scenario 8-1的仓库外原始PCAP与对应Zeek标签已下载并在本机复核SHA-256，分别为`80dcc2602519479ddcde889fa902fee19a76696630811452f8df38888af894f2`和`4877ca8f0f01902fbd18d28b7d06cb3d0be082355b7f2c8862c9deef1782eb8a`。PCAP为单接口Ethernet、微秒时间精度、严格有序的23623包；标签审计共10403条：恶意8222、正常2181、排除0，身份全部支持，零时长6185，TCP 8224、UDP 2179。完整PCAP以3秒空闲阈值离线处理后退出码0：16677包完整、6946包不支持（独立确认为ARP）、零截断／畸形／流表拒绝；9294条过期流加1条剩余流，普通流与特征CSV各9295条数据行，逐行对齐检查全部通过。只读IoT-23匹配审计得8187条逐流唯一且未复用候选（恶意6006、正常2181，时间边界全部`exact`）、1108条同标签歧义，未匹配和冲突歧义均为0。逐行审查sidecar在`run-3s.enKX9W/review.csv`，SHA-256为`bbc9fcedec151694d1bfd4b77df480859bc54bbd466db407610353a74e5ac60c`；只读核对9295条数据、连续特征行号、唯一样本ID及8187／1108两类审查状态。`label_group=malicious`的7114行包含1108条歧义流，不能直接用于训练。随后真实来源切分、内存候选绑定及候选CSV的真实落盘已完成，最终训练准入与正式评估仍待确定，不能把当前结果直接称为可靠验证集。
+- Scenario 3-1完整PCAP的3秒空闲分段已由用户运行并由本机只读复核，结果目录为`/home/zcb/datasets/netflow-analyzer/iot23-v2/scenario-3-1/full-3s.Tqx2iv/`。496959包＝完整491299＋不支持5660，零截断／畸形／流表拒绝；过期115971条加剩余1条，流／特征CSV各115972条数据，现有逐行对齐检查全部通过。标签审计为唯一70875、同标签歧义45066、冲突歧义31、未匹配0；唯一且未复用65476条，其中精确59667、`flow_inside_label=3`、`label_inside_flow=5806`。精确候选正常4121（ICMP 1165、TCP 2221、UDP 735）、恶意55546（全部TCP），故同协议TCP开发候选为57767条，正常／恶意约1:25。冲突、同标签歧义、复用、非精确行保持排除，完整数据不能和重叠的前500包重复计入或跨集合使用。下一步使用现有CLI为完整3-1生成review sidecar并连接严格候选，再推进训练输入；尚未训练模型，独立来源评估及类别失衡仍需处理。完整计数、文件SHA-256与结论边界见TD-041。
 - 实时`--count`已改为可选上限；本机`lo`在省略上限后能于静默期正常报告，随后处理4个`complete` ICMP包，并在`SIGTERM`后完成统计、流汇总与清理。
 - 主程序已在stdout首次I/O前显式启用行缓冲；严格普通文件重定向测试在进程结束前读到5秒周期报告，避免systemd journal日志延迟到缓冲区填满或服务退出。
 - 提交`740d5ab`的官方SDK ARM64部署包已在LubanCat-2N完成首次非root systemd手工启停：进程使用专用用户，能力仅为`CAP_NET_RAW`，`NoNewPrivs=1`；真实4包ICMP得到1条双向流且两个drop字段为0，SIGTERM正常收尾。
