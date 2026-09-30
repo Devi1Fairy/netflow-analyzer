@@ -149,6 +149,15 @@ install(
         COMPONENT Runtime
 )
 
+# 普通构建和板端测试不强制依赖PyTorch。
+# 需要运行ML测试时，由调用者显式提供带PyTorch的Python解释器。
+set(
+    NFA_ML_PYTHON_EXECUTABLE
+    ""
+    CACHE FILEPATH
+    "Python interpreter containing the optional ML dependencies"
+)
+
 # 引入CTest并创建BUILD_TESTING选项。
 include(CTest)
 
@@ -772,6 +781,31 @@ if(BUILD_TESTING)
         tcp_candidate_dataset_tests
         PROPERTIES TIMEOUT 10
     )
+
+    # PyTorch属于可选训练依赖，不改变普通C/libpcap测试环境。
+    if(NFA_ML_PYTHON_EXECUTABLE)
+        if(NOT EXISTS "${NFA_ML_PYTHON_EXECUTABLE}")
+            message(
+                FATAL_ERROR
+                "NFA_ML_PYTHON_EXECUTABLE does not exist: "
+                "${NFA_ML_PYTHON_EXECUTABLE}"
+            )
+        endif()
+
+        add_test(
+            NAME tcp_tensor_dataset_tests
+            COMMAND
+                ${NFA_ML_PYTHON_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_tcp_tensor_dataset.py
+                --scripts-dir
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+        )
+
+        set_tests_properties(
+            tcp_tensor_dataset_tests
+            PROPERTIES TIMEOUT 20
+        )
+    endif()
 
     # 创建CSV流记录导出单元测试程序。
     add_executable(
