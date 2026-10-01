@@ -805,6 +805,21 @@ if(BUILD_TESTING)
             tcp_tensor_dataset_tests
             PROPERTIES TIMEOUT 20
         )
+
+        add_test(
+            NAME tcp_feature_preprocessing_tests
+            COMMAND
+                ${NFA_ML_PYTHON_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_tcp_feature_preprocessing.py
+                --scripts-dir
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+        )
+
+        set_tests_properties(
+            tcp_feature_preprocessing_tests
+            PROPERTIES TIMEOUT 20
+        )
+
     endif()
 
     # 创建CSV流记录导出单元测试程序。
