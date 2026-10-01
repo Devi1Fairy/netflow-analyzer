@@ -183,4 +183,6 @@ PY
 
 尚未完成模型与预处理参数的文件持久化、加载后预测一致性、独立最终测试、ARM64推理、在线主机时间窗或告警事件。训练内的低误报不能代替独立来源误报验证，单流二分类也不能直接等同于按IP聚合的异常预警。
 
-首次训练时最新已提交版本为`67c573a feat(ml): add train-only TCP feature preprocessing`；线性模块、测试和CMake注册仍为用户工作区的未提交改动。该提交是本步的父版本，不能写成它本身已经包含线性模型。
+首次训练时最新已提交版本为`67c573a feat(ml): add train-only TCP feature preprocessing`；当时线性模块、测试和CMake注册仍为用户工作区的未提交改动。用户随后提交并推送为`2f6be22 feat(ml): add TCP linear classification baseline`；`67c573a`只是本步的父版本。
+
+后续已经完成[Scenario 42-1正常TCP诊断](tcp_normal_diagnostic.md)：严格筛选1440条候选正常TCP，996条判正常、444条误报，误报率30.8333%。444条误报全部为`syn-seen`；其中215条与训练恶意记录的18维向量完全一致。该结果定位了部分现有输入信息不足的问题，不等于完成最终测试或在线告警，也不允许把42-1改称未观察的留出集。
