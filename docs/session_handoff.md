@@ -1,6 +1,6 @@
 # Netflow Analyzer会话交接文档
 
-最后更新：2026-09-30（Asia/Shanghai）
+最后更新：2026-10-01（Asia/Shanghai）
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
@@ -23,7 +23,7 @@ cmake -E chdir build ctest --output-on-failure
 
 - 当前功能分支：`feature/flow-features`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
-- 当前分支在既有非root systemd、TCP状态和流表生命周期功能之上，已提交流特征模型、版本化特征CSV、CLI参数、文件生命周期、数据集标签审计、身份规范化、稳定样本ID、元数据sidecar及TCP单行模型输入编码；本次数据集加载层开发前最新提交为`c554ecd feat(ml): add TCP model input encoding`，实际接手时须以`git log`和`git status`为准；
+- 当前分支在既有非root systemd、TCP状态和流表生命周期功能之上，已提交流特征、标签审计、样本连接、TCP编码与加载、张量适配和训练侧预处理；本次线性基线开发前最新提交为`67c573a feat(ml): add train-only TCP feature preprocessing`，线性模型／测试／CMake注册已由用户输入并验收，提交仍由用户完成，实际接手时须以`git log`和`git status`为准；
 - TCP状态机、流记录接入、终端显示、CSV字段和确定性三次握手验收均已提交；接手时仍须先检查工作区，不能覆盖用户后续未提交改动；
 - 离线CLI已新增可选`--flow-idle-timeout SECONDS`，默认继续整文件聚合；确定性6包ICMP验收已证明30秒阈值会导出2包旧流，并把同键后续4包建立为新流。普通流CSV和特征CSV均精确产生两条顺序一致的记录；
 - 当前正式版本宏为`0.2.0`；
@@ -32,8 +32,8 @@ cmake -E chdir build ctest --output-on-failure
 - 本地主程序：`build/bin/netflow-analyzer`；
 - 官方SDK交叉构建目录：`/home/zcb/build/netflow-analyzer-lubancat-sdk-release-v2`；
 - 通用GCC交叉构建目录：`/home/zcb/build/netflow-analyzer-generic-sysroot-release`；
-- 当前`feature/flow-features`的x86_64 Debug普通基线为32项CTest；通过`NFA_ML_PYTHON_EXECUTABLE`显式提供项目`.venv`后，额外注册PyTorch张量与特征预处理测试并达到34/34。LubanCat-2N ARM64原生Debug仍以此前18项基线为已验证状态，新增特征、数据集和模型输入模块尚未上板回归，不能写成板端32或34项已通过。此前单次扫描优化已完成Ubuntu `lo`和LubanCat-2N物理网卡300流手工验收；优化版官方SDK ARM64产物只要求`GLIBC_2.17`，板端得到300次操作、44次淘汰、256条最终流和零drop；TCP状态功能也已在`lo`真实HTTP/1.0连接中处理12包并最终输出`closed`，两个drop字段均为0。
-- 第一版流特征链已经完成：`flow_features_t`从双向流记录提取版本化模型输入，`--feature-csv`支持离线和带`--count`的有限实时模式；运行期间的过期流与淘汰流立即导出，停止时再导出最终剩余流。Ubuntu手工验收分别得到“2包过期流+4包剩余流”以及“44条淘汰流+256条剩余流=300条数据行”。CTU-13标签规则和匹配质量审计已经固化，但当前没有可靠的一对一训练样本、模型训练、异常检测或在线推理。
+- 当前`feature/flow-features`的x86_64 Debug普通配置注册32项CTest；通过`NFA_ML_PYTHON_EXECUTABLE`显式提供项目`.venv`后，额外注册PyTorch张量、特征预处理和线性基线测试，本次全量达到35/35。LubanCat-2N ARM64原生Debug仍以此前18项基线为已验证状态，新增特征、数据集和模型输入模块尚未上板回归，不能写成板端32或35项已通过。此前单次扫描优化已完成Ubuntu `lo`和LubanCat-2N物理网卡300流手工验收；优化版官方SDK ARM64产物只要求`GLIBC_2.17`，板端得到300次操作、44次淘汰、256条最终流和零drop；TCP状态功能也已在`lo`真实HTTP/1.0连接中处理12包并最终输出`closed`，两个drop字段均为0。
+- 第一版流特征链已经完成：`flow_features_t`从双向流记录提取版本化模型输入，`--feature-csv`支持离线和带`--count`的有限实时模式；运行期间的过期流与淘汰流立即导出，停止时再导出最终剩余流。Ubuntu手工验收分别得到“2包过期流+4包剩余流”以及“44条淘汰流+256条剩余流=300条数据行”。CTU-13受截断报文和事务边界限制，未形成可靠训练数据；后续IoT-23 TCP候选链已经完成首次离线线性基线训练与验证，但模型持久化、ARM64推理和在线异常预警尚未实现，当前效果限制见TD-042。
 - `flow_sample_id_v1`现已根据抓包来源、规范化流键和生命周期时间生成稳定SHA-256标识；`flow_sample_metadata_v1` sidecar通过`feature_row_number`把特征行连接到样本身份、匹配状态、候选数量、监督标签和可训练标志。当前契约仅把逐流唯一匹配的正常或恶意样本标为可训练；IoT-23实测存在跨流复用，仍需额外筛选和边界验证，不能直接沿用这一标志生成可靠训练集。身份字段不进入`flow_features_v1`。
 - 新增标签审计测试前，当前分支已经通过x86_64 Release优化构建的20项CTest；独立`build-sanitize`以ASan和UBSan插桩重新构建并通过相同20项测试，没有Sanitizer或泄漏报告。新增的标签审计、身份规范化、样本元数据和匹配审计四项Python数据契约测试目前只在x86_64 Debug测试树执行；Release和Sanitizer构建尚未重新配置。Sanitizer配置通过CMake命令行参数临时建立，尚未成为仓库Preset。
 - CTU-13 Scenario 7已选为第一轮公开数据集对齐试点。标准库Python工具严格审计官方双向`.binetflow`标签，真实114077条记录按保守规则得到63条`malicious`、1669条`benign`和112345条`exclude`；确定性合成CSV测试不依赖外部数据文件。公开全流量文件已经下载并通过bzip2 CRC检查，实际为7466160包的单接口Ethernet pcapng，捕获内容按42至66字节截断但保留原始线路长度。前1000包小样本得到604个`complete`、396个`truncated`、47条最终流、47行特征和零`flow_rejected`。标签侧现已把`CEST +02:00`时间精确转换为UTC Unix微秒，并按与C端一致的IP、端口规则生成双向流身份；首条标签时间与PCAP首包时间精确相等，TCP、UDP、ICMP和不支持协议边界有确定性测试。恶意DNS子集的45包空闲阈值扫描表明：关闭分段时2条流全部歧义；1秒最多得到5条唯一匹配但切成10条流；3秒和5秒均得到4条唯一匹配，其中5秒只产生6条流；10/30/60秒均只有1条唯一匹配，120秒没有唯一匹配。公开UDP包只保留到42字节UDP头，缺少DNS事务ID，而官方标签可在相同五元组相隔约1.258毫秒时生成不同记录，因此任何单一空闲阈值都不能精确重建Argus DNS事务边界。sidecar能够如实记录这些结果，但当前仍未形成正式训练集，也没有训练模型或在线推理。
@@ -73,6 +73,7 @@ cmake -E chdir build ctest --output-on-failure
 - `tcp_candidate_dataset.py`现把完整候选CSV读取为不可变的`train`、`validation`和可选`test`集合，每条保留18维数值元组、0／1标签及可追踪`sample_id`。加载器校验20列表头、候选版本、样本ID格式与唯一性、抓包ID、集合值、同一捕获内严格递增的特征行号、捕获分配稳定性和原始来源不跨集合，并复用`encode_tcp_candidate`检查单行特征；它借用但不关闭调用者文本流，任一错误均抛出`ValueError`且不返回部分数据。合成测试覆盖正常三集合以及坏表头、重复样本、来源泄漏、行号倒退、缺验证集和非TCP输入；真实`tcp-pilot-candidates-v2.csv`只读加载得到训练57767条（正常2221、恶意55546）、验证6008条（正常2、恶意6006）、测试0条，全部宽度18且文件SHA-256仍为`9fe3b49d52b48ad3bd1a301e1ace8017a499e46b1f061f40cfaac3051795369a`。本机x86_64 Debug完整CTest为32/32；Release、Sanitizer和ARM64尚未按新增测试重跑。下一步建立薄的PyTorch张量适配层，再只用训练集合拟合标准化参数；尚未创建张量、拟合预处理或训练模型。
 - `tcp_tensor_dataset.py`现把上述不可变编码集合复制为CPU `float32`张量：特征保持二维`[N,18]`，标签保持一维`[N]`以适配后续单logit二分类损失，`sample_id`继续作为张量外的不可变追踪信息。适配器检查长度、特征宽度、有限值、0／1整数标签、集合内及跨集合样本ID唯一性，并为可选空测试集显式创建`[0,18]`；转换后的张量拥有独立存储，但`frozen`数据类不代表Tensor内容不可变。PyTorch测试通过可选CMake缓存变量`NFA_ML_PYTHON_EXECUTABLE`注册，普通C/libpcap构建不依赖PyTorch；本机显式使用`.venv/bin/python`后完整CTest为33/33。真实63775条候选得到训练特征`[57767,18]`／标签`[57767]`、验证`[6008,18]`／`[6008]`、测试`[0,18]`／`[0]`，恶意标签计数仍为55546和6006，张量本体共4846900字节（约4.622 MiB）。下一步只在训练特征上拟合标准化参数，再把相同参数应用到训练、验证和未来测试集合；尚未拟合预处理或训练模型。
 - `tcp_feature_preprocessing.py`现以版本化`tcp_preprocessing_v1`状态实现训练侧拟合：只对持续时间、包数、两种总字节数和两种平均包长这前6个非负规模特征执行`log1p`与总体标准差标准化；两个不平衡比例、握手标志和9位TCP阶段独热保持0／1原值。拟合以`float64`计算并把均值／尺度保存为不可变Python元组，常量或近常量列用尺度1避免除零；应用阶段复制特征与标签，不修改输入，只允许验证／测试复用现有状态。合成测试覆盖训练参数唯一来源、常量列、空测试集、输入所有权、状态契约、非法尺度和负输入；本机启用ML解释器后完整CTest为34/34。真实训练集拟合后的6列均值在`2e-5`内为0、总体标准差为1，验证集前四列均值约`-0.69`至`-0.71`，说明来源分布不同且验证数据未参与拟合；后12列、标签和样本ID全部保持不变。六个`log_mean`依次为`7.623181018,1.044791771,4.866489490,4.866489490,4.313382133,4.313382133`，`log_scale`为`7.388617733,0.351575494,0.548843847,0.548843847,0.031835683,0.031835683`。当前两对捕获／线路统计得到相同参数，先作为本批数据特征重复现象保留，待训练基线后通过相关性或消融复审；尚未持久化参数、建立DataLoader、处理类别失衡或训练模型。
+- `tcp_linear_baseline.py`新增`tcp_linear_v1`：18权重与1偏置、全0初始化、CPU全批量Adam100次更新、学习率0.05；类别权重只用训练标签计算为`2221/55546`，固定logit阈值0，不读验证侧拟合或更新。直接合成测试及启用ML解释器后的完整35项CTest通过。真实v2候选SHA-256未变，训练57767条、验证6008条、测试0条；加权训练损失由`0.053299639374017715`降至`0.0014024219708517194`。训练混淆计数为`TN=2206, FP=15, FN=15, TP=55531`；验证为`TN=0, FP=2, FN=0, TP=6006`，全部判恶意，与恒判恶意对照完全相同。99.9667%的验证准确率不能当作有效泛化，正常侧仅2条也不能估计部署误报率。模型只在临时进程内训练，尚未保存或上板；完整命令和解释见[tcp_linear_baseline.md](tcp_linear_baseline.md)。下一步保留基线并诊断独立正常TCP，再推进模型／预处理持久化和加载一致性；不要只为验证分数调阈值。
 - 实时`--count`已改为可选上限；本机`lo`在省略上限后能于静默期正常报告，随后处理4个`complete` ICMP包，并在`SIGTERM`后完成统计、流汇总与清理。
 - 主程序已在stdout首次I/O前显式启用行缓冲；严格普通文件重定向测试在进程结束前读到5秒周期报告，避免systemd journal日志延迟到缓冲区填满或服务退出。
 - 提交`740d5ab`的官方SDK ARM64部署包已在LubanCat-2N完成首次非root systemd手工启停：进程使用专用用户，能力仅为`CAP_NET_RAW`，`NoNewPrivs=1`；真实4包ICMP得到1条双向流且两个drop字段为0，SIGTERM正常收尾。
@@ -836,7 +837,7 @@ sudo ./build/bin/netflow-analyzer \
 
 ## 12. 当前测试体系
 
-当前`feature/flow-features`分支的x86_64 Debug构建共有28项CTest，最近一次全量执行全部通过，总耗时约1.39秒。LubanCat-2N板端最新已验证基线仍为特征模块加入前的18项，后续上板时必须重新配置并运行新增测试：
+当前`feature/flow-features`分支的x86_64 Debug普通配置注册32项CTest；本次`NFA_ML_PYTHON_EXECUTABLE`指向项目`.venv/bin/python`，额外注册3项可选ML测试，35/35全部通过，总耗时约6.34秒。下表编号对应本次启用ML的测试树；关闭ML后后续编号会改变，应按测试名称选择。LubanCat-2N板端最新已验证基线仍为特征模块加入前的18项，后续上板时必须重新配置并运行适用的新增测试：
 
 | 编号 | CTest名称 | 主要覆盖 |
 |---:|---|---|
@@ -862,12 +863,19 @@ sudo ./build/bin/netflow-analyzer \
 | 20 | `flow_sample_metadata_tests` | 稳定样本ID、身份不变量、四种匹配状态、可训练标志、固定sidecar表头与记录、借用输出流和失败不写半行 |
 | 21 | `ctu13_flow_match_audit_tests` | 合成标签与流CSV验证唯一、未匹配、排除、不支持协议、两种歧义，以及元数据行号、CLI参数配对、已有文件保护和失败清理 |
 | 22 | `iot23_flow_match_audit_tests` | 合成Zeek标签和C流CSV验证独立CLI唯一恶意摘要，以及有效行后缺字段导致的非零退出、错误信息和stdout无半份摘要 |
-| 23 | `flow_export_tests` | CSV表头、TCP状态字段、协议/状态不变量、记录顺序、格式化和无效参数 |
-| 24 | `flow_expiration_tests` | 事件时间高水位、扫描边界、乱序时间戳、参数验证和截止时间下溢 |
-| 25 | `runtime_metrics_tests` | 累计值差分、PPS/Mbps、流表占用率、零流量、时间边界和溢出保护 |
-| 26 | `tcp_flow_state_tests` | 初始化、稳定名称、双向握手、重传、中途捕获、无效输入、FIN关闭、RST和终止状态 |
-| 27 | `flow_features_tests` | 流特征总量、均值、持续时间、方向不平衡度、TCP状态关系、错误边界和失败不修改输出 |
-| 28 | `flow_feature_export_tests` | `flow_features_v1`表头、TCP/非TCP行、布尔编码、浮点精度、状态不变量和写入错误 |
+| 23 | `ml_split_manifest_tests` | 抓包来源分组、同源不跨集合、训练／验证非空和非法清单拒绝 |
+| 24 | `iot23_pilot_split_tests` | 同源开发试验的相同特征模式成组、重复切分稳定和冲突标签拒绝 |
+| 25 | `tcp_model_input_tests` | TCP18维编码、类别独热、列顺序、元数据隔离和非法特征拒绝 |
+| 26 | `tcp_candidate_dataset_tests` | 完整候选CSV加载、集合与样本身份、来源隔离、行号和字段契约 |
+| 27 | `tcp_tensor_dataset_tests` | 可选ML：CPU float32、张量形状、空测试集、数据所有权与标签校验 |
+| 28 | `tcp_feature_preprocessing_tests` | 可选ML：只用训练侧拟合、常量列、空集合、输入不变和参数契约 |
+| 29 | `tcp_linear_baseline_tests` | 可选ML：合成训练、19参数、重复结果、类别权重、混淆矩阵、零分母和非法输入 |
+| 30 | `flow_export_tests` | CSV表头、TCP状态字段、协议/状态不变量、记录顺序、格式化和无效参数 |
+| 31 | `flow_expiration_tests` | 事件时间高水位、扫描边界、乱序时间戳、参数验证和截止时间下溢 |
+| 32 | `runtime_metrics_tests` | 累计值差分、PPS/Mbps、流表占用率、零流量、时间边界和溢出保护 |
+| 33 | `tcp_flow_state_tests` | 初始化、稳定名称、双向握手、重传、中途捕获、无效输入、FIN关闭、RST和终止状态 |
+| 34 | `flow_features_tests` | 流特征总量、均值、持续时间、方向不平衡度、TCP状态关系、错误边界和失败不修改输出 |
+| 35 | `flow_feature_export_tests` | `flow_features_v1`表头、TCP/非TCP行、布尔编码、浮点精度、状态不变量和写入错误 |
 
 只运行重点测试示例：
 
@@ -1037,12 +1045,13 @@ cmake -E chdir build ctest \
 
 ### 16.4 流特征和机器学习
 
-- 已完成`flow_features_v1`特征计算与版本化CSV，但没有实现模型训练、阈值选择、模型持久化或在线推理；
+- 已完成`flow_features_v1`、IoT-23 TCP候选加载、训练侧预处理及首次线性模型训练；阈值固定为logit 0，尚无阈值优化、模型持久化或在线推理；
+- 首次跨来源验证全部判恶意，与恒判恶意基线相同；验证正常侧仅2条，不能据此声称跨场景识别有效或部署低误报，详见TD-042；
 - 特征CSV不输出IP和端口，可以降低身份记忆风险；独立`flow_sample_metadata_v1` sidecar现已用稳定样本ID连接身份、匹配状态和可选监督标签；
 - `protocol`和`tcp_phase`必须按类别特征处理，`schema_version`不能进入模型；
 - 训练集与实时推理必须对齐列名、顺序、单位、方向定义、类别编码和归一化参数；
 - 优先选择能够取得原始PCAP的公开数据集，让相同C提取器生成特征；只有预聚合表格时，需要逐项记录可映射、需换算和无法复现的字段；
-- 新增特征和数据集模块尚未在LubanCat-2N运行，板端不能宣称24项CTest或特征实时导出已经验证。
+- 新增特征、数据集和模型模块尚未在LubanCat-2N回归，板端仍以此前18项为已验证基线，不能宣称特征实时导出或模型推理已上板验证。
 
 ### 16.5 工程质量
 
@@ -1484,6 +1493,10 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 然后先检查流特征、版本化导出、CLI生命周期、测试、文档和Git提交状态，再进入数据集对齐；性能方法见`docs/performance_baseline.md`与`docs/multiflow_longrun_baseline.md`，交叉构建方法见`docs/cross_compilation.md`。
 
 ## 21. 本次交接结论
+
+最新ML状态（2026-10-01）：从C流特征到IoT-23候选CSV、18维编码、CPU张量、训练侧预处理、线性分类及固定阈值指标的离线链路已经跑通，启用ML解释器后x86_64 Debug为35/35。首次训练的训练侧错误30条，验证侧6008条全预测恶意，与恒判恶意对照相同；完整结果见[tcp_linear_baseline.md](tcp_linear_baseline.md)。未保存模型，未上板推理，未建立在线告警；下一步优先补充独立正常TCP诊断，之后固化模型／预处理保存与加载契约。
+
+以下保留早期阶段记录，其中阶段性测试数量和“尚未实现”表述描述当时状态；当前状态以第1节、第12节和上述最新ML状态为准。
 
 当前项目已经从“离线协议解析练习”发展为一条可实际运行的网络分析主链：
 

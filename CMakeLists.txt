@@ -820,6 +820,26 @@ if(BUILD_TESTING)
             PROPERTIES TIMEOUT 20
         )
 
+                set_tests_properties(
+            tcp_feature_preprocessing_tests
+            PROPERTIES TIMEOUT 20
+        )
+
+        # 合成样本验证训练和指标，不依赖仓库外公开数据集。
+        add_test(
+            NAME tcp_linear_baseline_tests
+            COMMAND
+                ${NFA_ML_PYTHON_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_tcp_linear_baseline.py
+                --scripts-dir
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+        )
+
+        set_tests_properties(
+            tcp_linear_baseline_tests
+            PROPERTIES TIMEOUT 20
+        )
+
     endif()
 
     # 创建CSV流记录导出单元测试程序。
