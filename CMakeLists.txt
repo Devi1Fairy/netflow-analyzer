@@ -80,6 +80,7 @@ add_library(
     src/protocol/ipv4.c
     src/protocol/tcp.c
     src/protocol/udp.c
+    src/protocol/dns.c
     src/protocol/icmp.c
     src/protocol/ipv4_dispatch.c
     src/flow/flow_key.c
@@ -391,6 +392,31 @@ if(BUILD_TESTING)
 
     set_tests_properties(
         udp_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+    # DNS固定头解析器单元测试。
+    add_executable(
+        dns_tests
+        tests/unit/test_dns.c
+    )
+
+    target_link_libraries(
+        dns_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    enable_project_warnings(dns_tests)
+
+    add_test(
+        NAME dns_tests
+        COMMAND dns_tests
+    )
+
+    set_tests_properties(
+        dns_tests
         PROPERTIES
             TIMEOUT 5
     )

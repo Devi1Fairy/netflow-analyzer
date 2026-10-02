@@ -21,6 +21,7 @@ cmake -E chdir build ctest --output-on-failure
 
 预期基线：
 
+- 最新端侧摘要验收（2026-10-02）：原三例质量未通过，normal简化prompt对照又虚构“大量异常连接”；固定事实抽取随后正确复述4条连接和历史每分钟3到5条，却遗漏失败0次，严格完整性仍未通过。事实抽取目录`/media/usb0/netflow-analyzer-data/logs/llm-normal-facts-v1.kXkUhp`，退出0、墙钟25.86秒、生成5.27 token/s、峰值RSS约730.6 MiB；这是用户提供的实际日志，不是助手板端重跑。下一步先在新目录`/home/zcb/build/llama-cpu-x86-ref-v1`构建固定源码的原生CPU参考，再比较同GGUF／prompt／参数输出；参考尚未构建，零计时、错误判断和遗漏原因均未独立定位，不直接接在线告警。详细事实见部署手册第8.1～8.4节及问题7.4～7.6。本次VM主项目构建与36/36项CTest通过（最新复测7.69秒），HEAD为`f7a43cd`并与远程同步；五份验收文档仍待用户提交，不修改源代码或自动提交。
 - 最新补充（2026-10-02）：独立Qwen2.5-0.5B-Instruct Q4_K_M语言模型已在LubanCat-2N CPU上完成首次推理，退出0、生成约5.26 token/s、峰值RSS约687.4 MiB。上游固定提交、SDK构建、用户输入的GCC 9兼容补丁、模型／产物SHA-256和Shell语法均见[local_llm_deployment.md](local_llm_deployment.md)。模型的网络流定义回答不准确，仅工程冒烟通过；没有网络摘要输入、在线告警、剪枝或常驻LLM服务。本项与尚未上板的TCP分类基线分开。
 - 本次实际检查：HEAD为`1e747c3 docs(ml): record normal TCP diagnostic and feature collisions`，分支与远程同步；用户工作区已有`CMakeLists.txt`、`scripts/tcp_feature_preprocessing.py`改动及新增模型产物模块／测试，不覆盖、不自动提交。`cmake --build build`成功，当前启用ML的x86_64 Debug工作区36/36项CTest通过（7.55秒），包含尚未提交的`tcp_model_artifact_tests`。以下35项记录描述此前已提交基线，ARM64网络分析器仍仅确认历史18项；LLM手工验收不计入CTest。
 - 当前功能分支：`feature/flow-features`；
@@ -1222,7 +1223,7 @@ feat(cli): expose live capture filter option
 
 ## 18. 当前推荐路线
 
-最新补充（2026-10-02）：用户希望探索端侧语言模型，当前已完成独立CPU部署的首次短推理。接下来先用固定网络摘要验证正常、异常候选和证据不足三类输入的解释质量，不立即接常驻服务或逐包调用；构建与资源验收见[local_llm_deployment.md](local_llm_deployment.md)和TD-043。保留受限TCP分类对照，模型持久化仍由用户输入和提交；本次文档更新不实现主机窗口、规则检测、有界队列或在线告警。
+最新补充（2026-10-02）：用户希望探索端侧语言模型，当前已完成独立CPU部署、三例人工摘要、normal简化提示词对照和固定事实抽取。三例及简化对照质量未通过；事实抽取正确复述连接数和历史范围，但遗漏失败次数，完整性仍未通过。接下来先构建固定源码的原生x86_64参考产物，再比较同模型与相同任务，不反复针对本例调prompt、不立即接常驻服务或逐包调用。输入／输出／资源记录见[local_llm_deployment.md](local_llm_deployment.md)和TD-043。保留受限TCP分类对照，模型持久化仍由用户输入和提交；本次文档更新不实现主机窗口、规则检测、有界队列或在线告警。
 
 ### 18.1 信号优雅退出（已完成）
 
@@ -1500,6 +1501,8 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 然后先检查流特征、版本化导出、CLI生命周期、测试、文档和Git提交状态，再进入数据集对齐；性能方法见`docs/performance_baseline.md`与`docs/multiflow_longrun_baseline.md`，交叉构建方法见`docs/cross_compilation.md`。
 
 ## 21. 本次交接结论
+
+端侧摘要测试的最新结论：原三例及normal简化prompt对照未通过质量验收；固定事实抽取已正确复述连接数和历史范围，但遗漏失败次数，严格完整性仍未通过。事实抽取25.86秒、生成5.27 token/s、峰值RSS约730.6 MiB、退出0，目录为`llm-normal-facts-v1.kXkUhp`。下一步先建立固定源码的原生x86_64参考构建，再作同GGUF／prompt／参数对照；参考尚未构建，不能提前记录通过，也不能单凭文本同异认定后端正确或补丁错误。保留所有失败日志，不反复针对本例调prompt择优记录。此轮没有建立真实主机窗口、异常检测或在线预警，不能把人工样例结果当作检测准确率。
 
 最新端侧LLM状态（2026-10-02）：官方SDK ARM64 CPU产物已加载SD上的Qwen2.5-0.5B-Instruct Q4_K_M，单轮中文生成退出0；生成约5.26 token/s、整进程14.45秒、峰值RSS约687.4 MiB。回答“网络流是数学模型”未通过本项目概念准确性检查，所以只确认工程部署链，没有确认网络分析或预警能力；LLM与下面的TCP线性模型是两个独立模块。当前VM工作区36项CTest通过，包含未提交的模型保存测试；源代码和Git发布仍由用户控制。完整记录见[local_llm_deployment.md](local_llm_deployment.md)。
 
