@@ -1,6 +1,6 @@
 # Netflow Analyzer会话交接文档
 
-最后更新：2026-10-01（Asia/Shanghai）
+最后更新：2026-10-02（Asia/Shanghai）
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
@@ -21,6 +21,8 @@ cmake -E chdir build ctest --output-on-failure
 
 预期基线：
 
+- 最新补充（2026-10-02）：独立Qwen2.5-0.5B-Instruct Q4_K_M语言模型已在LubanCat-2N CPU上完成首次推理，退出0、生成约5.26 token/s、峰值RSS约687.4 MiB。上游固定提交、SDK构建、用户输入的GCC 9兼容补丁、模型／产物SHA-256和Shell语法均见[local_llm_deployment.md](local_llm_deployment.md)。模型的网络流定义回答不准确，仅工程冒烟通过；没有网络摘要输入、在线告警、剪枝或常驻LLM服务。本项与尚未上板的TCP分类基线分开。
+- 本次实际检查：HEAD为`1e747c3 docs(ml): record normal TCP diagnostic and feature collisions`，分支与远程同步；用户工作区已有`CMakeLists.txt`、`scripts/tcp_feature_preprocessing.py`改动及新增模型产物模块／测试，不覆盖、不自动提交。`cmake --build build`成功，当前启用ML的x86_64 Debug工作区36/36项CTest通过（7.55秒），包含尚未提交的`tcp_model_artifact_tests`。以下35项记录描述此前已提交基线，ARM64网络分析器仍仅确认历史18项；LLM手工验收不计入CTest。
 - 当前功能分支：`feature/flow-features`；
 - 远程仓库：`git@github.com:Devi1Fairy/netflow-analyzer.git`；
 - 当前分支在既有非root systemd、TCP状态和流表生命周期功能之上，已提交流特征、标签审计、样本连接、TCP编码与加载、张量适配、训练侧预处理和线性分类；本次正常TCP诊断前最新提交为`2f6be22 feat(ml): add TCP linear classification baseline`，已同步远程，诊断前工作区干净，实际接手时须以`git log`和`git status`为准；
@@ -838,6 +840,8 @@ sudo ./build/bin/netflow-analyzer \
 
 ## 12. 当前测试体系
 
+最新补充（2026-10-02）：用户工作区已增加可选`tcp_model_artifact_tests`，本次现有构建及36/36项CTest全部通过；该模块、预处理和CMake改动尚未提交，不因本次文档更新宣称模型产物功能已经发布。下面的35项表是之前已提交配置，按测试名称而非旧编号选择。LubanCat-2N仅新增独立LLM手工冒烟，不更新板端CTest数量。
+
 当前`feature/flow-features`分支的x86_64 Debug普通配置注册32项CTest；本次`NFA_ML_PYTHON_EXECUTABLE`指向项目`.venv/bin/python`，额外注册3项可选ML测试，35/35全部通过，总耗时约6.34秒。下表编号对应本次启用ML的测试树；关闭ML后后续编号会改变，应按测试名称选择。LubanCat-2N板端最新已验证基线仍为特征模块加入前的18项，后续上板时必须重新配置并运行适用的新增测试：
 
 | 编号 | CTest名称 | 主要覆盖 |
@@ -1218,6 +1222,8 @@ feat(cli): expose live capture filter option
 
 ## 18. 当前推荐路线
 
+最新补充（2026-10-02）：用户希望探索端侧语言模型，当前已完成独立CPU部署的首次短推理。接下来先用固定网络摘要验证正常、异常候选和证据不足三类输入的解释质量，不立即接常驻服务或逐包调用；构建与资源验收见[local_llm_deployment.md](local_llm_deployment.md)和TD-043。保留受限TCP分类对照，模型持久化仍由用户输入和提交；本次文档更新不实现主机窗口、规则检测、有界队列或在线告警。
+
 ### 18.1 信号优雅退出（已完成）
 
 当前已经使用`sigaction()`、`volatile sig_atomic_t`和`pcap_breakloop()`实现Ctrl+C及SIGTERM的安全结束。下面保留实施时需要持续遵守的约束。
@@ -1494,6 +1500,8 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 然后先检查流特征、版本化导出、CLI生命周期、测试、文档和Git提交状态，再进入数据集对齐；性能方法见`docs/performance_baseline.md`与`docs/multiflow_longrun_baseline.md`，交叉构建方法见`docs/cross_compilation.md`。
 
 ## 21. 本次交接结论
+
+最新端侧LLM状态（2026-10-02）：官方SDK ARM64 CPU产物已加载SD上的Qwen2.5-0.5B-Instruct Q4_K_M，单轮中文生成退出0；生成约5.26 token/s、整进程14.45秒、峰值RSS约687.4 MiB。回答“网络流是数学模型”未通过本项目概念准确性检查，所以只确认工程部署链，没有确认网络分析或预警能力；LLM与下面的TCP线性模型是两个独立模块。当前VM工作区36项CTest通过，包含未提交的模型保存测试；源代码和Git发布仍由用户控制。完整记录见[local_llm_deployment.md](local_llm_deployment.md)。
 
 最新ML状态（2026-10-01）：从C流特征到IoT-23候选CSV、18维编码、CPU张量、训练侧预处理、线性分类及固定阈值指标的离线链路已经跑通，启用ML解释器后x86_64 Debug为35/35。首次训练的训练侧错误30条，验证侧6008条全预测恶意，与恒判恶意对照相同；完整结果见[tcp_linear_baseline.md](tcp_linear_baseline.md)。未保存模型，未上板推理，未建立在线告警；下一步优先补充独立正常TCP诊断，之后固化模型／预处理保存与加载契约。
 

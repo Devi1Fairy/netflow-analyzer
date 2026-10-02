@@ -1,0 +1,88 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu-impl.h b/ggml/src/ggml-cpu/ggml-cpu-impl.h
+index 5dd9ec8..52c17af 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu-impl.h
++++ b/ggml/src/ggml-cpu/ggml-cpu-impl.h
+@@ -296,10 +296,79 @@ inline static uint8x16_t ggml_vqtbl1q_u8(uint8x16_t a, uint8x16_t b) {
+
+ #define ggml_vld1q_s16_x2 vld1q_s16_x2
+ #define ggml_vld1q_u8_x2  vld1q_u8_x2
+-#define ggml_vld1q_u8_x4  vld1q_u8_x4
+ #define ggml_vld1q_s8_x2  vld1q_s8_x2
+-#define ggml_vld1q_s8_x4  vld1q_s8_x4
+-#define ggml_vqtbl1q_s8   vqtbl1q_s8
+-#define ggml_vqtbl1q_u8   vqtbl1q_u8
++
++#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 10
++
++/*
++ * 兼容旧版 GCC：用四次 16 字节读取替代缺失的 x4 接口。
++ *
++ * ptr 必须指向至少 64 字节的可读内存。
++ * 返回四个向量，不修改输入，不分配内存。
++ */
++static inline ggml_uint8x16x4_t
++ggml_vld1q_u8_x4(const uint8_t * ptr) {
++    ggml_uint8x16x4_t result;
++
++    result.val[0] = vld1q_u8(ptr + 0);
++    result.val[1] = vld1q_u8(ptr + 16);
++    result.val[2] = vld1q_u8(ptr + 32);
++    result.val[3] = vld1q_u8(ptr + 48);
++
++    return result;
++}
++
++/*
++ * 与上面的读取布局相同，但每个元素按有符号 8 位整数解释。
++ * ptr 同样必须指向至少 64 字节的可读内存。
++ */
++static inline ggml_int8x16x4_t
++ggml_vld1q_s8_x4(const int8_t * ptr) {
++    ggml_int8x16x4_t result;
++
++    result.val[0] = vld1q_s8(ptr + 0);
++    result.val[1] = vld1q_s8(ptr + 16);
++    result.val[2] = vld1q_s8(ptr + 32);
++    result.val[3] = vld1q_s8(ptr + 48);
++
++    return result;
++}
++
++/*
++ * 兼容旧版 GCC 的非 q 接口。
++ *
++ * 每个向量包含 8 个有符号字节，四个向量共读取 32 字节。
++ * ptr 必须指向至少 32 字节的可读内存。
++ * 不修改输入，不分配内存。
++ */
++static inline int8x8x4_t
++ggml_vld1_s8_x4(const int8_t * ptr) {
++    int8x8x4_t result;
++
++    result.val[0] = vld1_s8(ptr + 0);
++    result.val[1] = vld1_s8(ptr + 8);
++    result.val[2] = vld1_s8(ptr + 16);
++    result.val[3] = vld1_s8(ptr + 24);
++
++    return result;
++}
++
++/*
++ * 部分源码直接调用原始接口。
++ * 在旧 GCC 分支中，将这些调用统一转到兼容函数。
++ */
++#define vld1q_u8_x4 ggml_vld1q_u8_x4
++#define vld1q_s8_x4 ggml_vld1q_s8_x4
++#define vld1_s8_x4  ggml_vld1_s8_x4
++
++#else
++
++#define ggml_vld1q_u8_x4 vld1q_u8_x4
++#define ggml_vld1q_s8_x4 vld1q_s8_x4
++
++#endif
++
++#define ggml_vqtbl1q_s8 vqtbl1q_s8
++#define ggml_vqtbl1q_u8 vqtbl1q_u8
+
+ #endif // !defined(__aarch64__)

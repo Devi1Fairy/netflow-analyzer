@@ -115,7 +115,7 @@ def _validate_tensor_split(
         )
 
 
-def _validate_preprocessing_state(
+def validate_tcp_preprocessing_state(
     state: TcpPreprocessingState,
 ) -> None:
     """验证预处理参数与当前模型输入契约兼容。"""
@@ -228,7 +228,7 @@ def apply_tcp_preprocessing(
         split_name,
         split,
     )
-    _validate_preprocessing_state(state)
+    validate_tcp_preprocessing_state(state)
 
     features = split.features.clone()
     labels = split.labels.clone()

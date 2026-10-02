@@ -840,6 +840,25 @@ if(BUILD_TESTING)
             PROPERTIES TIMEOUT 20
         )
 
+        set_tests_properties(
+            tcp_linear_baseline_tests
+            PROPERTIES TIMEOUT 20
+        )
+
+        add_test(
+            NAME tcp_model_artifact_tests
+            COMMAND
+                ${NFA_ML_PYTHON_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_tcp_model_artifact.py
+                --scripts-dir
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+        )
+
+        set_tests_properties(
+            tcp_model_artifact_tests
+            PROPERTIES TIMEOUT 20
+        )
+
     endif()
 
     # 创建CSV流记录导出单元测试程序。
