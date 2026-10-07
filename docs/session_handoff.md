@@ -21,6 +21,7 @@ cmake -E chdir build ctest --output-on-failure
 
 预期基线：
 
+- 当前DNS进展（2026-10-02）：用户已实现并提交`492bc28 feat(protocol): add bounded DNS header parser`，检查时与`origin/feature/flow-features`同步、工作区干净。本机复测构建、DNS专项测试与37/37项x86_64 Debug CTest通过（7.80秒）；DNS固定头以局部游标／结果读取12字节，失败不修改调用者状态。尚无域名解析、UDP接入或DNS板端验收，ARM64仍只确认此前18项网络分析器测试。先前五份LLM验收文档也已随本次提交保存，不再报告为待提交；本轮新增DNS验收文档仍由用户提交。下一步教用户实现有界域名解码，助手不直接修改C源码。旧LLM原生参考实验暂缓，不将以下历史“下一步”视为当前指令。
 - 最新端侧摘要验收（2026-10-02）：原三例质量未通过，normal简化prompt对照又虚构“大量异常连接”；固定事实抽取随后正确复述4条连接和历史每分钟3到5条，却遗漏失败0次，严格完整性仍未通过。事实抽取目录`/media/usb0/netflow-analyzer-data/logs/llm-normal-facts-v1.kXkUhp`，退出0、墙钟25.86秒、生成5.27 token/s、峰值RSS约730.6 MiB；这是用户提供的实际日志，不是助手板端重跑。下一步先在新目录`/home/zcb/build/llama-cpu-x86-ref-v1`构建固定源码的原生CPU参考，再比较同GGUF／prompt／参数输出；参考尚未构建，零计时、错误判断和遗漏原因均未独立定位，不直接接在线告警。详细事实见部署手册第8.1～8.4节及问题7.4～7.6。本次VM主项目构建与36/36项CTest通过（最新复测7.69秒），HEAD为`f7a43cd`并与远程同步；五份验收文档仍待用户提交，不修改源代码或自动提交。
 - 最新补充（2026-10-02）：独立Qwen2.5-0.5B-Instruct Q4_K_M语言模型已在LubanCat-2N CPU上完成首次推理，退出0、生成约5.26 token/s、峰值RSS约687.4 MiB。上游固定提交、SDK构建、用户输入的GCC 9兼容补丁、模型／产物SHA-256和Shell语法均见[local_llm_deployment.md](local_llm_deployment.md)。模型的网络流定义回答不准确，仅工程冒烟通过；没有网络摘要输入、在线告警、剪枝或常驻LLM服务。本项与尚未上板的TCP分类基线分开。
 - 本次实际检查：HEAD为`1e747c3 docs(ml): record normal TCP diagnostic and feature collisions`，分支与远程同步；用户工作区已有`CMakeLists.txt`、`scripts/tcp_feature_preprocessing.py`改动及新增模型产物模块／测试，不覆盖、不自动提交。`cmake --build build`成功，当前启用ML的x86_64 Debug工作区36/36项CTest通过（7.55秒），包含尚未提交的`tcp_model_artifact_tests`。以下35项记录描述此前已提交基线，ARM64网络分析器仍仅确认历史18项；LLM手工验收不计入CTest。
@@ -841,6 +842,8 @@ sudo ./build/bin/netflow-analyzer \
 
 ## 12. 当前测试体系
 
+最新DNS基线（2026-10-02）：当前HEAD为`492bc28`，构建与37/37项CTest复测通过，新增`dns_tests`覆盖查询／响应固定头、游标位置、大端转换与失败输出不变；`tcp_model_artifact_tests`也在当前已提交工作树中通过。下文35／36项和未提交状态保留为历史快照，选择测试时使用名称而非旧编号。新增DNS尚未在ARM64执行，不更新板端测试数量。
+
 最新补充（2026-10-02）：用户工作区已增加可选`tcp_model_artifact_tests`，本次现有构建及36/36项CTest全部通过；该模块、预处理和CMake改动尚未提交，不因本次文档更新宣称模型产物功能已经发布。下面的35项表是之前已提交配置，按测试名称而非旧编号选择。LubanCat-2N仅新增独立LLM手工冒烟，不更新板端CTest数量。
 
 当前`feature/flow-features`分支的x86_64 Debug普通配置注册32项CTest；本次`NFA_ML_PYTHON_EXECUTABLE`指向项目`.venv/bin/python`，额外注册3项可选ML测试，35/35全部通过，总耗时约6.34秒。下表编号对应本次启用ML的测试树；关闭ML后后续编号会改变，应按测试名称选择。LubanCat-2N板端最新已验证基线仍为特征模块加入前的18项，后续上板时必须重新配置并运行适用的新增测试：
@@ -1036,7 +1039,7 @@ cmake -E chdir build ctest \
 - 不核对ACK号是否精确确认SYN或FIN，同一五元组在`closed`或`reset`后的重新建连尚未处理；
 - 不解析TCP选项；
 - 不验证IPv4/TCP/UDP/ICMP校验和；
-- 不解析DNS、HTTP、TLS等应用层协议；
+- 已有独立DNS固定头读取器，但尚未接入应用处理链；域名、问题和资源记录尚未解析，也不解析HTTP、TLS等应用层协议；
 - 未实现DPI内容识别和规则异常检测。
 
 ### 16.3 流表
@@ -1223,7 +1226,7 @@ feat(cli): expose live capture filter option
 
 ## 18. 当前推荐路线
 
-最新补充（2026-10-02）：用户希望探索端侧语言模型，当前已完成独立CPU部署、三例人工摘要、normal简化提示词对照和固定事实抽取。三例及简化对照质量未通过；事实抽取正确复述连接数和历史范围，但遗漏失败次数，完整性仍未通过。接下来先构建固定源码的原生x86_64参考产物，再比较同模型与相同任务，不反复针对本例调prompt、不立即接常驻服务或逐包调用。输入／输出／资源记录见[local_llm_deployment.md](local_llm_deployment.md)和TD-043。保留受限TCP分类对照，模型持久化仍由用户输入和提交；本次文档更新不实现主机窗口、规则检测、有界队列或在线告警。
+当前路线（2026-10-02）：围绕协议分析、嵌入式Linux与AI工程落地收拢范围，优先推进第一个应用层DNS模块。固定头已提交并通过37项本地回归；下一步为域名标签、压缩指针和长度／跳转边界，随后再接Question区域与UDP处理链。暂缓原生x86_64 LLM参考构建及进一步提示词实验，不创建常驻LLM服务。此前三例、normal对照及事实抽取的质量失败记录全部保留，根因仍未定位；详细证据见[local_llm_deployment.md](local_llm_deployment.md)和TD-043。保留现有TCP分类和模型产物模块，正常误报与输入碰撞限制不因新增DNS而自动解决；本轮不实现主机窗口、规则检测、有界队列或在线告警。
 
 ### 18.1 信号优雅退出（已完成）
 
@@ -1338,12 +1341,12 @@ LubanCat官方SDK交叉产物实测：
 推荐顺序：
 
 1. TCP连接状态基本跟踪（已完成第一版）；
-2. 同一五元组重新建连语义与TCP字节流重组；
-3. DNS解析，先UDP再考虑TCP；
+2. DNS解析，先建立独立UDP应用层模块：固定头已完成，域名和压缩指针为当前下一步；
+3. 同一五元组重新建连语义与TCP字节流重组，为后续TCP应用层协议准备；
 4. HTTP/1.x请求行和头部；
 5. TLS ClientHello元数据，例如SNI和版本；
 6. 可配置规则和异常检测；
-7. 特征导出（第一版已完成）和机器学习训练/推理（未实现）。
+7. 特征导出与受限的离线机器学习训练／评估已完成；ARM64模型推理与在线预警仍待实现和验收。
 
 没有TCP重组时，不能可靠地假设一个应用层消息完整存在于一个TCP包中。
 
@@ -1501,6 +1504,8 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 然后先检查流特征、版本化导出、CLI生命周期、测试、文档和Git提交状态，再进入数据集对齐；性能方法见`docs/performance_baseline.md`与`docs/multiflow_longrun_baseline.md`，交叉构建方法见`docs/cross_compilation.md`。
 
 ## 21. 本次交接结论
+
+当前优先级与验收（2026-10-02）：HEAD为`492bc28`，DNS固定头与37/37项本地CTest已通过，下一步为独立域名解码；助手已更新固定头验收和TD-044，文档由用户提交。以下LLM对照“下一步”为当时计划，现已暂缓，尚未构建或执行，不继续按旧计划自动推进。DNS仍未接入实时／离线主链，板端测试数量保持历史18项，不能声称已完成DNS内容识别、完整DPI或低误报AI预警。
 
 端侧摘要测试的最新结论：原三例及normal简化prompt对照未通过质量验收；固定事实抽取已正确复述连接数和历史范围，但遗漏失败次数，严格完整性仍未通过。事实抽取25.86秒、生成5.27 token/s、峰值RSS约730.6 MiB、退出0，目录为`llm-normal-facts-v1.kXkUhp`。下一步先建立固定源码的原生x86_64参考构建，再作同GGUF／prompt／参数对照；参考尚未构建，不能提前记录通过，也不能单凭文本同异认定后端正确或补丁错误。保留所有失败日志，不反复针对本例调prompt择优记录。此轮没有建立真实主机窗口、异常检测或在线预警，不能把人工样例结果当作检测准确率。
 
