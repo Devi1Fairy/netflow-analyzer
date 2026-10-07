@@ -80,6 +80,7 @@ add_library(
     src/protocol/ipv4.c
     src/protocol/tcp.c
     src/protocol/udp.c
+    src/protocol/dns.c
     src/protocol/icmp.c
     src/protocol/ipv4_dispatch.c
     src/flow/flow_key.c
@@ -147,6 +148,15 @@ install(
     RUNTIME
         DESTINATION "${CMAKE_INSTALL_BINDIR}"
         COMPONENT Runtime
+)
+
+# 普通构建和板端测试不强制依赖PyTorch。
+# 需要运行ML测试时，由调用者显式提供带PyTorch的Python解释器。
+set(
+    NFA_ML_PYTHON_EXECUTABLE
+    ""
+    CACHE FILEPATH
+    "Python interpreter containing the optional ML dependencies"
 )
 
 # 引入CTest并创建BUILD_TESTING选项。
@@ -382,6 +392,31 @@ if(BUILD_TESTING)
 
     set_tests_properties(
         udp_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+    # DNS固定头解析器单元测试。
+    add_executable(
+        dns_tests
+        tests/unit/test_dns.c
+    )
+
+    target_link_libraries(
+        dns_tests
+        PRIVATE
+            analyzer_core
+    )
+
+    enable_project_warnings(dns_tests)
+
+    add_test(
+        NAME dns_tests
+        COMMAND dns_tests
+    )
+
+    set_tests_properties(
+        dns_tests
         PROPERTIES
             TIMEOUT 5
     )
@@ -688,6 +723,169 @@ if(BUILD_TESTING)
         PROPERTIES
             TIMEOUT 10
     )
+
+    # 使用合成Zeek标签和C流CSV验证IoT-23审计CLI。
+    # 不依赖仓库外的公开数据集。
+    add_test(
+        NAME iot23_flow_match_audit_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_iot23_flow_match_audit.py
+            --script
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/audit_iot23_flow_matches.py
+            --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}
+    )
+
+    set_tests_properties(
+        iot23_flow_match_audit_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
+    # 用合成抓包来源验证训练/验证隔离，不依赖外部数据集。
+    add_test(
+        NAME ml_split_manifest_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_ml_split_manifest.py
+            --script
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/validate_ml_split_manifest.py
+            --work-dir
+            ${CMAKE_CURRENT_BINARY_DIR}
+    )
+
+    set_tests_properties(
+        ml_split_manifest_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
+    # 合成候选数据验证同源开发试验的特征分组；不依赖公开数据集。
+    add_test(
+        NAME iot23_pilot_split_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_iot23_pilot_split.py
+            --scripts-dir
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+    )
+
+    set_tests_properties(
+        iot23_pilot_split_tests
+        PROPERTIES TIMEOUT 10
+    )
+
+    # 验证TCP候选到模型输入的固定列顺序、独热状态和错误边界。
+    # 测试只使用合成记录，不依赖PyTorch或仓库外公开数据集。
+    add_test(
+        NAME tcp_model_input_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_tcp_model_input.py
+            --scripts-dir
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+    )
+
+    set_tests_properties(
+        tcp_model_input_tests
+        PROPERTIES TIMEOUT 10
+    )
+
+    # 验证候选CSV的来源隔离、行顺序和分集合加载。
+    # 加载层不依赖PyTorch或仓库外公开数据集。
+    add_test(
+        NAME tcp_candidate_dataset_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_tcp_candidate_dataset.py
+            --scripts-dir
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+    )
+
+    set_tests_properties(
+        tcp_candidate_dataset_tests
+        PROPERTIES TIMEOUT 10
+    )
+
+    # PyTorch属于可选训练依赖，不改变普通C/libpcap测试环境。
+    if(NFA_ML_PYTHON_EXECUTABLE)
+        if(NOT EXISTS "${NFA_ML_PYTHON_EXECUTABLE}")
+            message(
+                FATAL_ERROR
+                "NFA_ML_PYTHON_EXECUTABLE does not exist: "
+                "${NFA_ML_PYTHON_EXECUTABLE}"
+            )
+        endif()
+
+        add_test(
+            NAME tcp_tensor_dataset_tests
+            COMMAND
+                ${NFA_ML_PYTHON_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_tcp_tensor_dataset.py
+                --scripts-dir
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+        )
+
+        set_tests_properties(
+            tcp_tensor_dataset_tests
+            PROPERTIES TIMEOUT 20
+        )
+
+        add_test(
+            NAME tcp_feature_preprocessing_tests
+            COMMAND
+                ${NFA_ML_PYTHON_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_tcp_feature_preprocessing.py
+                --scripts-dir
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+        )
+
+        set_tests_properties(
+            tcp_feature_preprocessing_tests
+            PROPERTIES TIMEOUT 20
+        )
+
+                set_tests_properties(
+            tcp_feature_preprocessing_tests
+            PROPERTIES TIMEOUT 20
+        )
+
+        # 合成样本验证训练和指标，不依赖仓库外公开数据集。
+        add_test(
+            NAME tcp_linear_baseline_tests
+            COMMAND
+                ${NFA_ML_PYTHON_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_tcp_linear_baseline.py
+                --scripts-dir
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+        )
+
+        set_tests_properties(
+            tcp_linear_baseline_tests
+            PROPERTIES TIMEOUT 20
+        )
+
+        set_tests_properties(
+            tcp_linear_baseline_tests
+            PROPERTIES TIMEOUT 20
+        )
+
+        add_test(
+            NAME tcp_model_artifact_tests
+            COMMAND
+                ${NFA_ML_PYTHON_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_tcp_model_artifact.py
+                --scripts-dir
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+        )
+
+        set_tests_properties(
+            tcp_model_artifact_tests
+            PROPERTIES TIMEOUT 20
+        )
+
+    endif()
 
     # 创建CSV流记录导出单元测试程序。
     add_executable(

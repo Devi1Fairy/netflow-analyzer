@@ -7,6 +7,8 @@ import sys
 import tempfile
 from pathlib import Path
 from test_iot23_label_audit import build_record, write_log
+import csv
+from io import StringIO
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -31,7 +33,25 @@ def main() -> int:
     from iot23_label_index import (
         build_label_index,
         flow_key_from_identity,
-        load_label_index
+        load_label_index,
+        classify_flow_interval,
+        LabelInterval,
+        classify_interval_boundary
+    )
+    from iot23_flow_review import (
+        IOT23_REVIEW_SCHEMA_VERSION,
+        IOT23_REVIEW_CSV_COLUMNS,
+        write_iot23_review_csv_header,
+        REVIEW_NOT_UNIQUE,
+        REVIEW_UNIQUE_REUSED,
+        REVIEW_UNIQUE_UNREUSED_CANDIDATE,
+        validate_iot23_review_record,
+        write_iot23_review_csv_record
+    )
+    from flow_sample_metadata import (
+        FlowSampleIdentity,
+        build_sample_metadata,
+        FlowSampleMetadata
     )
 
     endpoint_a = FlowEndpoint(
@@ -114,6 +134,566 @@ def main() -> int:
         pass
     else:
         raise RuntimeError("unknown label was accepted")
+
+    tcp_key = flow_key_from_identity(first)
+    udp_key = flow_key_from_identity(udp)
+
+    overlapping_malicious = Iot23FlowIdentity(
+        protocol=6,
+        endpoint_a=endpoint_a,
+        endpoint_b=endpoint_b,
+        start_time_microseconds=105,
+        end_time_microseconds=115,
+    )
+    same_label_index = build_label_index(
+        [
+            (first, "malicious"),
+            (overlapping_malicious, "malicious"),
+        ]
+    )
+
+    cases = (
+        # 区间端点相等仍算匹配。
+        (index, tcp_key, 110, 110, "unique", 1, "malicious", 0),
+        # 同键但时间不相交。
+        (index, tcp_key, 111, 199, "unmatched", 0, None, None),
+        # 零时长标签。
+        (index, tcp_key, 200, 200, "unique", 1, "benign", 1),
+        # 两个候选给出相反标签。
+        (
+            index,
+            tcp_key,
+            100,
+            200,
+            "ambiguous_conflicting_labels",
+            2,
+            None,
+            None,
+        ),
+        # 两个候选标签相同，仍不是唯一匹配。
+        (
+            same_label_index,
+            tcp_key,
+            106,
+            106,
+            "ambiguous_same_label",
+            2,
+            "malicious",
+            None,
+        ),
+        # 相同端点但协议不同，不能串到TCP候选。
+        (index, udp_key, 300, 300, "unique", 1, "benign", 0),
+    )
+
+    for (
+        current_index,
+        current_key,
+        start,
+        end,
+        expected_status,
+        expected_count,
+        expected_group,
+        expected_candidate_index,
+    ) in cases:
+        result = classify_flow_interval(
+            current_index,
+            current_key,
+            start,
+            end,
+        )
+
+        actual = (
+            result.status,
+            result.candidate_count,
+            result.label_group,
+            result.unique_candidate_index,
+        )
+        expected = (
+            expected_status,
+            expected_count,
+            expected_group,
+            expected_candidate_index,
+        )
+
+        if actual != expected:
+            raise RuntimeError(
+                f"unexpected match classification: "
+                f"{actual!r} != {expected!r}"
+            )
+
+    boundary_cases = (
+        (100, 110, 100, 110, "exact"),
+        (102, 108, 100, 110, "flow_inside_label"),
+        (95, 115, 100, 110, "label_inside_flow"),
+        (95, 105, 100, 110, "partial_overlap"),
+        (110, 120, 100, 110, "partial_overlap"),
+        (111, 120, 100, 110, "disjoint"),
+        (200, 200, 200, 200, "exact"),
+    )
+
+    for flow_start, flow_end, label_start, label_end, expected in boundary_cases:
+        label = LabelInterval(
+            start_microseconds=label_start,
+            end_microseconds=label_end,
+            label_group="benign",
+        )
+        actual = classify_interval_boundary(
+            flow_start,
+            flow_end,
+            label,
+        )
+        if actual != expected:
+            raise RuntimeError(
+                f"unexpected boundary relation: {actual!r} != {expected!r}"
+            )
+
+    try:
+        classify_interval_boundary(
+            111,
+            100,
+            LabelInterval(100, 110, "benign"),
+        )
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError("reversed interval was accepted")
+
+    try:
+        classify_flow_interval(index, tcp_key, 201, 200)
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError("reversed flow interval was accepted")
+
+    from flow_csv_identity  import EXPECTED_FLOW_COLUMNS
+    from flow_feature_alignment import (
+        EXPECTED_FEATURE_COLUMNS,
+        validate_flow_feature_alignment,
+    )
+    from audit_iot23_flow_matches import (
+            audit_flow_csv,
+            audit_flow_csv_with_unreused_rows,
+            classify_iot23_row_review,
+            write_iot23_review_csv,
+        )
+
+    audit_index = build_label_index(
+        [
+            (first, "malicious"),
+            (overlapping_malicious, "malicious"),
+            (second, "benign"),
+            (udp, "benign"),
+        ]
+    )
+
+    # StringIO是内存中的文本流，不需要创建真实CSV文件。
+    flow_stream = StringIO()
+    writer = csv.writer(flow_stream)
+    writer.writerow(EXPECTED_FLOW_COLUMNS)
+
+    for protocol, start, end in (
+        (6, 100, 100),   # 唯一恶意
+        (6, 106, 106),   # 两个同为恶意的候选
+        (6, 100, 200),   # 恶意与正常候选冲突
+        (6, 150, 160),   # 未匹配
+        (17, 300, 300),  # 唯一正常
+        (6, 101, 102),   # 与首条TCP流复用同一标签
+    ):
+        writer.writerow(
+            (
+                protocol,
+                "established"
+                if protocol == 6
+                else "not-applicable",
+                "192.168.2.5",
+                1234,
+                "198.51.100.20",
+                80,
+                1, 60, 60,
+                0, 0, 0,
+                0, start,
+                0, end,
+            )
+        )
+
+    # 写完后读写位置在末尾；读CSV前必须回到开头。
+    flow_stream.seek(0)
+
+    audit_counts = audit_flow_csv(
+        audit_index,
+        flow_stream,
+    )
+
+    expected_counts = {
+        "flows_total": 6,
+        "matches_unique": 3,
+        "matches_unique_malicious": 2,
+        "matches_unique_benign": 1,
+        "matches_unmatched": 1,
+        "matches_ambiguous_same_label": 1,
+        "matches_ambiguous_conflicting_labels": 1,
+        "unique_label_records": 2,
+        "reused_label_records": 1,
+        "duplicate_unique_assignments": 1,
+        "matches_unique_unreused": 1,
+        "matches_unique_reused": 2,
+    }
+
+    if audit_counts != expected_counts:
+        raise RuntimeError(
+            f"unexpected audit counts: {audit_counts!r}"
+        )
+
+    # 重新从开头读取：上面的audit_flow_csv已经消费了文本流。
+    flow_stream.seek(0)
+
+    detailed_counts, unreused_rows = (
+        audit_flow_csv_with_unreused_rows(
+            audit_index,
+            flow_stream,
+        )
+    )
+
+    if detailed_counts != expected_counts:
+        raise RuntimeError(
+            f"unexpected detailed counts: {detailed_counts!r}"
+        )
+
+    if unreused_rows != frozenset({5}):
+        raise RuntimeError(
+            f"unexpected unreused rows: {unreused_rows!r}"
+        )
+
+    review_cases = (
+        (1, "unique", "unique_reused"),
+        (2, "ambiguous_same_label", "not_unique"),
+        (3, "ambiguous_conflicting_labels", "not_unique"),
+        (4, "unmatched", "not_unique"),
+        (5, "unique", "unique_unreused_candidate"),
+        (6, "unique", "unique_reused"),
+    )
+
+    review_output = StringIO()
+    write_iot23_review_csv_header(review_output)
+
+    expected_header = (
+        "review_schema_version,feature_schema_version,"
+        "feature_row_number,sample_id,capture_id,protocol,"
+        "endpoint_a_ip,endpoint_a_port,endpoint_b_ip,"
+        "endpoint_b_port,first_seen_unix_microseconds,"
+        "last_seen_unix_microseconds,match_status,"
+        "candidate_count,label_group,review_status\n"
+    )
+
+    if IOT23_REVIEW_SCHEMA_VERSION != "iot23_flow_review_v1":
+        raise RuntimeError("unexpected review schema version")
+
+    if review_output.getvalue() != expected_header:
+        raise RuntimeError("unexpected IoT-23 review CSV header")
+
+    if IOT23_REVIEW_CSV_COLUMNS != tuple(
+        expected_header.strip().split(",")
+    ):
+        raise RuntimeError("review CSV columns differ from header")
+
+    for row_number, match_status, expected in review_cases:
+        actual = classify_iot23_row_review(
+            row_number,
+            match_status,
+            unreused_rows,
+        )
+        if actual != expected:
+            raise RuntimeError(
+                f"row {row_number}: {actual!r} != {expected!r}"
+            )
+
+    identity = FlowSampleIdentity(
+        capture_id="iot23-scenario-3-1",
+        protocol=6,
+        endpoint_a_ipv4=endpoint_a.ipv4_address,
+        endpoint_a_port=endpoint_a.port,
+        endpoint_b_ipv4=endpoint_b.ipv4_address,
+        endpoint_b_port=endpoint_b.port,
+        first_seen_microseconds=100,
+        last_seen_microseconds=110,
+    )
+
+    unique_metadata = build_sample_metadata(
+        identity=identity,
+        feature_row_number=1,
+        match_status="unique",
+        candidate_count=1,
+        label_group="malicious",
+    )
+    unmatched_metadata = build_sample_metadata(
+        identity=identity,
+        feature_row_number=4,
+        match_status="unmatched",
+        candidate_count=0,
+        label_group=None,
+    )
+
+    valid_cases = (
+        (unique_metadata, REVIEW_UNIQUE_REUSED),
+        (unique_metadata, REVIEW_UNIQUE_UNREUSED_CANDIDATE),
+        (unmatched_metadata, REVIEW_NOT_UNIQUE),
+    )
+
+    for metadata, review_status in valid_cases:
+        if validate_iot23_review_record(
+            metadata, review_status
+        ) != metadata:
+            raise RuntimeError("valid review record changed")
+
+    write_iot23_review_csv_record(
+        review_output,
+        unique_metadata,
+        REVIEW_UNIQUE_REUSED,
+    )
+    write_iot23_review_csv_record(
+        review_output,
+        unmatched_metadata,
+        REVIEW_NOT_UNIQUE,
+    )
+
+    expected_records = (
+        "iot23_flow_review_v1,flow_features_v1,1,"
+        f"{unique_metadata.sample_id},"
+        "iot23-scenario-3-1,6,192.168.2.5,1234,"
+        "198.51.100.20,80,100,110,unique,1,malicious,"
+        "unique_reused\n"
+        "iot23_flow_review_v1,flow_features_v1,4,"
+        f"{unmatched_metadata.sample_id},"
+        "iot23-scenario-3-1,6,192.168.2.5,1234,"
+        "198.51.100.20,80,100,110,unmatched,0,,not_unique\n"
+    )
+
+    if review_output.getvalue() != expected_header + expected_records:
+        raise RuntimeError("unexpected IoT-23 review CSV records")
+
+    invalid_metadata = FlowSampleMetadata(
+        feature_row_number=7,
+        identity=identity,
+        match_status="unique",
+        candidate_count=0,
+        label_group="malicious",
+    )
+
+    invalid_cases = (
+        (unique_metadata, REVIEW_NOT_UNIQUE),
+        (unmatched_metadata, REVIEW_UNIQUE_REUSED),
+        (unique_metadata, "unknown"),
+        (
+            invalid_metadata,
+            REVIEW_UNIQUE_UNREUSED_CANDIDATE,
+        ),
+    )
+
+    for metadata, review_status in invalid_cases:
+        try:
+            validate_iot23_review_record(
+                metadata, review_status
+            )
+        except ValueError:
+            pass
+        else:
+            raise RuntimeError(
+                "invalid review combination was accepted"
+            )
+
+    before_invalid = review_output.getvalue()
+
+    for metadata, review_status in invalid_cases:
+        try:
+            write_iot23_review_csv_record(
+                review_output,
+                metadata,
+                review_status,
+            )
+        except ValueError:
+            pass
+        else:
+            raise RuntimeError(
+                "invalid review record was written"
+            )
+
+        if review_output.getvalue() != before_invalid:
+            raise RuntimeError(
+                "invalid review record changed the output"
+            )
+
+    # 现有flow_stream包含六行合成C流。此前审计已经把位置读到末尾。
+    flow_stream.seek(0)
+    batch_output = StringIO()
+
+    batch_counts = write_iot23_review_csv(
+        index=audit_index,
+        input_stream=flow_stream,
+        output_stream=batch_output,
+        capture_id="iot23-scenario-3-1",
+    )
+
+    if batch_counts != expected_counts:
+        raise RuntimeError(
+            f"unexpected batch audit counts: {batch_counts!r}"
+        )
+
+    batch_reader = csv.DictReader(
+        StringIO(batch_output.getvalue())
+    )
+
+    if tuple(batch_reader.fieldnames or ()) != (
+        IOT23_REVIEW_CSV_COLUMNS
+    ):
+        raise RuntimeError(
+            "unexpected batch review CSV header"
+        )
+
+    batch_rows = list(batch_reader)
+
+    if len(batch_rows) != 6:
+        raise RuntimeError(
+            "batch review CSV must contain six data rows"
+        )
+
+    if [
+        row["feature_row_number"]
+        for row in batch_rows
+    ] != [str(number) for number in range(1, 7)]:
+        raise RuntimeError(
+            "batch feature row numbers are incorrect"
+        )
+
+    if [
+        row["match_status"]
+        for row in batch_rows
+    ] != [case[1] for case in review_cases]:
+        raise RuntimeError(
+            "batch match statuses are incorrect"
+        )
+
+    if [
+        row["review_status"]
+        for row in batch_rows
+    ] != [case[2] for case in review_cases]:
+        raise RuntimeError(
+            "batch review statuses are incorrect"
+        )
+
+    # 第一遍遇到坏CSV时，批量函数不应开始写审查文件。
+    bad_flow_stream = StringIO(
+        flow_stream.getvalue() + "6\n"
+    )
+    bad_output = StringIO()
+
+    try:
+        write_iot23_review_csv(
+            index=audit_index,
+            input_stream=bad_flow_stream,
+            output_stream=bad_output,
+            capture_id="iot23-scenario-3-1",
+        )
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError(
+            "malformed flow CSV was accepted"
+        )
+
+    if bad_output.getvalue():
+        raise RuntimeError(
+            "malformed flow CSV produced review output"
+        )
+
+    feature_stream = StringIO()
+    feature_writer = csv.writer(
+        feature_stream,
+        lineterminator="\n",
+    )
+    feature_writer.writerow(EXPECTED_FEATURE_COLUMNS)
+
+    for flow in csv.DictReader(
+        StringIO(flow_stream.getvalue())
+    ):
+        protocol = int(flow["protocol"])
+
+        first_seen = (
+            int(flow["first_seen_seconds"]) * 1_000_000
+            + int(flow["first_seen_microseconds"])
+        )
+        last_seen = (
+            int(flow["last_seen_seconds"]) * 1_000_000
+            + int(flow["last_seen_microseconds"])
+        )
+
+        feature_writer.writerow(
+            (
+                "flow_features_v1",
+                protocol,
+                last_seen - first_seen,
+                1,       # 总包数
+                60,      # 总捕获字节
+                60,      # 总线路字节
+                60,      # 平均捕获包长
+                60,      # 平均线路包长
+                1,       # 包数方向不平衡度
+                1,       # 字节方向不平衡度
+                int(protocol == 6),
+                flow["tcp_state"],
+                int(protocol == 6),
+            )
+        )
+
+    checked = validate_flow_feature_alignment(
+        StringIO(flow_stream.getvalue()),
+        StringIO(feature_stream.getvalue()),
+    )
+
+    if checked != 6:
+        raise RuntimeError(
+            f"expected six aligned rows, got {checked}"
+        )
+
+    # 数据行数相同，但把唯一一条UDP特征伪装成TCP：必须拒绝。
+    wrong_rows = list(
+        csv.reader(StringIO(feature_stream.getvalue()))
+    )
+    wrong_rows[5][1] = "6"
+
+    wrong_feature_stream = StringIO()
+    csv.writer(
+        wrong_feature_stream,
+        lineterminator="\n",
+    ).writerows(wrong_rows)
+
+    try:
+        validate_flow_feature_alignment(
+            StringIO(flow_stream.getvalue()),
+            StringIO(wrong_feature_stream.getvalue()),
+        )
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError(
+            "misaligned feature protocol was accepted"
+        )
+
+    # 少一条特征数据行：不能让zip悄悄忽略多出的流。
+    short_feature_text = "".join(
+        feature_stream.getvalue().splitlines(keepends=True)[:-1]
+    )
+
+    try:
+        validate_flow_feature_alignment(
+            StringIO(flow_stream.getvalue()),
+            StringIO(short_feature_text),
+        )
+    except ValueError:
+        pass
+    else:
+        raise RuntimeError(
+            "short feature CSV was accepted"
+        )
 
     if not arguments.work_dir.is_dir():
         raise RuntimeError("work directory does not exist")
