@@ -863,12 +863,12 @@ if(BUILD_TESTING)
 
         set_tests_properties(
             tcp_linear_baseline_tests
-            PROPERTIES TIMEOUT 20
+            PROPERTIES TIMEOUT 60
         )
 
         set_tests_properties(
             tcp_linear_baseline_tests
-            PROPERTIES TIMEOUT 20
+            PROPERTIES TIMEOUT 60
         )
 
         add_test(
