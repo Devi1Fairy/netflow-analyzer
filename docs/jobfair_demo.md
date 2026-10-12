@@ -1,12 +1,12 @@
 # 招聘会演示：设备流量采集、双向流与特征导出
 
-最后更新：2026-10-11。目标为2026-10-14下午招聘会。
+最后更新：2026-10-12。目标为2026-10-14下午招聘会。
 
 ## 1. 展示范围与当前结论
 
 本轮收敛到已有的Linux C11网络流分析主链：设备通信、libpcap采集、协议解析、双向流聚合、TCP旁路状态、运行指标和特征CSV。暂缓DNS后续解析、LLM对照、模型上板、GUI、云端和正式多线程流水线，不把规划功能写成已实现能力。
 
-当前已完成新版ARM64产物的物理网卡ICMP与特征导出手工验收。下文TCP设备消息演示尚待用户执行；历史板端TCP验收不能替代这次新产物的验证。
+当前已完成新版ARM64产物的物理网卡ICMP与特征导出手工验收，以及10秒静默SIGTERM收尾检查。首次TCP采集未通过验收，完整TCP设备消息演示仍待重测；历史板端TCP验收不能替代这次新产物的验证。
 
 现有AI数据处理、PyTorch基线与误报诊断保留为实验模块。独立正常TCP诊断误报率为30.8333%，不能包装成低误报异常预警；见[tcp_normal_diagnostic.md](tcp_normal_diagnostic.md)。
 
@@ -106,7 +106,59 @@ flow_features_v1,1,1001706,4,392,392,98,98,0,0,0,not-applicable,0
 
 目标是观察握手、请求／响应和正常关闭，并生成一条TCP特征。使用临时Python标准库socket发生器，不使用HTTP、DNS、真实恶意流量或LLM。发生器不是分析器的新功能，C程序也不会解析下面的应用消息文本。
 
-需要三个终端：开发板A抓包，开发板B临时服务端，虚拟机C客户端。按A、B、C顺序执行；抓包必须先启动，客户端必须等服务端打印`ready`后才连接。
+需要三个独立终端：开发板A抓包，开发板B临时服务端，虚拟机C客户端。先把三个终端和各自命令准备好，再按A、B、C顺序执行。A抓包尚未返回提示符时就切换到B启动服务端；B打印`ready`后立即到C连接，不能等A采集结束后才执行B或C。C必须在虚拟机运行；开发板自己连接自己的地址通常走`lo`，不会出现在本次`eth0`采集中。
+
+### 5.0 已完成：静默SIGTERM收尾对照
+
+首次TCP结果目录为`/home/cat/nfa-demo-tcp.BVQJ81`。用户提供的原始日志有9个约5秒的零包报告，但没有最终汇总；`features.csv`为0字节，排查时没有找到演示程序进程。根分区仍有748 MiB可用，用户确认按过Ctrl+C，退出码变量未保存。没有收到B、C终端的通信输出，不能确认连接是否在采集窗口内发生，也不能从日志缺失反推出具体退出信号。旧目录保留，不覆盖。
+
+随后用户执行10秒、直接重定向到日志文件、不使用管道的静默对照，未启动服务端或客户端。实际结果目录为`/home/cat/nfa-demo-close.Ew7nns`：
+
+```text
+收尾检查退出码：0
+Runtime metrics: interval=5.006 packets=0 complete=0 truncated=0 malformed=0 unsupported=0 flow_rejected=0 captured_bytes=0 wire_bytes=0 pps=0.00 captured_mbps=0.000000 wire_mbps=0.000000 active_flows=0/256 flow_table_usage=0.00% expired_flows=0 evicted_flows=0
+Total packets: 0
+Previewed packets: 0
+Processing results: complete=0 truncated=0 malformed=0 unsupported=0 flow_rejected=0
+Flow table probes: operations=0 inspected_slots=0 average=0.00 maximum=0 saturated=false
+Expired flows: 0
+Evicted flows: 0
+Capture received packets: 5
+Capture dropped packets: 0
+Interface dropped packets: 0
+Flow summary: 0 flow(s)
+Feature CSV output: /home/cat/nfa-demo-close.Ew7nns/features.csv
+```
+
+`wc -l`实际为1行。用户未贴出该行原文，但当前写出实现及正常关闭结果支持表头已保存；不能把它描述成已有TCP特征数据。`Capture received packets: 5`是后端统计，不等同于分析器处理的匹配TCP包数，本轮不猜测这5个事件的协议或来源。
+
+对照命令如下，不产生测试流量，不按Ctrl+C：
+
+```bash
+sudo -v
+NFA_CLOSE_BIN=/home/cat/bin/nfa-demo-7bce180/netflow-analyzer
+NFA_CLOSE_DIR="$(mktemp -d /home/cat/nfa-demo-close.XXXXXX)"
+printf '检查目录：%s\n' "$NFA_CLOSE_DIR"
+
+if sudo timeout --preserve-status --signal=TERM --kill-after=5s 10s \
+    "$NFA_CLOSE_BIN" \
+    --interface eth0 \
+    --count 1000 \
+    --filter "tcp and host 192.168.1.102 and port 18080" \
+    --feature-csv "$NFA_CLOSE_DIR/features.csv" \
+    > "$NFA_CLOSE_DIR/run.txt" 2>&1
+then
+    NFA_CLOSE_STATUS=0
+else
+    NFA_CLOSE_STATUS=$?
+fi
+
+printf '收尾检查退出码：%s\n' "$NFA_CLOSE_STATUS"
+sed -n '1,120p' "$NFA_CLOSE_DIR/run.txt"
+wc -l "$NFA_CLOSE_DIR/features.csv"
+```
+
+本次只证明该程序在无匹配流量、直接日志输出和定时SIGTERM下能够正常输出汇总并关闭CSV，不证明TCP握手或关闭特征已经通过。普通`tee`配合前台Ctrl+C存在收尾输出丢失风险；此前VM最小管道对照保留了这一风险的证据，但没有重放板端真实故障或确认SIGPIPE。完整问题边界见[问题5.20](problem_log.md#520-tcp演示按ctrlc后缺少最终汇总且特征csv为空)。
 
 ### 5.1 开发板A：检查端口并开始抓包
 
@@ -114,30 +166,34 @@ flow_features_v1,1,1001706,4,392,392,98,98,0,0,0,not-applicable,0
 NFA_TCP_BIN=/home/cat/bin/nfa-demo-7bce180/netflow-analyzer
 sha256sum "$NFA_TCP_BIN"
 ss -ltn 'sport = :18080'
+sudo -v
 ```
 
-`ss`预期只有表头，没有`LISTEN`记录。如果18080已被占用，先停止并查看，不杀死未知进程。
+`ss`预期只有表头，没有`LISTEN`记录。如果18080已被占用，先停止并查看，不杀死未知进程。`sudo -v`先完成认证，避免准备通信时才被密码提示打断。预检查通过后再执行下面的采集命令。
 
 ```bash
 NFA_TCP_DIR="$(mktemp -d /home/cat/nfa-demo-tcp.XXXXXX)"
 printf 'TCP结果目录：%s\n' "$NFA_TCP_DIR"
-set -o pipefail
 
-sudo timeout --preserve-status --signal=TERM --kill-after=5s 90s \
+if sudo timeout --preserve-status --signal=TERM --kill-after=5s 90s \
     "$NFA_TCP_BIN" \
     --interface eth0 \
     --count 1000 \
     --filter "tcp and host 192.168.1.102 and port 18080" \
     --feature-csv "$NFA_TCP_DIR/features.csv" \
-    2>&1 | tee "$NFA_TCP_DIR/run.txt"
+    > "$NFA_TCP_DIR/run.txt" 2>&1
+then
+    NFA_TCP_STATUS=0
+else
+    NFA_TCP_STATUS=$?
+fi
 
-NFA_TCP_STATUS=$?
 printf 'TCP抓包退出码：%s\n' "$NFA_TCP_STATUS"
 ```
 
-`--count 1000`是有限特征导出要求的包数安全上限，不是本次必须发1000包，也不能用很小的上限截断握手或关闭过程。建议客户端和服务端均打印PASS后，及时在开发板A按Ctrl+C收尾；90秒期限发送SIGTERM是忘记停止时的保护。程序应输出最后汇总并关闭特征文件。`--preserve-status`保留受管理程序的退出状态，所以期限触发后也可能退出0；退出0本身不能代替流和特征检查。正常响应停止时不会等待额外5秒；5秒仅是无法退出时的强制终止宽限。不要把强制终止后的不完整CSV算作通过。
+`--count 1000`是有限特征导出要求的包数安全上限，不是本次必须发1000包，也不能用很小的上限截断握手或关闭过程。本次不使用管道，不按Ctrl+C；日志直接写入文件，屏幕暂时没有输出是正常的。A运行期间立即去B、C产生受控流量，再等待90秒期限发送SIGTERM收尾。`if/else`紧接被测命令保存状态，避免后面的检查覆盖`$?`，也能在命令失败时打印状态。`--preserve-status`保留受管理程序的退出状态，所以期限触发后也可能退出0；退出0本身不能代替流和特征检查。正常响应停止时不会等待额外5秒；5秒仅是无法退出时的强制终止宽限。不要把强制终止后的不完整CSV算作通过。
 
-实时流表使用固定30秒空闲超时，当前`--flow-idle-timeout`只能用于离线模式，不能给这条实时命令加它。若通信结束后等待超过约30秒，流可能在5秒扫描时被清理：日志会先输出`Expired flow 1: ... tcp_state=closed`，并把特征写入CSV，最终`Flow summary`则可能为0。这不是丢失特征；检查时必须同时保留过期流行和CSV，不能只看最终流表。及时Ctrl+C通常会保留最终1条流的汇总，但不把这一显示形式作为唯一通过条件。
+实时流表使用固定30秒空闲超时，当前`--flow-idle-timeout`只能用于离线模式，不能给这条实时命令加它。若通信结束后等待超过约30秒，流可能在5秒扫描时被清理：日志会先输出`Expired flow 1: ... tcp_state=closed`，并把特征写入CSV，最终`Flow summary`则可能为0。这不是丢失特征；检查时必须同时保留过期流行和CSV，不能只看最终流表，不为了保留最终1条流而提前Ctrl+C。
 
 ### 5.2 开发板B：只接受一条连接的临时服务端
 
@@ -204,13 +260,13 @@ sed -n '1,2p' "$NFA_TCP_DIR/features.csv"
 
 `closed`是本项目根据TCP标志与方向得出的旁路观察状态，不等同于Linux socket状态，也没有完成ACK序列号验证或TCP字节流重组。
 
-截至本次文档更新，这一TCP步骤尚未在开发板执行或验收，不记录推测的包数、目录、退出码、指纹和结果。
+截至本次文档更新，首次TCP采集已有未通过记录，10秒静默收尾对照已通过；上面的无管道TCP重测仍未收到板端结果，不记录推测的包数、目录、退出码、指纹和结果。
 
 ## 6. 结束方式与展示边界
 
 - ICMP收到4包即结束，45秒超时是未收到足够包时的保护；原命令未加`--preserve-status`，超时通常返回124。
 - TCP服务端处理一条连接后退出，客户端检查响应后退出；抓包最长约95秒进入强制结束，正常SIGTERM响应会更早结束。
-- 可以在通信完成后在抓包终端Ctrl+C提前请求收尾，不要关闭电源或用SIGKILL代替正常停止。
+- 本轮重测只等待定时SIGTERM收尾，不在普通`tee`管道中Ctrl+C。以后确需边显示边保存，应单独验证`tee -i`和停止策略；程序自身的SIGINT处理与整个Shell管道的生命周期不是同一层责任。不要关闭电源或用SIGKILL代替正常停止。
 - 本次不启用systemd，因此没有新建开机自启或长期运行任务。历史专用用户与`CAP_NET_RAW`服务化能力见[systemd_deployment.md](systemd_deployment.md)，不混同于这次`sudo`手工抓包。
 - 只采集受控虚拟机与开发板自身的通信；普通交换网络上的开发板不会自动获得其他设备之间的全部流量。当前没有重新搭建网关或镜像口。
 - 此轮不重复性能压力或一小时实验。历史约9 Kpps与540万包结果见[performance_baseline.md](performance_baseline.md)及[multiflow_longrun_baseline.md](multiflow_longrun_baseline.md)，不代表本轮测得的吞吐率。
