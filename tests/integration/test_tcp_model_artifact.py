@@ -29,14 +29,17 @@ def main():
         LOG_STANDARDIZED_FEATURE_NAMES,
         PREPROCESSING_VERSION,
         TcpPreprocessingState,
+        apply_tcp_preprocessing,
     )
     from tcp_linear_baseline import TcpLinearClassifier
     from tcp_model_artifact import (
         ARTIFACT_SCHEMA_VERSION,
         build_tcp_model_artifact,
+        read_tcp_model_artifact,
         write_tcp_model_artifact,
     )
     from tcp_model_input import MODEL_FEATURE_NAMES
+    from tcp_tensor_dataset import TensorTcpSplit
 
     # 固定参数检查保存契约；本测试不训练，也不读公开数据。
     model = TcpLinearClassifier()
@@ -89,6 +92,129 @@ def main():
     if json.loads(output.getvalue()) != artifact:
         raise RuntimeError("JSON values differ after round-trip")
 
+    # 从刚保存的JSON恢复模型，检查借用流不会被关闭。
+    source = io.StringIO(output.getvalue())
+    loaded_model, loaded_state = read_tcp_model_artifact(
+        source
+    )
+
+    if (
+        source.closed
+        or loaded_state != state
+        or loaded_model.training
+    ):
+        raise RuntimeError(
+            "loaded model or preprocessing state differs"
+        )
+
+    # 构造三条固定输入；本测试不读取真实数据、不训练。
+    raw_features = torch.zeros(
+        (3, len(MODEL_FEATURE_NAMES)),
+        dtype=torch.float32,
+    )
+    raw_features[:, :6] = torch.tensor(
+        [
+            [0.0, 1.0, 60.0, 60.0, 60.0, 60.0],
+            [10.0, 2.0, 120.0, 120.0, 60.0, 60.0],
+            [1000.0, 3.0, 180.0, 180.0, 60.0, 60.0],
+        ],
+        dtype=torch.float32,
+    )
+    phase_index = MODEL_FEATURE_NAMES.index(
+        "tcp_phase_syn-seen"
+    )
+    raw_features[:, phase_index] = 1.0
+
+    raw = TensorTcpSplit(
+        features=raw_features,
+        labels=torch.tensor(
+            [0.0, 1.0, 0.0],
+            dtype=torch.float32,
+        ),
+        sample_ids=(
+            "synthetic-a",
+            "synthetic-b",
+            "synthetic-c",
+        ),
+    )
+
+    before = apply_tcp_preprocessing(
+        "before", raw, state
+    )
+    after = apply_tcp_preprocessing(
+        "after", raw, loaded_state
+    )
+
+    with torch.no_grad():
+        logits_before = model(before.features)
+        logits_after = loaded_model(after.features)
+
+    # 同机保存／加载应恢复相同参数和相同计算结果。
+    if (
+        not torch.equal(before.features, after.features)
+        or not torch.equal(logits_before, logits_after)
+    ):
+        raise RuntimeError(
+            "inference differs after artifact round-trip"
+        )
+
+    # 修改加载后的模型，不得影响原模型。
+    with torch.no_grad():
+        loaded_model.weight.add_(1.0)
+    if model.weight.detach().tolist() != expected_weights:
+        raise RuntimeError(
+            "loaded model aliases original parameters"
+        )
+
+    # 每次重新解析，确保各个坏样例互不影响。
+    for section, field, value in (
+        (None, "artifact_schema_version", "unknown"),
+        (None, "feature_schema_version", "unknown"),
+        (None, "encoding_version", "unknown"),
+        (None, "model_version", "unknown"),
+        (None, "parameter_dtype", "float64"),
+        (
+            None,
+            "feature_names",
+            list(reversed(MODEL_FEATURE_NAMES)),
+        ),
+        (None, "logit_threshold", True),
+        (None, "logit_threshold", 1.0),
+        (
+            None,
+            "label_values",
+            {"benign": False, "malicious": True},
+        ),
+        ("model", "weights", [0.0] * 17),
+        ("model", "bias", float("nan")),
+        ("preprocessing", "log_scales", [0.0] * 6),
+        (
+            "preprocessing",
+            "statistics_dtype",
+            "float32",
+        ),
+    ):
+        bad = json.loads(output.getvalue())
+        target = bad if section is None else bad[section]
+        target[field] = value
+
+        expect_value_error(
+            lambda: read_tcp_model_artifact(
+                io.StringIO(json.dumps(bad))
+            )
+        )
+
+    for invalid_json in (
+        "[]",
+        '{"model": 1, "model": 2}',
+        '{"broken":',
+    ):
+        expect_value_error(
+            lambda: read_tcp_model_artifact(
+                io.StringIO(invalid_json)
+            )
+        )
+
     # 改原模型不得改变之前生成的快照。
     with torch.no_grad():
         model.weight.add_(10.0)
@@ -125,7 +251,10 @@ def main():
     if protected.getvalue() != "keep\n":
         raise RuntimeError("invalid model changed output")
 
-    print("[PASS] TCP model artifact snapshot and JSON writing")
+    print(
+        "[PASS] TCP model artifact save/load "
+        "and inference consistency"
+    )
     return 0
 
 
