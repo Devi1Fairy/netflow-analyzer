@@ -1428,7 +1428,9 @@ sudo: unable to resolve host lubancat: Temporary failure in name resolution
 - `wc -l features.csv`为1，支持表头正常保存；本轮没有TCP特征数据行；
 - 虚拟机`f84cb91`重新构建与37/37项CTest通过（8.88秒），没有修改C源码、CMake、测试或板端服务。
 
-下一步：使用新结果目录、直接文件重定向、明确三终端并行顺序与自动SIGTERM，重测一条设备TCP请求／响应；不覆盖失败证据。静默收尾通过不等于TCP链通过，旧故障原因也仍不能写成已确诊SIGPIPE。完整对照与重测命令见[jobfair_demo.md](jobfair_demo.md)。
+后续重测（2026-10-12）：用户提供新目录`/home/cat/nfa-demo-tcp.YpNAuj`的完整最终流摘要和2行特征CSV。10包全部`complete`，双向各5包／313和298字节，共611字节，持续4591微秒；TCP旁路阶段`closed`、特征握手完成1，两个drop为0。均值`611/10`和线路字节不平衡度`15/611`均与CSV一致；数据链核对通过。本次退出码、B／C发生器PASS输出与运行时长尚未贴出，不补写通过，旧故障原因仍不能确诊为SIGPIPE。虚拟机`1cbb72a`构建与37/37项CTest通过（8.57秒）。完整实测见[jobfair_demo.md](jobfair_demo.md)。
+
+同时更正此前重测步骤中的过期说明：`app_run_capture_analysis()`在取得包后才把其时间戳交给`flow_expiration_schedule_observe()`，流过期按事件时间推进；周期指标则使用单调时钟。没有新的匹配包时，静默等待90秒不使旧流自动过期，因此本次`Expired flows: 0`及最终1条`closed`流符合实现。`closed`是TCP旁路状态，不是流表删除事件。该错误属于助手文档说明，本次只修正文档，不改源码或掩盖当前过期机制边界。
 
 ## 6. 公开数据集与机器学习样本连接
 
