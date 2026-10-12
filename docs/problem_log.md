@@ -1406,6 +1406,14 @@ sudo: unable to resolve host lubancat: Temporary failure in name resolution
 
 该提示由空的`/etc/hosts`导致，不是根分区被占满的直接原因。补回本机映射后，名称解析和`sudo`均恢复正常；两个问题已经分别定位和处理，不能混为同一根因。
 
+后续容量复查（2026-10-12）：
+
+- 准备37项ARM64测试时，根分区约730 MiB可用；11个ARM64／Python 3.8 wheel共109 MiB，ZIP条目解压体积425.7 MiB，实际独立虚拟环境占471 MiB，安装后根盘仅268 MiB可用、97%使用率。压缩包大小不能代替安装空间预算，条目体积也不包含所有安装和文件系统开销。
+- 本次`.vscode-server`再次占2.7 GiB，四个`Stable-*`目录合计约2.5 GiB；而项目源码约4.9 MiB、构建目录约15 MiB、`/var/log`约27 MiB。不能把占用主要归给项目日志或删除PyTorch环境来掩盖旧服务器版本累积。
+- `ps -u cat -ww -o pid,etime,args`显示`645f29cc3176500b4b5762ba887cf2a7f0ffdf2c`和`07f806f999227108933c2e30515b26eecc1fda74`均在运行，后一版本还承担agent／Copilot相关进程。因此本次保留两个活动版本，不能照搬上次“只保留最新一个”的操作。
+- 用户按步骤将未在进程列表中出现的`Stable-04c0d99f4fb0d8afe6ce4f0c58e31e183ac3e4b1`和`Stable-a44adf7f53e00964ab890f9f8758a334f1fc15bc`归档到SD卡、比较归档与原目录后清理。本次提供的最终输出确认`.vscode-server`降至1.5 GiB，根盘5.2 GiB已用、1.5 GiB可用、78%使用率；备份具体随机路径和比较输出未贴出，不补造归档指纹。
+- 本次说明关闭客户端自动更新不是容量硬限制，也不能保证远端只存在一个有用版本。仍采用先识别进程、精确选择目标、保留配置与活动版本的方式，不清空整个`.vscode-server`，不迁移运行环境到VFAT／`noexec`数据盘。
+
 ### 5.20 TCP演示按Ctrl+C后缺少最终汇总且特征CSV为空
 
 现象（2026-10-11）：用户使用独立ARM64演示程序，在`eth0`上过滤`tcp and host 192.168.1.102 and port 18080`，包数上限1000，外层90秒`timeout`，输出通过普通`tee`保存。目录`/home/cat/nfa-demo-tcp.BVQJ81`中的`run.txt`约2.6 KiB，包含启动信息与9个约5秒的零包报告，但没有最终汇总；`features.csv`为0字节。排查时没有找到这份演示程序进程，根分区还有748 MiB可用。用户确认按过Ctrl+C，原退出码未保存；服务端和客户端的终端输出尚未提供。
@@ -1431,6 +1439,44 @@ sudo: unable to resolve host lubancat: Temporary failure in name resolution
 后续重测（2026-10-12）：用户提供新目录`/home/cat/nfa-demo-tcp.YpNAuj`的完整最终流摘要和2行特征CSV。10包全部`complete`，双向各5包／313和298字节，共611字节，持续4591微秒；TCP旁路阶段`closed`、特征握手完成1，两个drop为0。均值`611/10`和线路字节不平衡度`15/611`均与CSV一致；数据链核对通过。本次退出码、B／C发生器PASS输出与运行时长尚未贴出，不补写通过，旧故障原因仍不能确诊为SIGPIPE。虚拟机`1cbb72a`构建与37/37项CTest通过（8.57秒）。完整实测见[jobfair_demo.md](jobfair_demo.md)。
 
 同时更正此前重测步骤中的过期说明：`app_run_capture_analysis()`在取得包后才把其时间戳交给`flow_expiration_schedule_observe()`，流过期按事件时间推进；周期指标则使用单调时钟。没有新的匹配包时，静默等待90秒不使旧流自动过期，因此本次`Expired flows: 0`及最终1条`closed`流符合实现。`closed`是TCP旁路状态，不是流表删除事件。该错误属于助手文档说明，本次只修正文档，不改源码或掩盖当前过期机制边界。
+
+### 5.21 板端缺少ensurepip导致虚拟环境只有解释器而没有pip
+
+现象（2026-10-12）：11个wheel在板端全部通过SHA-256校验，但执行`python3 -m venv /home/cat/venvs/nfa-ml-py38`提示`ensurepip is not available`；随后环境中的Python执行`-m pip --version`报`No module named pip`。
+
+原因与处理：创建虚拟环境已完成目录和解释器设置，但在引导安装pip时缺少Ubuntu拆分提供的`python3.8-venv`组件。这是系统环境依赖缺失，不是wheel损坏或PyTorch导入失败。先预览并安装`python3.8-venv`，再以普通用户对原路径重新执行`python3 -m venv`；没有删除环境目录、升级系统Python、使用`sudo pip`或下载不受控的引导脚本。
+
+实际结果：环境中的pip为20.0.2，路径为`/home/cat/venvs/nfa-ml-py38/lib/python3.8/site-packages/pip`。后续从SD卡wheel目录离线安装NumPy 1.24.4、PyTorch 2.4.1及依赖，`pip check`输出`No broken requirements found.`；最终四项可选ML测试也在完整37项板端验收中通过。可复用命令见[ARM64验收记录](arm64_test_validation.md)。
+
+### 5.22 ARM64线性基线功能通过但超过CTest的20秒限制
+
+现象（2026-10-12）：首次ARM64原生Debug全量CTest为36/37通过，总耗时84.60秒、退出8；唯一失败为`tcp_linear_baseline_tests`，在20.08秒被标为`Timeout`。另外三项PyTorch测试分别为16.07、16.67和17.13秒。原始日志：
+
+```text
+/home/cat/build/netflow-analyzer-arm64-verify/ctest-arm64-37.sQ8MWP
+```
+
+诊断：不改样本、训练轮数、数值阈值或断言，使用同一板端解释器和线程环境直接运行原测试，外层90秒保护并由GNU time计时。得到`[PASS] TCP linear baseline training and metrics`，墙钟29.33秒、用户CPU27.97秒、系统CPU1.03秒、最大RSS252008 KiB（约246.1 MiB），退出0。日志为`linear-baseline-timing.NZUYVm`，位于同一构建目录。该结果支持原20秒总进程预算不足，不是一次断言失败；尚未分别测量PyTorch导入、优化器初始化与训练阶段耗时，不把29.33秒全部归为模型训练或推理时延。
+
+修正：核对用户后续提交`4a6d8de`，实际是将`CMakeLists.txt`中`tcp_linear_baseline_tests`两段重复设置的`TIMEOUT 20`都改为60，仍保留两段，并非已合并为一段。此前助手文档草稿的“已合并”表述过早，本次按实际差异更正。两次同值赋值不会运行两次测试或累计超时；虚拟机生成配置只注册一次且`TIMEOUT=60`。重复代码可后续整理，本次不另改源码。测试内容与有限保护均保留；必须重新运行CMake生成CTest配置，不能只改第一段而保留后面的20秒覆盖，也不直接编辑生成的`CTestTestfile.cmake`。本项是实测依据下的测试预算调整，不是算法性能优化。
+
+验收：重新运行全部37项，全部通过，耗时94.41秒、退出0；最终日志为：
+
+```text
+/home/cat/build/netflow-analyzer-arm64-verify/ctest-arm64-37-timeout60.nxTPrF
+```
+
+验收时板端HEAD为`3ad8a49`，工作区仅`CMakeLists.txt`修改，尚未提交；因此不能宣称原样的`3ad8a49`在20秒预算下全部通过。板端Python 3.8.10／PyTorch 2.4.1与虚拟机版本不同，结论是同一套功能测试在两种环境通过，不是数值逐位一致、公开数据集重新训练或线上异常检测验收。完整复现与边界见[arm64_test_validation.md](arm64_test_validation.md)。
+
+提交后复核（2026-10-12）：用户已提交并推送`4a6d8de test(ml): adjust baseline timeout for ARM64`，虚拟机工作区同步到同一提交，构建成功，完整37项CTest通过（7.53秒、退出0）。待提交改动只含5份验收／项目介绍文档；没有在虚拟机另复制一份CMake改动，也没有为文档变更重跑板端长稳或启动服务。
+
+### 5.23 开发板Git未配置提交身份导致提交失败
+
+现象（2026-10-12）：开发板执行`git commit -m "test(ml): adjust baseline timeout for ARM64"`时提示`Please tell me who you are`和`unable to auto-detect email address`。紧接着执行`git push origin feature/flow-features`得到`Everything up-to-date`，但前一个提交实际没有创建。
+
+原因与处理：Git提交需要作者姓名和邮箱，板端仓库没有可用配置；这与GitHub登录、SSH密钥或远端写权限不是同一问题。先查看虚拟机仓库的`git config --get user.name`和`git config --get user.email`，在板端填入本人实际提交身份。需要仅影响当前项目时使用`git config --local user.name "实际姓名"`与`git config --local user.email "实际提交邮箱"`；不要照抄示例邮箱或使用`sudo git`。提交失败通常不会清除暂存区，先用`git diff --cached --stat`确认，再提交；提交成功后才推送，最后用最新日志与分支状态核对。
+
+实际结果：后续虚拟机已同步到用户成功创建并推送的`4a6d8de`，其标题与目标CMake改动一致。用户最终采用的`--local`或`--global`作用域未提供，不补写；`Everything up-to-date`不能作为本地文件已提交的依据。
 
 ## 6. 公开数据集与机器学习样本连接
 

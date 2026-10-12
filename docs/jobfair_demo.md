@@ -291,7 +291,7 @@ flow_features_v1,6,4591,10,611,611,61.100000000000001,61.100000000000001,0,0.024
 
 结论：这份实测的采集、完整解析、双向聚合、TCP旁路生命周期与特征导出数据链核对通过。`Expired flows: 0`与最终保留1条流符合当前事件时间过期机制，不能把`closed`理解成已从流表删除。两方向包数相同而字节不同也正常；当前摘要不能进一步还原每个包的标志与长度，不编造10包的逐包组成。
 
-仍未收到本次`NFA_TCP_STATUS`、B／C终端的请求／响应PASS输出、实际运行时长或板端产物SHA／动态依赖输出；不宣称这些附加验收已经独立确认。旧失败原因仍未确诊，本次成功不反推旧故障必为SIGPIPE。虚拟机检查时HEAD为`1cbb72a`、工作区干净且与远程同步，重新构建和37/37项CTest通过（8.57秒）；本次只更新文档，不升级板端自动化测试数量。
+仍未收到本次`NFA_TCP_STATUS`、B／C终端的请求／响应PASS输出、实际运行时长或板端产物SHA／动态依赖输出；不宣称这些附加验收已经独立确认。旧失败原因仍未确诊，本次成功不反推旧故障必为SIGPIPE。该TCP手工验收记录更新时，虚拟机HEAD为`1cbb72a`、工作区干净且与远程同步，重新构建和37/37项CTest通过（8.57秒）；这次手工验收本身不计入板端自动化测试数量，后续独立37项回归见第6节。
 
 ## 6. 结束方式与展示边界
 
@@ -301,6 +301,6 @@ flow_features_v1,6,4591,10,611,611,61.100000000000001,61.100000000000001,0,0.024
 - 本次不启用systemd，因此没有新建开机自启或长期运行任务。历史专用用户与`CAP_NET_RAW`服务化能力见[systemd_deployment.md](systemd_deployment.md)，不混同于这次`sudo`手工抓包。
 - 只采集受控虚拟机与开发板自身的通信；普通交换网络上的开发板不会自动获得其他设备之间的全部流量。当前没有重新搭建网关或镜像口。
 - 此轮不重复性能压力或一小时实验。历史约9 Kpps与540万包结果见[performance_baseline.md](performance_baseline.md)及[multiflow_longrun_baseline.md](multiflow_longrun_baseline.md)，不代表本轮测得的吞吐率。
-- 当前x86_64为37项自动化回归；板端只确认此前18项自动化基线及本页实际收到的手工证据，不宣称板端37项已通过。
+- 本页ICMP／TCP演示本身仍是手工验收，不计入CTest数量。后续2026-10-12已另行完成ARM64原生Debug的37/37项自动化回归（94.41秒、退出0），详见[独立验收记录](arm64_test_validation.md)；此前18项为历史基线。
 
 Shell工具说明参考[GNU timeout手册](https://www.gnu.org/software/coreutils/manual/html_node/timeout-invocation.html)；临时发生器接口参考[Python socket文档](https://docs.python.org/3.10/library/socket.html)。这里只使用板端Python 3.8已有的接口，不要求升级Python。
