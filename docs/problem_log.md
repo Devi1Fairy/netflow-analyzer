@@ -1484,7 +1484,9 @@ sudo: unable to resolve host lubancat: Temporary failure in name resolution
 
 定位与解释：账户的组记录不等于已运行进程的实际组身份。新SSH登录通常重新初始化附加组；早先登录的桌面及其新终端仍可能继承旧组身份。这与连接来自虚拟机本身无关，也不应通过`sudo`运行接收程序、`chmod 666`或重装USB驱动绕过。
 
-检查方法：在本地与SSH两端分别执行`id`，再对照`id cat`与`getent group dialout`。若账户记录含`dialout`而当前`id`没有，保存工作后注销桌面并重新登录，或使用新的独立SSH会话。两端完整`id`对照输出尚未提供，因此“旧会话组身份”保留为与现象一致的解释，不虚构已经取得该对照证据。
+检查方法：在本地与SSH两端分别执行`id`，再对照`id cat`与`getent group dialout`。若账户记录含`dialout`而当前`id`没有，保存工作后注销桌面并重新登录，或使用新的独立SSH会话。首次排查时尚无完整组身份对照，后续网关预检已取得下述补证。
+
+网关预检补证（同日）：用户贴出的旧终端`id`只有`cat/sudo/audio/video`，不含组20；同一账户的`id cat`明确包含`20(dialout)`，`getent group dialout`返回`dialout:x:20:cat`。这次已确认旧进程未加载更新后的附加组，而不是设备驱动失效或账户仍未加入组。用户随后提供另一会话的`test -r && test -w`通过结果；该会话的完整`id`未贴出，不补写。无需再次usermod、放宽设备权限或重启开发板。
 
 后续结果：用户在`cat@lubancat`终端完成首次接收，退出0、输出149条BMS日志。此前检查还发现ModemManager为`active/running`且`fuser`未列出当前占用；用户不确定运行前是否停止服务，不能把接收成功写成已经排除自动探测。详细验收见[会话交接第18.12节](session_handoff.md#1812-stm32bms串口接入首次有界接收通过)。
 
