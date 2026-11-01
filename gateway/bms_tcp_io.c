@@ -127,3 +127,17 @@ int bms_tcp_send_line(int socket_fd,
 
     return 0;
 }
+
+int bms_tcp_line_sink(const char *line, size_t length, void *context)
+{
+    if (context == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    const bms_tcp_sink_t *sink = context;
+
+    return bms_tcp_send_line(
+        sink->socket_fd, line, length, sink->timeout_ms
+    );
+}

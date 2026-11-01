@@ -21,4 +21,21 @@ int bms_tcp_send_line(int socket_fd,
                       size_t length,
                       int timeout_ms);
 
+/*
+ * 单条连接的输出配置；socket_fd由调用者拥有，本结构不负责关闭。
+ * timeout_ms是每行发送预算，不是整次接收的总时间上限。
+ */
+typedef struct {
+    int socket_fd;
+    int timeout_ms;
+} bms_tcp_sink_t;
+
+/*
+ * 适配完整行回调接口。context必须指向有效的bms_tcp_sink_t。
+ * 借用line和context，不保存指针、不修改配置，也不关闭Socket。
+ * 返回0表示本机Socket接受整行；返回-1时保留发送错误。
+ * 失败后调用者应结束该连接，不在同一字节流中整行重试。
+ */
+int bms_tcp_line_sink(const char *line, size_t length, void *context);
+
 #endif

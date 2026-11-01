@@ -14,6 +14,7 @@
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
+#include "bms_serial_core.h"
 
 #define LINE_CAPACITY 1024U
 #define RUN_SECONDS 30.0
@@ -26,6 +27,7 @@ typedef struct {
     uint64_t discarded;
 } line_buffer_t;
 
+#ifndef BMS_SERIAL_LIBRARY
 static volatile sig_atomic_t stop_requested = 0;
 
 /* 信号中只发出请求；关闭设备和输出统计由main完成。 */
@@ -34,6 +36,7 @@ static void request_stop(int signal_number)
     (void)signal_number;
     stop_requested = 1;
 }
+#endif
 
 static int monotonic_seconds(double *value)
 {
@@ -113,6 +116,7 @@ typedef int (*line_sink_fn)(const char *line,
                             size_t length,
                             void *context);
 
+#ifndef BMS_SERIAL_LIBRARY
 /* 保留独立接收程序原来的stdout输出行为。 */
 static int stdout_line_sink(const char *line, size_t length, void *context)
 {
@@ -120,6 +124,7 @@ static int stdout_line_sink(const char *line, size_t length, void *context)
     (void)context;
     return puts(line) == EOF ? -1 : 0;
 }
+#endif
 
 /* 输入块只借用；输出完整文本行。超长/控制字符行丢到LF后恢复。 */
 static int feed_bytes(line_buffer_t *buffer,
@@ -181,23 +186,19 @@ static int feed_bytes(line_buffer_t *buffer,
     return 0;
 }
 
-static int receive_lines(int fd,
-                         line_buffer_t *buffer,
-                         line_sink_fn sink,
-                         void *context)
+static int receive_lines_until(int fd,
+                               line_buffer_t *buffer,
+                               line_sink_fn sink,
+                               void *context,
+                               const volatile sig_atomic_t *stop_flag,
+                               double deadline)
 {
-    double started;
-
-    if (buffer == NULL || sink == NULL) {
+    if (buffer == NULL || sink == NULL || stop_flag == NULL) {
         errno = EINVAL;
         return -1;
     }
 
-    if (monotonic_seconds(&started) == -1) {
-        return -1;
-    }
-
-    while (!stop_requested) {
+    while (!*stop_flag) {
         struct pollfd watched = {
             .fd = fd,
             .events = POLLIN
@@ -211,11 +212,17 @@ static int receive_lines(int fd,
             return -1;
         }
 
-        if (now - started >= RUN_SECONDS) {
+        if (now >= deadline) {
             return 0;
         }
 
-        ready = poll(&watched, 1, 500);
+        double remaining_ms = (deadline - now) * 1000.0;
+        int wait_ms = remaining_ms >= 500.0 ? 500 : (int)remaining_ms;
+        if (wait_ms < 1) {
+            wait_ms = 1;
+        }
+
+        ready = poll(&watched, 1, wait_ms);
 
         if (ready == -1) {
             if (errno == EINTR) {
@@ -259,6 +266,77 @@ static int receive_lines(int fd,
     }
 
     return 0;
+}
+
+int bms_serial_configure_fd(int fd)
+{
+    return configure_serial(fd);
+}
+
+int bms_serial_receive_fd(int fd,
+                          bms_serial_line_sink_fn sink,
+                          void *context,
+                          int timeout_ms,
+                          const volatile sig_atomic_t *stop_flag,
+                          bms_serial_stats_t *stats)
+{
+    if (stats != NULL) {
+        *stats = (bms_serial_stats_t){0};
+    }
+    if (fd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+    if (sink == NULL || stop_flag == NULL || stats == NULL ||
+        timeout_ms <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    int flags = fcntl(fd, F_GETFL);
+    if (flags == -1) {
+        return -1;
+    }
+    if ((flags & O_NONBLOCK) == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    double started;
+    if (monotonic_seconds(&started) == -1) {
+        return -1;
+    }
+
+    line_buffer_t buffer = {.discarding = true};
+    int result = receive_lines_until(
+        fd, &buffer, sink, context, stop_flag,
+        started + (double)timeout_ms / 1000.0
+    );
+    int saved_errno = errno;
+
+    stats->lines = buffer.lines;
+    stats->discarded = buffer.discarded;
+    stats->tail_bytes = buffer.used;
+    stats->discarding = buffer.discarding;
+    errno = saved_errno;
+    return result;
+}
+
+#ifndef BMS_SERIAL_LIBRARY
+/* 保留原CLI和白盒测试使用的4参数入口。 */
+static int receive_lines(int fd,
+                         line_buffer_t *buffer,
+                         line_sink_fn sink,
+                         void *context)
+{
+    double started;
+
+    if (monotonic_seconds(&started) == -1) {
+        return -1;
+    }
+    return receive_lines_until(
+        fd, buffer, sink, context, &stop_requested, started + RUN_SECONDS
+    );
 }
 
 int main(int argc, char **argv)
@@ -357,3 +435,4 @@ cleanup:
 
     return status;
 }
+#endif

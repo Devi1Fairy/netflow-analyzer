@@ -159,10 +159,78 @@ set(
     "Python interpreter containing the optional ML dependencies"
 )
 
+# 复用串口实现，但库模式不编译原CLI入口。
+add_library(
+    bms_serial_core STATIC
+    gateway/bms_serial_recv.c
+)
+
+target_compile_definitions(
+    bms_serial_core
+    PRIVATE
+        BMS_SERIAL_LIBRARY=1
+)
+
+target_include_directories(
+    bms_serial_core
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/gateway"
+)
+
+enable_project_warnings(bms_serial_core)
+
+add_executable(
+    bms_gateway
+    gateway/bms_gateway.c
+    gateway/bms_tcp_io.c
+    gateway/bms_tcp_server.c
+)
+
+target_link_libraries(
+    bms_gateway
+    PRIVATE
+        bms_serial_core
+)
+
+set_target_properties(
+    bms_gateway
+    PROPERTIES
+        OUTPUT_NAME "bms-gateway"
+)
+
+enable_project_warnings(bms_gateway)
+
 # 引入CTest并创建BUILD_TESTING选项。
 include(CTest)
 
 if(BUILD_TESTING)
+    # 模拟输入到TCP的桥接测试，不打开真实串口。
+    add_executable(
+        bms_gateway_bridge_tests
+        tests/unit/test_bms_gateway_bridge.c
+        gateway/bms_tcp_io.c
+        gateway/bms_tcp_server.c
+    )
+
+    enable_project_warnings(bms_gateway_bridge_tests)
+
+    add_test(
+        NAME bms_gateway_bridge_tests
+        COMMAND bms_gateway_bridge_tests
+    )
+
+    set_tests_properties(
+        bms_gateway_bridge_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
+    target_link_libraries(
+    bms_gateway_bridge_tests
+    PRIVATE
+        bms_serial_core
+)
+
     # TCP监听与接入测试：仅使用本机IPv4回环地址。
     add_executable(
         bms_tcp_server_tests
@@ -635,6 +703,21 @@ if(BUILD_TESTING)
         Python3
         REQUIRED
         COMPONENTS Interpreter
+    )
+
+    add_test(
+        NAME bms_gateway_cli_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_bms_gateway_cli.py
+            --program
+            $<TARGET_FILE:bms_gateway>
+    )
+
+    set_tests_properties(
+        bms_gateway_cli_tests
+        PROPERTIES
+            TIMEOUT 20
     )
 
     # 注册离线PCAP流聚合端到端验收测试。
