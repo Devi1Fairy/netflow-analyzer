@@ -163,6 +163,72 @@ set(
 include(CTest)
 
 if(BUILD_TESTING)
+    # TCP监听与接入测试：仅使用本机IPv4回环地址。
+    add_executable(
+        bms_tcp_server_tests
+        tests/unit/test_bms_tcp_server.c
+        gateway/bms_tcp_server.c
+        gateway/bms_tcp_io.c
+    )
+
+    enable_project_warnings(bms_tcp_server_tests)
+
+    add_test(
+        NAME bms_tcp_server_tests
+        COMMAND bms_tcp_server_tests
+    )
+
+    set_tests_properties(
+        bms_tcp_server_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
+    # 有界Socket发送测试，不访问真实串口或外部网络。
+    add_executable(
+        bms_tcp_io_tests
+        tests/unit/test_bms_tcp_io.c
+        gateway/bms_tcp_io.c
+    )
+
+    enable_project_warnings(bms_tcp_io_tests)
+
+    # 只对测试包装send；正式网关不要添加该选项。
+    target_link_options(
+        bms_tcp_io_tests
+        PRIVATE
+            "-Wl,--wrap=send"
+    )
+
+    add_test(
+        NAME bms_tcp_io_tests
+        COMMAND bms_tcp_io_tests
+    )
+
+    set_tests_properties(
+        bms_tcp_io_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
+     # 网关接收逻辑测试：只使用主机临时文件和匿名管道。
+    add_executable(
+        bms_serial_recv_tests
+        tests/unit/test_bms_serial_recv.c
+    )
+
+    enable_project_warnings(bms_serial_recv_tests)
+
+    add_test(
+        NAME bms_serial_recv_tests
+        COMMAND bms_serial_recv_tests
+    )
+
+    set_tests_properties(
+        bms_serial_recv_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
     # 创建阶段0冒烟测试程序。
     add_executable(
         analyzer_smoke_tests

@@ -104,11 +104,35 @@ static int configure_serial(int fd)
     return tcflush(fd, TCIFLUSH);
 }
 
+/*
+ * 完整行不含LF，以NUL结尾；line只在回调期间有效，不得保存此指针。
+ * context由调用者拥有，本模块不解释、不释放。
+ * 返回0表示处理成功；返回-1时由回调设置errno。
+ */
+typedef int (*line_sink_fn)(const char *line,
+                            size_t length,
+                            void *context);
+
+/* 保留独立接收程序原来的stdout输出行为。 */
+static int stdout_line_sink(const char *line, size_t length, void *context)
+{
+    (void)length;
+    (void)context;
+    return puts(line) == EOF ? -1 : 0;
+}
+
 /* 输入块只借用；输出完整文本行。超长/控制字符行丢到LF后恢复。 */
 static int feed_bytes(line_buffer_t *buffer,
                       const unsigned char *data,
-                      size_t length)
+                      size_t length,
+                      line_sink_fn sink,
+                      void *context)
 {
+    if (buffer == NULL || sink == NULL ||
+        (data == NULL && length != 0U)) {
+        errno = EINVAL;
+        return -1;
+    }
     for (size_t index = 0; index < length; ++index) {
         unsigned char byte = data[index];
 
@@ -124,7 +148,8 @@ static int feed_bytes(line_buffer_t *buffer,
                 buffer->data[buffer->used] = '\0';
 
                 if (buffer->used > 0U) {
-                    if (puts(buffer->data) == EOF) {
+                    if (sink(buffer->data, buffer->used, context) == -1) {
+                        /* 立即结束本次处理；上层不得盲目重发失败行。 */
                         return -1;
                     }
 
@@ -156,9 +181,17 @@ static int feed_bytes(line_buffer_t *buffer,
     return 0;
 }
 
-static int receive_lines(int fd, line_buffer_t *buffer)
+static int receive_lines(int fd,
+                         line_buffer_t *buffer,
+                         line_sink_fn sink,
+                         void *context)
 {
     double started;
+
+    if (buffer == NULL || sink == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
 
     if (monotonic_seconds(&started) == -1) {
         return -1;
@@ -205,7 +238,8 @@ static int receive_lines(int fd, line_buffer_t *buffer)
             ssize_t count = read(fd, chunk, sizeof(chunk));
 
             if (count > 0) {
-                if (feed_bytes(buffer, chunk, (size_t)count) == -1) {
+                if (feed_bytes(buffer, chunk, (size_t)count,
+                               sink, context) == -1) {
                     return -1;
                 }
             } else if (count == 0) {
@@ -293,7 +327,7 @@ int main(int argc, char **argv)
             "Receive for 30 seconds; Ctrl+C stops. No BMS command sent.\n",
             argv[1]);
 
-    if (receive_lines(fd, &buffer) == -1) {
+    if (receive_lines(fd, &buffer, stdout_line_sink, NULL) == -1) {
         perror("receive/output");
     } else if (buffer.lines == 0U) {
         fprintf(stderr, "No complete text lines received\n");

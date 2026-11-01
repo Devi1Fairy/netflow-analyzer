@@ -1488,6 +1488,8 @@ sudo: unable to resolve host lubancat: Temporary failure in name resolution
 
 后续结果：用户在`cat@lubancat`终端完成首次接收，退出0、输出149条BMS日志。此前检查还发现ModemManager为`active/running`且`fuser`未列出当前占用；用户不确定运行前是否停止服务，不能把接收成功写成已经排除自动探测。详细验收见[会话交接第18.12节](session_handoff.md#1812-stm32bms串口接入首次有界接收通过)。
 
+后续SIGINT验收补充（同日）：本次权限检查明确通过，用户先确认ModemManager为`active/running`，再手工临时停止并得到`inactive/dead`，运行前后`fuser`均未列出占用。随后`sigint-5s.yrjSSf`受控发送INT、正常收尾并退出0，输出24行，用户确认三阶段心跳正常、未观察到复位。该证据只补充这一次测试，不把首次149行运行的服务状态改写为已知，也不宣称ModemManager曾经实际干扰串口。
+
 ### 5.25 把目录后缀填进Bash子串语法，导致scp尝试上传到根目录
 
 现象（2026-11-01）：虚拟机执行`scp`时把目标写成`cat@192.168.1.102:${BMS_SERIAL_DIR:i9yBPJ}/`，认证后报`dest open "/bms_serial_recv.c": Permission denied`，实际上传目标退化为`/`。
