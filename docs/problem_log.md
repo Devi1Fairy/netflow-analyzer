@@ -1478,6 +1478,26 @@ sudo: unable to resolve host lubancat: Temporary failure in name resolution
 
 实际结果：后续虚拟机已同步到用户成功创建并推送的`4a6d8de`，其标题与目标CMake改动一致。用户最终采用的`--local`或`--global`作用域未提供，不补写；`Everything up-to-date`不能作为本地文件已提交的依据。
 
+### 5.24 加入dialout后，不同登录会话的串口权限表现不同
+
+现象（2026-11-01）：CH340已正常绑定`ch341`并出现`/dev/ttyUSB0`，节点为`root:dialout`、模式`660`。用户执行`sudo usermod -aG dialout cat`后，`getent group dialout`曾返回`dialout:x:20:cat`，新会话也曾通过不打开设备的读写权限检查；后续鲁班猫本地终端却再次检查失败，用户反馈从虚拟机新建SSH登录可以访问。
+
+定位与解释：账户的组记录不等于已运行进程的实际组身份。新SSH登录通常重新初始化附加组；早先登录的桌面及其新终端仍可能继承旧组身份。这与连接来自虚拟机本身无关，也不应通过`sudo`运行接收程序、`chmod 666`或重装USB驱动绕过。
+
+检查方法：在本地与SSH两端分别执行`id`，再对照`id cat`与`getent group dialout`。若账户记录含`dialout`而当前`id`没有，保存工作后注销桌面并重新登录，或使用新的独立SSH会话。两端完整`id`对照输出尚未提供，因此“旧会话组身份”保留为与现象一致的解释，不虚构已经取得该对照证据。
+
+后续结果：用户在`cat@lubancat`终端完成首次接收，退出0、输出149条BMS日志。此前检查还发现ModemManager为`active/running`且`fuser`未列出当前占用；用户不确定运行前是否停止服务，不能把接收成功写成已经排除自动探测。详细验收见[会话交接第18.12节](session_handoff.md#1812-stm32bms串口接入首次有界接收通过)。
+
+### 5.25 把目录后缀填进Bash子串语法，导致scp尝试上传到根目录
+
+现象（2026-11-01）：虚拟机执行`scp`时把目标写成`cat@192.168.1.102:${BMS_SERIAL_DIR:i9yBPJ}/`，认证后报`dest open "/bms_serial_recv.c": Permission denied`，实际上传目标退化为`/`。
+
+原因：`${变量:偏移}`是字符串截取，不是设置目录后缀。命令没有正确使用完整板端目录；该错误发生在目标路径展开，不是SSH密码错误、串口权限问题或需要提升远端权限。
+
+处理：在板端用`mktemp -d`生成验收目录，确认目录存在且目标文件尚不存在，再把打印的完整`BMS_SERIAL_DIR=/home/cat/bms-serial-v1.i9yBPJ`赋值复制到虚拟机终端。目标保留为`cat@192.168.1.102:${BMS_SERIAL_DIR:?请先设置完整板端目录}/`，变量未设置或为空时直接报错；不要把提示文字替换成随机后缀。两台机器的Shell变量不共享。
+
+实际结果：用户随后提供板端源码SHA-256，与虚拟机的`8ef2fbc5ecb46c15da613055a3546822a1dfe39cc8681bb454abefa649450a0d`一致，ARM64原生编译退出0。未单独提供成功传输的退出码，不补写；不改根目录权限，也不使用`sudo scp`。
+
 ## 6. 公开数据集与机器学习样本连接
 
 ### 6.1 CTU-13截断PCAP和离线流边界导致标签无法一对一连接
