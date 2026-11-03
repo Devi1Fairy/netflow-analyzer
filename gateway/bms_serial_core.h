@@ -35,4 +35,26 @@ int bms_serial_receive_fd(int fd,
                           const volatile sig_atomic_t *stop_flag,
                           bms_serial_stats_t *stats);
 
+#define BMS_SERIAL_LINE_CAPACITY 1024U
+
+typedef struct {
+    char data[BMS_SERIAL_LINE_CAPACITY + 1U];
+    size_t used;
+    bool discarding;
+    uint64_t lines;
+    uint64_t discarded;
+} bms_serial_framer_t;
+
+/* 启动时丢弃首个残片至LF；不执行I/O，调用者拥有framer。 */
+void bms_serial_framer_init(bms_serial_framer_t *framer);
+
+/* 借用输入块与回调参数，复用原行整理规则，不保存输入指针。 */
+int bms_serial_framer_feed(bms_serial_framer_t *framer,
+                           const unsigned char *data, size_t length,
+                           bms_serial_line_sink_fn sink, void *context);
+
+/* lines表示回调成功接收的完整行数，不代表远端已处理。 */
+void bms_serial_framer_stats(const bms_serial_framer_t *framer,
+                             bms_serial_stats_t *stats);
+
 #endif

@@ -16,16 +16,10 @@
 #include <unistd.h>
 #include "bms_serial_core.h"
 
-#define LINE_CAPACITY 1024U
+#define LINE_CAPACITY BMS_SERIAL_LINE_CAPACITY
 #define RUN_SECONDS 30.0
 
-typedef struct {
-    char data[LINE_CAPACITY + 1U];
-    size_t used;
-    bool discarding;
-    uint64_t lines;
-    uint64_t discarded;
-} line_buffer_t;
+typedef bms_serial_framer_t line_buffer_t;
 
 #ifndef BMS_SERIAL_LIBRARY
 static volatile sig_atomic_t stop_requested = 0;
@@ -266,6 +260,29 @@ static int receive_lines_until(int fd,
     }
 
     return 0;
+}
+
+void bms_serial_framer_init(bms_serial_framer_t *framer)
+{
+    *framer = (bms_serial_framer_t){.discarding = true};
+}
+
+int bms_serial_framer_feed(bms_serial_framer_t *framer,
+                           const unsigned char *data, size_t length,
+                           bms_serial_line_sink_fn sink, void *context)
+{
+    return feed_bytes(framer, data, length, sink, context);
+}
+
+void bms_serial_framer_stats(const bms_serial_framer_t *framer,
+                             bms_serial_stats_t *stats)
+{
+    *stats = (bms_serial_stats_t){
+        .lines = framer->lines,
+        .discarded = framer->discarded,
+        .tail_bytes = framer->used,
+        .discarding = framer->discarding
+    };
 }
 
 int bms_serial_configure_fd(int fd)

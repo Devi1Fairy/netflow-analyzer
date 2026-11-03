@@ -21,7 +21,7 @@ cmake -E chdir build ctest --output-on-failure
 
 预期基线：
 
-- 最新控制阶段（2026-11-03）：用户已将会话与队列策略提交／推送为`2354fe9 feat(gateway): add bounded control session policy`；本轮开始工作区干净，助手复核源码并重新构建，VM启用可选ML的44/44项Debug CTest通过（10.55秒）。本轮按完整模块提供`bms_control_io`候选：4096字节有界输出、非阻塞部分发送、UART单字节写入与ACK／ERR安排；仓库外严格C11及普通／ASan／UBSan两版五组检查通过，管道模拟UART，Socketpair模拟流式输出，未访问真实串口或TCP监听端口。候选尚待用户填写，未注册第45项。生产网关入口仍只读，`--control`、能力帧就绪顺序、双向事件循环与PTY集成尚未实现／验证；不改MCU或Windows。Windows只读Qt成功及基线`fe1f0c5`来自用户报告，未在本VM核验。具体边界与下一步见第18.13节，源码和Git仍由用户操作。
+- 最新控制阶段（2026-11-03）：用户已将非阻塞I/O模块提交／推送为`774b195 feat(gateway): add nonblocking control I/O primitives`；本轮开始工作区干净，助手复核并重新构建，VM启用可选ML的45/45项Debug CTest通过（11.15秒）。本轮提供共享串口增量分帧接口、`bms_control_run`双向poll、CLI末尾`--control`及PTY软件联调候选；仓库外普通与ASan／UBSan版均通过旧CLI四组和新联调五组，另复用旧串口白盒测试通过。串口测试仅PTY，TCP仅127.0.0.1；未访问真实STM32或板端。候选尚待用户填写，未注册第46项，当前仓库生产入口仍只读。测试专用open／ioctl替身只允许`/dev/pts/数字`，正式候选未加替身时仍严格拒绝普通PTY控制线检查；不修改真实DTR／RTS要求、MCU或Windows。Windows只读Qt成功及`fe1f0c5`来自用户报告，未在本VM核验。源码和Git仍由用户操作，具体见第18.13节。
 
 - 最新Qt网络对照（2026-11-03）：用户截图确认Windows PowerShell到`192.168.1.102:18080`的`TcpTestSucceeded=True`、源地址`192.168.1.100`，板端无串口诊断器接入同一来源`('192.168.1.100', 8095)`后结束。已证明本次PowerShell TCP路径可用，未证明Qt按钮实际发起连接或Qt自身网络策略正常。下一步重新运行有界无串口诊断器，仅由Qt连接并查看日志，计划接入后保持5秒再关闭，不发送BMS遥测；不再让PowerShell占用该次会话，不修改驱动／防火墙／固件。Qt真实联调仍未通过，详见问题5.26及第18.12节；本轮保留已有两份未提交文档改动，源码与Git仍由用户操作。
 
@@ -1634,7 +1634,7 @@ Windows Qt首轮真实联调计划与首次失败（2026-11-01）：
 
 上述为只读阶段的诊断历史。用户随后确认STM32→Linux网关→Windows Qt只读接入成功，并给出Windows基线`fe1f0c5`；未提供该仓库本地核验及本次详细计数，不补写。先前连接超时的具体修复原因仍未知，不将恢复归因于未验证的Qt改动或防火墙调整。当前转入下节控制阶段；分析器旁路抓取、实物断连与常驻服务仍未验证。
 
-### 18.13 BMS网关TCP控制（解析与会话已实现，非阻塞I/O候选已预检）
+### 18.13 BMS网关TCP控制（核心已提交，双向入口与PTY候选已预检）
 
 边界：Linux现有网关源码保持只读；用户亲自填写C、头文件、CMake及测试，助手只维护既有分类文档并给Git命令，不提交／推送。本阶段不改MCU协议或Windows代码，不自动向真实STM32发送任何控制字节。
 
@@ -1652,15 +1652,16 @@ Windows Qt首轮真实联调计划与首次失败（2026-11-01）：
 
 1. 纯请求解析及白名单映射＋单元测试已提交为`84d2681`，不接入生产入口。文件为`gateway/bms_control_protocol.h/.c`、`tests/unit/test_bms_control_protocol.c`及独立测试目标。输入是去掉LF的完整正文；严格单空格与大写动作，允许编号前导0但按数值处理，不依赖NUL结尾。只有解析成功才更新请求对象；可靠编号通过单独reply_id返回。该纯函数不维护last_id、不处理TCP分帧、不执行I/O。
 2. `gateway/bms_control_session.h/.c`及单元测试已由用户提交为`2354fe9`：半行／多行与64字节限制、会话编号准入、最多8项待写队列、STOP取消与优先、1000毫秒EXPIRED、断开清理。使用调用者注入的非负单调毫秒，不实际等待；合法新号在NOT_READY／QUEUE_FULL拒绝前消耗。peek只复制队首，written只供I/O层在实际write返回1后出队，本模块不执行I/O或产生ACK。serial_ready是调用者提供的逻辑状态，不是本模块验证串口就绪。
-3. 本轮提供`gateway/bms_control_io.h/.c`与`tests/unit/test_bms_control_io.c`候选：4096字节缓存逐行复制正文并追加LF、不附NUL；部分send只推进后缀，send每次非阻塞尝试一次，EAGAIN／EINTR保留缓存并返回事件循环。UART每次最多write一个T／S／C，要求已配置O_NONBLOCK并借用fd；读取CLOCK_MONOTONIC、经peek清理过期项，并在写前预留64字节回执容量。write返回1后才出队并安排ACK UART_ACCEPTED；EAGAIN／EINTR不出队、不ACK、不刷新期限；实际失败或零字节write尽力安排ERR SERIAL_WRITE并清空待写、结束会话，不隐式STOP。错误回调只复制到有界输出缓存，无法容纳时ENOBUFS终止。错误已入缓存不等于已送达，未来事件循环需在剩余总预算内有界排出错误再关闭；禁止失败后重放已写字节。旧同步行发送器仍保留给只读路径，不是双向事件循环。
-4. control模式双向poll会话与CLI开关／能力帧接入；只读路径不改，复用串口安全配置及遥测行整理逻辑。现有串口接收循环只poll串口，不能在遥测回调里顺手收控制，否则静默期控制不能及时处理。一次write前必须用最新单调时间检查期限；peek与write／written之间不得再处理可能取消队首的新输入。
-5. PTY＋回环TCP软件验收全部需求后，再整理Windows接口交接与用户发起的实物验证。普通PTY不等于CH340，测试不能通过删除生产DTR／RTS检查来通过；若需模拟，仅隔离在测试专用、限定PTY设备的系统调用替身，不加生产跳过配置开关。
+3. `gateway/bms_control_io.h/.c`与测试已由用户提交为`774b195`：4096字节缓存逐行复制正文并追加LF、不附NUL；部分send只推进后缀，send每次非阻塞尝试一次，EAGAIN／EINTR保留缓存并返回事件循环。UART每次最多write一个T／S／C，要求已配置O_NONBLOCK并借用fd；读取CLOCK_MONOTONIC、经peek清理过期项，并在写前预留64字节回执容量。write返回1后才出队并安排ACK UART_ACCEPTED；EAGAIN／EINTR不出队、不ACK、不刷新期限；实际失败或零字节write尽力安排ERR SERIAL_WRITE并清空待写、结束会话，不隐式STOP。错误回调只复制到有界输出缓存，无法容纳时ENOBUFS终止。错误已入缓存不等于已送达，禁止失败后重放已写字节。旧同步行发送器仍保留给只读路径。
+4. 本轮提供`gateway/bms_control_run.h/.c`及CLI接入候选：保留默认只读调用路径，末尾识别`--control`，可省略SECONDS，端口0与原总预算保持不变；真正配置成功且仍有预算后才调用control入口，将能力帧先入发送缓存。增量framer公开原有1024字节行整理状态和feed／stats接口，仅以类型别名复用旧实现，不改控制线配置或原行整理算法。主循环单线程poll TCP与UART，有限批次读请求、统一有界输出、按命令期限缩短等待；静默UART不阻塞控制。观察到TCP结束优先清理待写，UART写前再PEEK连接／新输入；已观察到的结束之后不再写，不声称消除尚未观察到的断链竞态。退出清空队列、不隐式STOP；错误排出最多100毫秒且不超过原总期限。control的lines仅表示遥测入发送缓存，不等于Qt已处理。候选尚未由用户填入仓库。
+5. 本轮同时提供`tests/support/bms_pty_ioctl.c`与`tests/integration/test_bms_gateway_control.py`候选，构建单独`bms-gateway-pty-test`，只在该目标包装open／ioctl。open只允许`/dev/pts/数字`，不允许物理串口路径；真实termios和排他配置仍执行，仅模拟PTY缺失的DTR／RTS ioctl，并用测试专用环境变量注入配置失败。正式网关不链接这些替身、不加生产跳过配置开关。测试用PTY＋127.0.0.1验证，不能代替真实CH340控制线、心跳或MCU动作确认；用户填写、回归后再整理Windows接口交接与用户发起的实物验证。
 
 本轮实际结果与未完成项：
 
-- VM为x86_64，`2354fe9`工作区在本轮文档维护前干净，现有Debug构建成功，启用可选ML的44项CTest全通过、退出0，10.55秒；不更新ARM64历史测试数量。纯解析器及会话策略均已由用户填写并提交。
-- I/O候选仅通过编译器标准输入在`/tmp/nfa-bms-control-io.ORtUAK`生成对象和测试程序，没有写仓库C／头文件／测试或CMake。严格C11、Wall／Wextra／Wpedantic／Werror编译成功，普通及ASan／UBSan两版均通过五组检查：有界LF输出／短send／EINTR／压缩空间、真实Socketpair背压／对端关闭无SIGPIPE、管道上的T／S／C及write接受之后才入ACK／不重复写、EINTR／STOP取消／真实管道EAGAIN／1000毫秒过期、写错误／零write／回执预留／拒绝阻塞fd。短send、EINTR、写错误和单调时间通过仅测试目标的链接包装注入；成功路径确实调用管道write和Socketpair send，不是STM32驱动验收。
-- I/O候选尚不是仓库已实现功能，待用户填写后再运行专项及完整回归，预计在当前ML配置中新增第45项。生产入口仍不支持控制CLI、能力帧或ACK／ERR；实际TCP双向poll、能力帧串口就绪顺序、PTY集成、物理控制／DTR／RTS心跳均待后续验证，不将管道／AF_UNIX测试记成这些项目已通过。
+- VM为x86_64，`774b195`工作区在本轮文档维护前干净，现有Debug构建成功，启用可选ML的45项CTest全通过、退出0，11.15秒；不更新ARM64历史测试数量。解析、会话及I/O三个模块均已由用户填写并提交，生产入口暂未调用控制模块。
+- 入口候选仅通过编译器标准输入在`/tmp/nfa-bms-control-runtime.z2JXqT`生成对象和程序，没有写仓库C／头文件／测试／Python或CMake。严格C11、Wall／Wextra／Wpedantic／Werror编译成功，普通及ASan／UBSan两版均通过旧CLI四组和新增联调五组：可选SECONDS／control参数／无人接入预算；默认只读遥测及不写控制；能力首帧／静默UART控制／半行多行／重复编号／CR与超长恢复／遥测保持；配置失败无能力；control总预算无隐式命令。新联调还在暂停测试进程后注入START和FIN，恢复后未写该待处理字节。测试仅PTY和回环TCP；不能据此声称真实STM32执行、板端控制或Qt控制已通过。
+- 另复用旧串口白盒用例验证候选别名及共享framer，片段、CRLF、多行、容量、控制字符、回调失败及管道HUP等检查通过。正式候选不链接替身时，普通PTY仍因控制线检查失败且未发送能力，说明没有放松生产配置；该检查未接触真实串口。
+- 入口及PTY候选尚待用户填写和仓库内回归，预计当前配置新增第46项。队列、期限及背压机制此前已在核心专项验证，但不把它们夸大成所有真实网卡／UART负载和竞态均覆盖；物理控制／DTR／RTS心跳、ARM64新版本与Windows控制联调仍待验证。
 - 另用本地PTY只读查询调制解调器状态，`TIOCMGET`实际返回errno25／ENOTTY；未访问真实串口。此结果解释为何后续PTY集成测试需要隔离的测试适配，不能用来否定CH340既有控制线验收。
 - 完成整个控制软件验收后，Windows交接须给实际实现提交／启动命令、能力帧、请求与ACK／ERR样例、错误和编号规则、已跑测试与剩余实物项目；本轮不把上述目标契约标成可用控制接口。
 

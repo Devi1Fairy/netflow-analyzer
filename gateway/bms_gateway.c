@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "bms_serial_core.h"
+#include "bms_control_run.h"
 #include "bms_tcp_io.h"
 #include "bms_tcp_server.h"
 
@@ -109,17 +110,20 @@ static int gateway_line_sink(const char *line, size_t length, void *context)
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {
-        printf("Usage: %s SERIAL IPV4 PORT [SECONDS]\n"
+        printf("Usage: %s SERIAL IPV4 PORT [SECONDS] [--control]\n"
                "PORT: 0..65535; SECONDS: 1..300, default 30.\n",
                argv[0]);
         return EXIT_SUCCESS;
     }
 
+    bool control = argc > 1 && strcmp(argv[argc - 1], "--control") == 0;
+    int positional_argc = argc - (control ? 1 : 0);
     int port;
     int seconds = 30;
-    if ((argc != 4 && argc != 5) ||
+    if ((positional_argc != 4 && positional_argc != 5) ||
         parse_number(argv[3], 65535, &port) == -1 ||
-        (argc == 5 && parse_number(argv[4], 300, &seconds) == -1) ||
+        (positional_argc == 5 &&
+         parse_number(argv[4], 300, &seconds) == -1) ||
         seconds == 0 || argv[1][0] == '\0') {
         fprintf(stderr, "Invalid arguments; use --help\n");
         return EXIT_FAILURE;
@@ -225,7 +229,9 @@ int main(int argc, char **argv)
         perror("configure serial");
         goto cleanup;
     }
-    fprintf(stderr, "READY: 115200/8N1 DTR=0 RTS=0 HUPCL=0; telemetry only\n");
+    fprintf(stderr, control ?
+        "READY: 115200/8N1 DTR=0 RTS=0 HUPCL=0; control enabled\n" :
+        "READY: 115200/8N1 DTR=0 RTS=0 HUPCL=0; telemetry only\n");
 
     left = remaining_ms(deadline);
     if (left < 0) {
@@ -241,15 +247,17 @@ int main(int argc, char **argv)
         .tcp = {.socket_fd = client, .timeout_ms = 100},
         .deadline_ms = deadline
     };
-    int result = bms_serial_receive_fd(
-        serial, gateway_line_sink, &sink, left, &stop_requested, &stats
-    );
+    int result = control ?
+        bms_control_run(serial, client, deadline, &stop_requested, &stats) :
+        bms_serial_receive_fd(
+            serial, gateway_line_sink, &sink, left, &stop_requested, &stats
+        );
     int saved_errno = errno;
 
     if (stop_requested &&
         (result == 0 || saved_errno == EINTR || saved_errno == ECANCELED)) {
         status = EXIT_SUCCESS;
-    } else if (result == 0 && stats.lines > 0U) {
+    } else if (result == 0 && (control || stats.lines > 0U)) {
         status = EXIT_SUCCESS;
     } else if (result == -1) {
         errno = saved_errno;

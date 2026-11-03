@@ -179,6 +179,22 @@ target_include_directories(
 
 enable_project_warnings(bms_serial_core)
 
+add_library(
+    bms_control_runtime STATIC
+    gateway/bms_control_protocol.c
+    gateway/bms_control_session.c
+    gateway/bms_control_io.c
+    gateway/bms_control_run.c
+)
+
+target_link_libraries(
+    bms_control_runtime
+    PUBLIC
+        bms_serial_core
+)
+
+enable_project_warnings(bms_control_runtime)
+
 add_executable(
     bms_gateway
     gateway/bms_gateway.c
@@ -189,7 +205,7 @@ add_executable(
 target_link_libraries(
     bms_gateway
     PRIVATE
-        bms_serial_core
+        bms_control_runtime
 )
 
 set_target_properties(
@@ -775,6 +791,51 @@ if(BUILD_TESTING)
         Python3
         REQUIRED
         COMPONENTS Interpreter
+    )
+
+    # 测试专用二进制；不安装，禁止用来连接物理串口。
+    add_executable(
+        bms_gateway_pty_test
+        gateway/bms_gateway.c
+        gateway/bms_tcp_io.c
+        gateway/bms_tcp_server.c
+        tests/support/bms_pty_ioctl.c
+    )
+
+    target_link_libraries(
+        bms_gateway_pty_test
+        PRIVATE
+            bms_control_runtime
+    )
+
+    target_link_options(
+        bms_gateway_pty_test
+        PRIVATE
+            "-Wl,--wrap=open"
+            "-Wl,--wrap=ioctl"
+    )
+
+    set_target_properties(
+        bms_gateway_pty_test
+        PROPERTIES
+            OUTPUT_NAME "bms-gateway-pty-test"
+    )
+
+    enable_project_warnings(bms_gateway_pty_test)
+
+    add_test(
+        NAME bms_gateway_control_tests
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_bms_gateway_control.py
+            --program
+            $<TARGET_FILE:bms_gateway_pty_test>
+    )
+
+    set_tests_properties(
+        bms_gateway_control_tests
+        PROPERTIES
+            TIMEOUT 20
     )
 
     add_test(
