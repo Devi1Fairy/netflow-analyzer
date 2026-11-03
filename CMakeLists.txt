@@ -204,6 +204,27 @@ enable_project_warnings(bms_gateway)
 include(CTest)
 
 if(BUILD_TESTING)
+    # 控制会话与队列策略测试，不访问任何设备或网络。
+    add_executable(
+        bms_control_session_tests
+        tests/unit/test_bms_control_session.c
+        gateway/bms_control_session.c
+        gateway/bms_control_protocol.c
+    )
+
+    enable_project_warnings(bms_control_session_tests)
+
+    add_test(
+        NAME bms_control_session_tests
+        COMMAND bms_control_session_tests
+    )
+
+    set_tests_properties(
+        bms_control_session_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+    
     # 纯内存控制协议测试，不访问任何设备或网络。
     add_executable(
         bms_control_protocol_tests
