@@ -204,6 +204,37 @@ enable_project_warnings(bms_gateway)
 include(CTest)
 
 if(BUILD_TESTING)
+ # 非阻塞控制I/O测试：仅使用管道和本机Socket。
+    add_executable(
+        bms_control_io_tests
+        tests/unit/test_bms_control_io.c
+        gateway/bms_control_io.c
+        gateway/bms_control_session.c
+        gateway/bms_control_protocol.c
+    )
+
+    enable_project_warnings(bms_control_io_tests)
+
+    # 仅本测试目标注入短写、中断、失败和可控单调时间。
+    target_link_options(
+        bms_control_io_tests
+        PRIVATE
+            "-Wl,--wrap=write"
+            "-Wl,--wrap=send"
+            "-Wl,--wrap=clock_gettime"
+    )
+
+    add_test(
+        NAME bms_control_io_tests
+        COMMAND bms_control_io_tests
+    )
+
+    set_tests_properties(
+        bms_control_io_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
     # 控制会话与队列策略测试，不访问任何设备或网络。
     add_executable(
         bms_control_session_tests
@@ -224,7 +255,7 @@ if(BUILD_TESTING)
         PROPERTIES
             TIMEOUT 5
     )
-    
+
     # 纯内存控制协议测试，不访问任何设备或网络。
     add_executable(
         bms_control_protocol_tests
