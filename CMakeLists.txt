@@ -204,6 +204,26 @@ enable_project_warnings(bms_gateway)
 include(CTest)
 
 if(BUILD_TESTING)
+    # 纯内存控制协议测试，不访问任何设备或网络。
+    add_executable(
+        bms_control_protocol_tests
+        tests/unit/test_bms_control_protocol.c
+        gateway/bms_control_protocol.c
+    )
+
+    enable_project_warnings(bms_control_protocol_tests)
+
+    add_test(
+        NAME bms_control_protocol_tests
+        COMMAND bms_control_protocol_tests
+    )
+
+    set_tests_properties(
+        bms_control_protocol_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
     # 模拟输入到TCP的桥接测试，不打开真实串口。
     add_executable(
         bms_gateway_bridge_tests
