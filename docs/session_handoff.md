@@ -21,7 +21,7 @@ cmake -E chdir build ctest --output-on-failure
 
 预期基线：
 
-- 最新控制阶段（2026-11-03）：用户已将非阻塞I/O模块提交／推送为`774b195 feat(gateway): add nonblocking control I/O primitives`；本轮开始工作区干净，助手复核并重新构建，VM启用可选ML的45/45项Debug CTest通过（11.15秒）。本轮提供共享串口增量分帧接口、`bms_control_run`双向poll、CLI末尾`--control`及PTY软件联调候选；仓库外普通与ASan／UBSan版均通过旧CLI四组和新联调五组，另复用旧串口白盒测试通过。串口测试仅PTY，TCP仅127.0.0.1；未访问真实STM32或板端。候选尚待用户填写，未注册第46项，当前仓库生产入口仍只读。测试专用open／ioctl替身只允许`/dev/pts/数字`，正式候选未加替身时仍严格拒绝普通PTY控制线检查；不修改真实DTR／RTS要求、MCU或Windows。Windows只读Qt成功及`fe1f0c5`来自用户报告，未在本VM核验。源码和Git仍由用户操作，具体见第18.13节。
+- 最新控制阶段（2026-11-03）：Linux源码基线为`cfaf3bf214446818ddeeeab4f72e7f948a7b8f99`，此前VM启用可选ML的46/46项Debug CTest通过（12.36秒），用户在ARM64通过原生编译、旧CLI四组及新PTY五组软件检查。现收到真实Qt控制会话的板端输出：日志目录`/home/cat/bms-control-v1.X3nWaz/qt-stop-120s.EypQ7U`，监听`192.168.1.102:18080`、打开`/dev/ttyUSB0`并显示control enabled，收尾`lines=541 discarded=1 tail_bytes=0 discarding=0`，网关／timeout及tee退出均0。用户另确认启动、停止、清除故障均现场验证成功；逐条CMD／ACK、前后BMS遥测、Windows控制提交、运行后三阶段心跳及fuser尚未补充，不能由退出0或541行推断MCU严格执行ACK、零丢失、实际满120秒或故障注入保护通过。实物运行与用户三动作确认已记录，详细证据分层见第18.13.4节；下一步先补归档及结束状态，再安排独立netflow-analyzer旁路抓取。本轮只维护既有两份文档，不改源码、不代执行Git或新增硬件动作。
 
 - 最新Qt网络对照（2026-11-03）：用户截图确认Windows PowerShell到`192.168.1.102:18080`的`TcpTestSucceeded=True`、源地址`192.168.1.100`，板端无串口诊断器接入同一来源`('192.168.1.100', 8095)`后结束。已证明本次PowerShell TCP路径可用，未证明Qt按钮实际发起连接或Qt自身网络策略正常。下一步重新运行有界无串口诊断器，仅由Qt连接并查看日志，计划接入后保持5秒再关闭，不发送BMS遥测；不再让PowerShell占用该次会话，不修改驱动／防火墙／固件。Qt真实联调仍未通过，详见问题5.26及第18.12节；本轮保留已有两份未提交文档改动，源码与Git仍由用户操作。
 
@@ -1634,36 +1634,204 @@ Windows Qt首轮真实联调计划与首次失败（2026-11-01）：
 
 上述为只读阶段的诊断历史。用户随后确认STM32→Linux网关→Windows Qt只读接入成功，并给出Windows基线`fe1f0c5`；未提供该仓库本地核验及本次详细计数，不补写。先前连接超时的具体修复原因仍未知，不将恢复归因于未验证的Qt改动或防火墙调整。当前转入下节控制阶段；分析器旁路抓取、实物断连与常驻服务仍未验证。
 
-### 18.13 BMS网关TCP控制（核心已提交，双向入口与PTY候选已预检）
+### 18.13 BMS网关TCP控制（实物会话正常退出，用户确认三项人工控制通过）
 
-边界：Linux现有网关源码保持只读；用户亲自填写C、头文件、CMake及测试，助手只维护既有分类文档并给Git命令，不提交／推送。本阶段不改MCU协议或Windows代码，不自动向真实STM32发送任何控制字节。
+边界：Linux默认模式保持只读，用户已填写并提交显式TCP控制入口；助手只维护既有分类文档并给Git命令，不提交／推送。本阶段不改MCU协议或Windows代码，不自动向真实STM32发送任何控制字节。Windows交接是供用户转交的后续任务，不代表助手已修改或核验Windows仓库。
 
 已确认的目标契约：
 
-- 保留`bms-gateway SERIAL IPV4 PORT [SECONDS]`，后续新增末尾可选`[--control]`；默认模式输出与行为兼容，禁止UART控制写入。端口0、单客户端单会话、应用总预算、现有DTR／RTS／HUPCL及打开关闭顺序不变，遥测正文及LF分帧不变。
-- 只有显式control模式且串口打开并配置成功后，才向该TCP连接发送`GW 2 CONTROL\n`。能力帧只表示该连接可请求控制，不代表MCU执行确认；不得提前发布部分功能。当前源码尚无该开关和帧。
+- 保留`bms-gateway SERIAL IPV4 PORT [SECONDS]`，已新增末尾可选`[--control]`；默认模式输出与行为兼容，禁止UART控制写入。端口0、单客户端单会话、应用总预算、现有DTR／RTS／HUPCL及打开关闭顺序不变，遥测正文及LF分帧不变。
+- 只有显式control模式且串口打开并配置成功后，才向该TCP连接发送`GW 2 CONTROL\n`。能力帧只表示该连接可请求控制，不代表MCU执行确认；开关、能力与完整软件链路已在`cfaf3bf`接入，已通过ARM64软件检查及一次真实CH340／Qt控制会话运行。用户确认三项人工控制通过，逐条能力／请求／回执原文仍待归档，详见第18.13.4节。
 - 请求为`CMD <十进制编号> <STOP|START|CLEAR>`加单LF，编号1..4294967295，合法请求按数值严格递增。STOP／START／CLEAR分别只映射单字节T／S／C，不允许直接转发网络原文或开放P／R／A／D。
-- 仅当实际UART单字节write返回1，才安排`ACK <id> UART_ACCEPTED\n`；不代表MCU执行成功，MCU结果仍观察后续BMS状态。ERR原因候选为BAD_REQUEST、BAD_COMMAND、STALE_ID、QUEUE_FULL、CANCELLED、EXPIRED、NOT_READY、SERIAL_WRITE，无法可靠取得编号用0。语法、编号、动作合法的新请求立即消耗编号，之后即使被拒绝也不能重用。
-- 请求正文最多64字节，处理半行／多行；拒绝NUL、CR和非法控制字符，超长丢弃至LF再同步。队列计划最多8项，STOP优先于未写普通命令并取消积压START／CLEAR、逐项返回CANCELLED；已被串口驱动接受的字节不可撤销。
+- 仅当实际UART单字节write返回1，才安排`ACK <id> UART_ACCEPTED\n`；不代表MCU执行成功，MCU结果仍观察后续BMS状态。ERR支持BAD_REQUEST、BAD_COMMAND、STALE_ID、QUEUE_FULL、CANCELLED、EXPIRED、NOT_READY、SERIAL_WRITE，无法可靠取得编号用0；NOT_READY为核心状态，当前CLI配置失败直接结束且不发送能力。语法、编号、动作合法的新请求立即消耗编号，之后即使被拒绝也不能重用。
+- 请求正文最多64字节，处理半行／多行；拒绝NUL、CR和非法控制字符，超长丢弃至LF再同步。队列实际最多8项，STOP优先于未写普通命令并取消积压START／CLEAR、逐项返回CANCELLED；已被串口驱动接受的字节不可撤销。
 - 待写命令按单调时钟1000毫秒期限处理，到期EXPIRED且不补发。EAGAIN／EINTR尚未接受字节时保持有界等待，不能重置期限；write已返回1的字节不重发。已观察TCP断开后清空未写命令，不跨会话重放，不新增隐式UART动作。
 - TCP输出同样有界，遥测／能力／ACK／ERR必须以完整帧顺序串行排出，不能部分发送后插入其他帧。UART写前须保证可安排终结回执；对端失联或输出无法继续时安全结束会话并丢弃待写项，不承诺已断链的客户端一定收到ERR，也不因此发送隐式STOP。无认证／TLS，仍限定可信实验网络，MCU本地保护保持独立。
 
-检查与模块路线（用户填写源码，后续I/O接入仍为计划）：
+已实现模块与软件验证（源码由用户填写）：
 
 1. 纯请求解析及白名单映射＋单元测试已提交为`84d2681`，不接入生产入口。文件为`gateway/bms_control_protocol.h/.c`、`tests/unit/test_bms_control_protocol.c`及独立测试目标。输入是去掉LF的完整正文；严格单空格与大写动作，允许编号前导0但按数值处理，不依赖NUL结尾。只有解析成功才更新请求对象；可靠编号通过单独reply_id返回。该纯函数不维护last_id、不处理TCP分帧、不执行I/O。
 2. `gateway/bms_control_session.h/.c`及单元测试已由用户提交为`2354fe9`：半行／多行与64字节限制、会话编号准入、最多8项待写队列、STOP取消与优先、1000毫秒EXPIRED、断开清理。使用调用者注入的非负单调毫秒，不实际等待；合法新号在NOT_READY／QUEUE_FULL拒绝前消耗。peek只复制队首，written只供I/O层在实际write返回1后出队，本模块不执行I/O或产生ACK。serial_ready是调用者提供的逻辑状态，不是本模块验证串口就绪。
 3. `gateway/bms_control_io.h/.c`与测试已由用户提交为`774b195`：4096字节缓存逐行复制正文并追加LF、不附NUL；部分send只推进后缀，send每次非阻塞尝试一次，EAGAIN／EINTR保留缓存并返回事件循环。UART每次最多write一个T／S／C，要求已配置O_NONBLOCK并借用fd；读取CLOCK_MONOTONIC、经peek清理过期项，并在写前预留64字节回执容量。write返回1后才出队并安排ACK UART_ACCEPTED；EAGAIN／EINTR不出队、不ACK、不刷新期限；实际失败或零字节write尽力安排ERR SERIAL_WRITE并清空待写、结束会话，不隐式STOP。错误回调只复制到有界输出缓存，无法容纳时ENOBUFS终止。错误已入缓存不等于已送达，禁止失败后重放已写字节。旧同步行发送器仍保留给只读路径。
-4. 本轮提供`gateway/bms_control_run.h/.c`及CLI接入候选：保留默认只读调用路径，末尾识别`--control`，可省略SECONDS，端口0与原总预算保持不变；真正配置成功且仍有预算后才调用control入口，将能力帧先入发送缓存。增量framer公开原有1024字节行整理状态和feed／stats接口，仅以类型别名复用旧实现，不改控制线配置或原行整理算法。主循环单线程poll TCP与UART，有限批次读请求、统一有界输出、按命令期限缩短等待；静默UART不阻塞控制。观察到TCP结束优先清理待写，UART写前再PEEK连接／新输入；已观察到的结束之后不再写，不声称消除尚未观察到的断链竞态。退出清空队列、不隐式STOP；错误排出最多100毫秒且不超过原总期限。control的lines仅表示遥测入发送缓存，不等于Qt已处理。候选尚未由用户填入仓库。
-5. 本轮同时提供`tests/support/bms_pty_ioctl.c`与`tests/integration/test_bms_gateway_control.py`候选，构建单独`bms-gateway-pty-test`，只在该目标包装open／ioctl。open只允许`/dev/pts/数字`，不允许物理串口路径；真实termios和排他配置仍执行，仅模拟PTY缺失的DTR／RTS ioctl，并用测试专用环境变量注入配置失败。正式网关不链接这些替身、不加生产跳过配置开关。测试用PTY＋127.0.0.1验证，不能代替真实CH340控制线、心跳或MCU动作确认；用户填写、回归后再整理Windows接口交接与用户发起的实物验证。
+4. `gateway/bms_control_run.h/.c`及CLI接入已提交为`cfaf3bf`：保留默认只读调用路径，末尾识别`--control`，可省略SECONDS，端口0与原总预算保持不变；真正配置成功且仍有预算后才调用control入口，将能力帧先入发送缓存。增量framer公开原有1024字节行整理状态和feed／stats接口，仅以类型别名复用旧实现，不改控制线配置或原行整理算法。主循环单线程poll TCP与UART，有限批次读请求、统一有界输出、按命令期限缩短等待；静默UART不阻塞控制。观察到TCP结束优先清理待写，UART写前再PEEK连接／新输入；已观察到的结束之后不再写，不声称消除尚未观察到的断链竞态。退出清空队列、不隐式STOP；错误排出最多100毫秒且不超过原总期限。control的lines仅表示遥测入发送缓存，不等于Qt已处理。
+5. `tests/support/bms_pty_ioctl.c`与`tests/integration/test_bms_gateway_control.py`已提交为`cfaf3bf`，构建单独`bms-gateway-pty-test`，只在该目标包装open／ioctl。open只允许`/dev/pts/数字`，不允许物理串口路径；真实termios和排他配置仍执行，仅模拟PTY缺失的DTR／RTS ioctl，并用测试专用环境变量注入配置失败。正式网关不链接这些替身、不加生产跳过配置开关。测试用PTY＋127.0.0.1验证，不能代替真实CH340控制线、心跳或MCU动作确认；ARM64软件与后续实物运行分别记录，不混合成自动化硬件测试通过。
 
 本轮实际结果与未完成项：
 
-- VM为x86_64，`774b195`工作区在本轮文档维护前干净，现有Debug构建成功，启用可选ML的45项CTest全通过、退出0，11.15秒；不更新ARM64历史测试数量。解析、会话及I/O三个模块均已由用户填写并提交，生产入口暂未调用控制模块。
+- VM为x86_64，`cfaf3bf214446818ddeeeab4f72e7f948a7b8f99`工作区在本轮文档维护前干净，Debug构建成功，启用可选ML的46项CTest全通过、退出0，12.36秒；不更新ARM64历史测试数量。入口已在仓库调用控制模块。VM CMake正式程序SHA-256为`d5a50585c6f5a29d89d662f63433b9abdfdea88a84e34591a9f77d0a70e84ddc`，不是ARM64产物摘要。
 - 入口候选仅通过编译器标准输入在`/tmp/nfa-bms-control-runtime.z2JXqT`生成对象和程序，没有写仓库C／头文件／测试／Python或CMake。严格C11、Wall／Wextra／Wpedantic／Werror编译成功，普通及ASan／UBSan两版均通过旧CLI四组和新增联调五组：可选SECONDS／control参数／无人接入预算；默认只读遥测及不写控制；能力首帧／静默UART控制／半行多行／重复编号／CR与超长恢复／遥测保持；配置失败无能力；control总预算无隐式命令。新联调还在暂停测试进程后注入START和FIN，恢复后未写该待处理字节。测试仅PTY和回环TCP；不能据此声称真实STM32执行、板端控制或Qt控制已通过。
 - 另复用旧串口白盒用例验证候选别名及共享framer，片段、CRLF、多行、容量、控制字符、回调失败及管道HUP等检查通过。正式候选不链接替身时，普通PTY仍因控制线检查失败且未发送能力，说明没有放松生产配置；该检查未接触真实串口。
-- 入口及PTY候选尚待用户填写和仓库内回归，预计当前配置新增第46项。队列、期限及背压机制此前已在核心专项验证，但不把它们夸大成所有真实网卡／UART负载和竞态均覆盖；物理控制／DTR／RTS心跳、ARM64新版本与Windows控制联调仍待验证。
+- 入口及PTY测试现已填写并通过仓库内回归。另以拟给板端的八个生产C文件和`BMS_SERIAL_LIBRARY=1`直接严格C11编译，在VM隔离目录`/tmp/nfa-bms-control-build-check.ZMU0m7`生成正式及PTY程序，旧CLI四组和新PTY五组均通过，证明直接编译命令在VM可用；该次为VM结果。用户随后提供ARM64原生编译及同两份脚本全部PASS的板端输出，详见第18.13.2节；真实控制会话日志及用户三动作确认见第18.13.4节。队列、期限及背压已有核心专项验证，不夸大成所有真实负载及竞态均覆盖，也不以软件替身或READY日志补写实物心跳和MCU状态。
 - 另用本地PTY只读查询调制解调器状态，`TIOCMGET`实际返回errno25／ENOTTY；未访问真实串口。此结果解释为何后续PTY集成测试需要隔离的测试适配，不能用来否定CH340既有控制线验收。
-- 完成整个控制软件验收后，Windows交接须给实际实现提交／启动命令、能力帧、请求与ACK／ERR样例、错误和编号规则、已跑测试与剩余实物项目；本轮不把上述目标契约标成可用控制接口。
+- 当前可交接已实现的软件协议，明确源码提交、启动参数、能力、ACK／ERR、编号与限制；新版ARM64软件验证和一次面向真实串口及Qt的控制会话运行已完成，用户确认启动／停止／清除故障通过。本次进程已退出，不宣称端口仍在监听；Windows具体控制提交与逐条协议／状态证据仍待归档。源码、Git及硬件操作由用户执行。
+
+### 18.13.1 Windows Qt控制接口交接（首轮实物联调前快照）
+
+以下保留首轮实物联调前的可转交接口说明，协议约定不变，但其中“尚未实物联调”的状态属于当时快照；当前实际运行及用户三动作确认见第18.13.4节。不是助手已修改Windows代码或核验其仓库的记录。
+
+```text
+Windows Qt TCP控制交接（Linux软件已验收，实物控制尚未验收）
+
+请先检查Windows BMS仓库的AGENTS、Git状态及现有TCP接收代码，保留已有修改。
+Windows只读基线fe1f0c5仅作历史参考；Linux基线为netflow-analyzer的cfaf3bf214446818ddeeeab4f72e7f948a7b8f99。
+Linux VM的46项CTest已经通过，包括纯协议、队列、I/O和PTY＋127.0.0.1联调。
+鲁班猫现已在/home/cat/bms-control-v1.X3nWaz原生编译并通过四组CLI及五组PTY软件检查；未打开真实串口，不代表MCU已执行控制，也不是板端46项全量CTest结果。
+
+1. Linux是TCP服务端，Qt主动连接；IPv4和端口由启动参数指定，没有固定默认值。
+   预期实物端点仍为192.168.1.102:18080，必须在实物联调前复核。
+   CLI：bms-gateway SERIAL IPV4 PORT [SECONDS] [--control]。
+   默认只读；--control必须位于末尾。时长默认30秒、范围1..300，等待连接也计入总预算；单客户端单会话，无自动重连。
+   新版已完成板端软件检查，但尚未启动面向真实串口及Qt的控制会话；不要假设端口正在监听。
+
+2. 所有TCP消息均为文本正文＋单个LF，不附NUL；控制请求不接受CRLF。
+   Qt必须使用有界接收缓存处理半包、多行，并将BMS、GW、ACK、ERR分别分发。
+   BMS遥测正文保持原样、上限1024字节，继续复用已有解析、趋势和CSV。
+
+3. 只有--control启用且串口实际打开、配置成功后，服务器才首先发送：
+   GW 2 CONTROL
+   不需要也不支持HELLO/PING协商。每个新连接先清除控制能力标志，收到本连接的精确能力行后才允许人工控制。
+   旧服务器或只读连接没有能力行，按钮必须禁用；断开立即清除能力。
+
+4. 请求示例（每行末尾另加单个LF）：
+   CMD 1 STOP
+   CMD 2 START
+   CMD 3 CLEAR
+   严格单空格、大写动作，正文最多64字节。
+   编号1..4294967295，同一连接按数值严格递增。
+   Qt每次提交分配新编号，不能因ERR或等待超时而复用旧号；达到上限不能回绕。
+   同一会话语法、编号、动作合法的新请求，即使被QUEUE_FULL/NOT_READY拒绝也消耗编号。
+   STOP/START/CLEAR只映射UART单字节T/S/C，不开放其他调试命令。
+
+5. 成功回执：
+   ACK 1 UART_ACCEPTED
+   只表示串口驱动接受了字节，不是MCU执行完成。
+   界面可显示“已提交串口，等待状态确认”，不能直接将负载状态改成已启动/停止。
+   执行效果仍从后续BMS遥测及原MCU状态逻辑判断。
+
+6. 错误格式：
+   ERR <编号> <原因>
+   原因：BAD_REQUEST、BAD_COMMAND、STALE_ID、QUEUE_FULL、CANCELLED、EXPIRED、NOT_READY、SERIAL_WRITE。
+   无法可靠取得编号时为0。NOT_READY是核心支持的状态；当前CLI配置失败会直接结束连接，不发送能力帧。
+   待写队列最多8项；STOP取消尚未写入的START/CLEAR，并逐项返回CANCELLED，已接受的字节不能撤销。
+   待写命令1000ms到期后EXPIRED、不补发。回执可能与其他遥测交错，必须按编号关联，不能按到达顺序猜测。
+   输出缓存耗尽或连接故障可能直接结束连接，不能保证每次拒绝都能送达ERR。
+
+7. 回执超时只说明结果未知，不能自动重发，无论是否换新编号。
+   断开后不跨连接重放旧请求；新连接重新获取能力，不能沿用上一连接的授权。
+   不在启动、连接、重连或退出时自动发送STOP/START/CLEAR。
+   MCU采样、保护和MOS控制仍由STM32本地执行；网络断开不代表负载已经关闭。
+   无认证/TLS，仅限可信实验局域网。
+
+本阶段仅在Windows实现协议分发、能力门控、人工命令发送和状态展示，并进行模拟服务端测试。
+不要修改MCU协议，不自动对真实硬件发控制命令。真实联调另行安排，先验证STOP和心跳，不自动START。
+```
+
+### 18.13.2 新版ARM64隔离部署与软件验收（2026-11-03用户提供板端结果）
+
+- 固定源码提交为`cfaf3bf214446818ddeeeab4f72e7f948a7b8f99`，由用户用Git archive导出gateway目录、两份网关集成测试及PTY替身；不打包Git、虚拟环境、模型、历史构建或数据集。
+- 由用户交互SSH到历史已确认的`cat@192.168.1.102`，核对主机与架构并创建新的`/home/cat/bms-control-v1.XXXXXX`隔离目录；不得复用旧`bms-gateway-v1.9zr5rW`或假定板端主仓库已同步。密码仅在用户终端输入，若地址／认证不符先停止确认，不改SSH设置。
+- 传输前后比较源码包SHA-256，确认一致后才在该新目录解包。使用系统cc原生编译8个gateway生产C文件，宏`BMS_SERIAL_LIBRARY=1`仅排除原串口main；正式程序不链接任何测试包装、不安装、不覆盖旧程序或启用服务。
+- 两端Shell变量不共享：用户需把新隔离目录分别赋给VM与板端的`BMS_CONTROL_STAGE`，不使用旧`BMS_GATEWAY_DIR`、空变量或子串展开当默认值。VM打印源码包实际路径及`BMS_EXPECTED_SHA`赋值行，用户复制到板端；校验不一致不得解包。本次板端实际目录已由用户确认为`/home/cat/bms-control-v1.X3nWaz`，源码包校验显示通过；用户未贴出包的64位摘要原文，不用程序摘要代替源码包摘要。
+- 另编译带open／ioctl包装的`bms-gateway-pty-test`，仅运行现有CLI和PTY两份集成脚本，分别用20秒和30秒外层超时并保存日志。测试只用不存在的路径、PTY及127.0.0.1，不打开CH340、不发送真实控制、不重跑全量历史／ML测试。
+
+用户实际回传的板端证据：
+
+- 主机`lubancat`，架构`aarch64`，显示“源码包SHA-256校验通过”。按上述固定提交导出／隔离编译流程验收，不以此推断板端主仓库HEAD；系统发行版与内核本次未重新采集，网卡及串口预检结果见下文。
+- 正式产物`bms-gateway`的file结果为ARM aarch64、动态链接、解释器`/lib/ld-linux-aarch64.so.1`、含debug_info且未strip；BuildID为`e604df17e5961ef20b1d1d2c609e0c4cec343958`。help已实际显示`SERIAL IPV4 PORT [SECONDS] [--control]`、端口0..65535和时长1..300、默认30秒。
+
+| 板端产物 | SHA-256 |
+| --- | --- |
+| `bms-gateway` | `1aa74d69e8be36f91bfaf4b89652f9308249c56632f99de96d3330fb92ff7fde` |
+| `bms-gateway-pty-test` | `9d8ce6abc980b6ff3ab1fb7e11b708f83005b8d832132f02540b006d0a67e230` |
+
+- 原CLI四组均PASS：help及参数验证；无人接入不打开串口；等待时SIGINT／SIGTERM退出；接入后不存在的设备安全失败。
+- 新control脚本五组均PASS：可选时长及参数／无人接入预算；默认只读遥测兼容且无UART控制；能力首帧、静默UART控制、分帧及遥测；配置失败不发布能力；总预算及信号不产生隐式命令。测试仍是PTY及本机TCP，不是真实CH340。
+- 用户回传最终成功标记“ARM64软件检查通过，未打开真实串口”，目录为`/home/cat/bms-control-v1.X3nWaz`。约定脚本在该目录保存`cli-check.txt`与`control-pty-check.txt`；本次仅收到终端PASS输出，未另行读取板端日志文件。外层20秒／30秒是测试超时上限，不是实测耗时；未单独贴出两份脚本退出码，不补写数值。
+- 上述软件验收阶段只确认原生编译与两份专项脚本通过，不能改写为ARM64已通过当前46项CTest。正式／测试程序分离；该阶段未安装、覆盖旧程序、启用常驻服务或启动真实串口控制会话。后续真实运行及用户人工控制结果另见第18.13.4节，不能回填为软件检查已访问真实串口。
+- 随后用户补充只读设备预检：实际节点`/dev/ttyUSB0`，字符设备`188,0`，属主／组`root:dialout`、权限`crw-rw----`；udev为`1a86:7523`、驱动`ch341`，当前会话读写权限检查通过且未打开设备。
+- 用户进一步回传板端网络及占用预检：`lo=127.0.0.1/8`，`eth0 UP=192.168.1.102/24`；ModemManager为`loaded/inactive/dead`；`ss -ltnp 'sport = :18080'`仅有表头、未列监听，`sudo fuser -v /dev/ttyUSB0`未列占用进程。该时点预检通过，不保证稍后设备／端口仍无人占用，不据此修改服务或结束其他进程。用户随后确认STM32待机、负载输出关闭、心跳正常，以及Qt已实现控制能力门控；这是用户现场／实现声明，助手未核验Windows源码或提交。该次预检时实物尚未运行，后续运行与人工控制结果见第18.13.4节。
+
+实物前预检与首轮操作边界（执行前记录）：
+
+- 板端网卡与地址、实际节点及USB驱动、当前会话读写权限、ModemManager与设备／18080占用的查询现已收到用户结果；实际打开前若换会话、插拔或间隔较久须重新核对。查询节点和端口不等于打开串口／连接TCP；不运行stty、串口工具或任何TCP连接探测，不因历史节点为ttyUSB0而跳过核对。
+- STM32待机、负载关闭、心跳正常及Qt能力门控已由用户确认；人工STOP的实际请求／回执仍须以下有界联调验证，不能从历史只读成功推断控制已验收。若Qt因BMS待机禁用停止按钮，先保留界面与日志，不以START制造测试条件。
+- 条件满足后再由用户启动有界真实会话，仅让Qt占用唯一客户端连接。首轮只人工STOP并检查打开／转发／退出后三阶段心跳、UART_ACCEPTED与后续遥测，不自动START／CLEAR，不把ACK当作MCU动作完成。USB TO UART兼供电，继续不做插拔／断电实验。
+
+### 18.13.3 首次Qt实物STOP联调方案（执行前方案，实际结果见18.13.4）
+
+本节保留交给用户执行时的方案，不以方案文字代替实际验收；后续回传结果见第18.13.4节。正式产物、串口、网卡、权限、服务及占用的证据见第18.13.2节；执行前用户已确认BMS待机、负载输出关闭、心跳正常及Qt能力门控已实现，当时尚无Windows控制版本提交或本次协议日志。
+
+板端运行命令如下，使用正式`bms-gateway`，禁止将PTY测试程序用于实物。子Shell中的变量只在该块内有效，实际日志目录会在启动前及退出后打印，不要求用户在另一个终端复用未赋值变量。
+
+```bash
+(
+    set -euo pipefail
+
+    BMS_CONTROL_STAGE=/home/cat/bms-control-v1.X3nWaz
+    BMS_SERIAL_DEVICE=/dev/ttyUSB0
+
+    test "$(uname -m)" = aarch64
+    test -x "$BMS_CONTROL_STAGE/bms-gateway"
+    test -c "$BMS_SERIAL_DEVICE"
+    test -r "$BMS_SERIAL_DEVICE"
+    test -w "$BMS_SERIAL_DEVICE"
+
+    BMS_PROGRAM_SHA="$(sha256sum "$BMS_CONTROL_STAGE/bms-gateway")"
+    test "${BMS_PROGRAM_SHA%% *}" = \
+        1aa74d69e8be36f91bfaf4b89652f9308249c56632f99de96d3330fb92ff7fde
+
+    BMS_QT_RUN_DIR="$(mktemp -d "$BMS_CONTROL_STAGE/qt-stop-120s.XXXXXX")"
+    printf '日志目录：%s\n' "$BMS_QT_RUN_DIR"
+
+    set +e
+    timeout --signal=TERM --kill-after=5s 125s \
+        "$BMS_CONTROL_STAGE/bms-gateway" \
+        "$BMS_SERIAL_DEVICE" 192.168.1.102 18080 120 --control \
+        2>&1 | tee "$BMS_QT_RUN_DIR/runtime.txt"
+    BMS_QT_PIPE_STATUS=("${PIPESTATUS[@]}")
+
+    printf '网关/timeout退出码：%s\n日志保存退出码：%s\n日志目录：%s\n' \
+        "${BMS_QT_PIPE_STATUS[0]}" "${BMS_QT_PIPE_STATUS[1]}" \
+        "$BMS_QT_RUN_DIR" |
+        tee "$BMS_QT_RUN_DIR/exit-status.txt"
+)
+```
+
+- 应用总预算120秒，包含等待Qt连接；外层125秒timeout及其5秒强制结束宽限只用于故障兜底，不是把连接后的预算再加120秒。若兜底触发，通常返回124，不登记为正常验收。`PIPESTATUS`在管道后立即保存，避免后续printf覆盖真实状态；set +e仅作用于子Shell，以便失败后仍打印结果。普通用户运行，不新增sudo权限。
+- `runtime.txt`保存并实时显示网关运行输出（含stderr），`exit-status.txt`保存两个退出码及实际目录；两者不会自动包含Qt收到的能力、ACK或BMS正文。能力及回执走TCP，必须另存Qt日志，不能从Linux的READY或退出0推断ACK送达。
+- 看到`LISTEN 192.168.1.102:18080`后，只由Windows Qt连接一次；不运行Test-NetConnection、nc、Python探测或其他虚拟客户端。接入后板端才应显示OPEN_SERIAL及control enabled；Qt应收到本连接的精确能力帧并显示持续BMS遥测。
+- 先观察数秒遥测及心跳，再由用户只点击一次停止按钮，记录实际`CMD <id> STOP`及匹配编号的`ACK <id> UART_ACCEPTED`。本连接首次编号若为1，则为CMD 1 STOP／ACK 1 UART_ACCEPTED；以Qt实际编号为准。无能力、出现ERR、回执超时或停止按钮因待机禁用时，不自动重试、不发送START／CLEAR；保留日志后结束本轮定位。
+- 继续观察后续BMS行和心跳，Qt保持连接直到应用总预算到期，避免自动重连；正常期望网关和tee退出均0。退出后用户执行`sudo fuser -v /dev/ttyUSB0`并检查心跳。Ctrl+C可提前结束网关，但不是MCU急停，不产生隐式控制。
+- 原计划只验收串口驱动接受STOP、遥测持续、用户观察的打开／接收／退出后三阶段心跳。起始负载已关闭，后续load=0是状态一致证据，不足以证明运行态停机、MCU处理成功、MOS时序或保护动作；若没有MCU明确命令处理证据，应保留该边界。后续用户另确认实际人工验证了START／STOP／CLEAR，结果分层记录于第18.13.4节，不倒改原计划为助手自动执行三动作；不安排插拔／断电实验。
+
+### 18.13.4 真实Qt控制会话验收（2026-11-03板端输出与用户现场确认）
+
+用户回传“完全成功，并且验证了启动停止和清理故障”，同时提供如下板端终端输出；助手本轮未远程启动程序、发送命令、打开真实串口或读取板端文件。现场确认与终端可直接核对的证据分别记录。
+
+| 项目 | 本次实际输出 |
+| --- | --- |
+| 日志目录 | `/home/cat/bms-control-v1.X3nWaz/qt-stop-120s.EypQ7U` |
+| TCP监听 | `LISTEN 192.168.1.102:18080` |
+| 实际串口 | `OPEN_SERIAL /dev/ttyUSB0` |
+| 配置日志 | `READY: 115200/8N1 DTR=0 RTS=0 HUPCL=0; control enabled` |
+| 收尾统计 | `lines=541 discarded=1 tail_bytes=0 discarding=0` |
+| 网关／timeout退出码 | `0` |
+| 日志保存退出码 | `0` |
+
+- 本次真实连接、串口配置及control事件循环已实际运行并正常退出，不再属于“新版未上板”。541是控制模式下完整串口文本行成功入TCP发送缓存的计数，不是Qt已确认接收541行，也不是命令或ACK数量。启动行整理器会先丢弃片段至LF；`discarded=1`与既有同步策略相容，但没有本次原始串口字节可还原被丢弃内容，不宣称UART或TCP零丢失。
+- 用户明确确认Qt侧启动、停止、清除故障均验证成功，可作为人工实物联调通过的现场记录。原指导只要求首轮STOP，额外两动作是用户报告的实际人工验证，不能写成助手自动化脚本对真实硬件发了三条命令，也不因此授权后续自动启动或清除故障。
+- 尚未贴出本连接的GW能力原文、各CMD编号、对应ACK／ERR、动作前后BMS行或MCU命令处理日志；不编造编号、操作顺序、重复次数、状态变化或严格执行ACK。未说明CLEAR时是否有实际锁存故障，不能据此写成故障注入、故障恢复或本地保护有效性测试通过。Windows最新控制提交仍未知，历史`fe1f0c5`只读基线不能代用。
+- 该运行按上一节120秒应用总预算安排；本次输出没有起止时间或明确退出原因。退出0表示正常路径结束，不能据此认定确实运行满120秒、证明未提前正常断开，或用541行反推采样率。无外层兜底超时错误的回传证据。
+- 运行前待机、负载关闭与心跳正常已有用户确认；本次“完全成功”未分别补充串口打开／接收／退出后三阶段心跳、复位观察、最终负载状态及退出后fuser输出，不从旧只读验收回填。网关退出不会隐式发送STOP，尤其本次人工验证过START，应由用户确认结束后负载关闭、心跳正常；如需处理负载，使用已有本地安全操作，不依赖已退出网关。
+- 本次未收到netflow-analyzer对该会话的旁路抓包记录，也未验证真实USB断连、常驻服务、网络认证／TLS或长期运行。不能将会话联通扩展成这些项目完成。原始Qt日志、遥测及后续PCAP留在仓库外，按需只将脱敏摘要写入现有文档。
+
+收尾与下一步：
+
+1. 用户在板端只读执行`sudo fuser -v /dev/ttyUSB0`，并确认最终负载关闭、心跳及复位观察；若没有占用，命令通常不列进程，不能将正常无输出当作错误。
+2. 保存Qt三项人工控制的请求／回执及前后遥测，补记Windows控制提交；只归档现有实验，不为补日志自动重放命令。资料暂缺不否定用户现场确认，但保留人工确认与逐条原始证据的层次。
+3. 本阶段文档可统一提交为`docs(gateway): record Qt hardware control validation`，仅包含既有两份分类文档，Git由用户执行。本轮文档校验不重跑全量历史测试。
+4. 下一阶段计划让独立netflow-analyzer在已核对的面向Qt网卡上旁路采集真实TCP会话，检查双向统计、握手／关闭状态和drop指标。先复核实际分析器程序及CLI，再给有界操作；本轮不启动抓包、不新增TCP探测客户端、不自动发送控制、不声称已实现TCP字节流重组或CMD应用层解析。
+
 
 ## 19. ARM Linux开发板计划
 
