@@ -1492,6 +1492,18 @@ sudo: unable to resolve host lubancat: Temporary failure in name resolution
 
 后续SIGINT验收补充（同日）：本次权限检查明确通过，用户先确认ModemManager为`active/running`，再手工临时停止并得到`inactive/dead`，运行前后`fuser`均未列出占用。随后`sigint-5s.yrjSSf`受控发送INT、正常收尾并退出0，输出24行，用户确认三阶段心跳正常、未观察到复位。该证据只补充这一次测试，不把首次149行运行的服务状态改写为已知，也不宣称ModemManager曾经实际干扰串口。
 
+再次出现（2026-11-04，真实TCP捕获准备）：用户在终端C执行带`set -e`的网关启动预检后立即返回、无任何提示。后续只读诊断确认当前`id`仍仅含cat／sudo／audio／video，不含dialout；实际CH340为`/dev/ttyUSB0`、root:dialout／0660、1a86:7523／ch341，`test -r`与`test -w`均返回1。按启动脚本顺序，串口可读检查是当前证据指出的前置失败项；裸`test`遇到`set -e`静默结束，使错误原因未显示。网关程序存在且可执行、SHA与已验证产物一致，数据目录可写，ModemManager为inactive／dead，18080无监听，fuser返回1且无占用输出。不能将此次失败归为USB未枚举、重新构建失败或已启动网关的TCP连接失败。
+
+本次诊断未重新提供`id cat`及`getent group dialout`，故当前账户数据库是否仍含组成员关系待复核，不能只凭11月1日记录宣称本次已经完成这一核对。建议先核对账户记录；若账户仍在dialout组，用新的独立SSH登录、完整注销桌面后重新登录，或在终端C单独执行`newgrp dialout`再进入其新Shell，之后用不打开设备的读写检查验证。仅新开继承旧桌面身份的终端不保证刷新。不要再次盲目usermod、chmod 666或sudo运行网关；刷新后的实际权限仍待用户回传。
+
+同次捕获收尾证据：tcpdump与实时分析器的记录PID均已不存在，两个exit-code文件均为0；gateway.runtime.txt与gateway.exit-status.txt均不存在。没有提供本次结束原因或PCAP统计，不把退出0写成确实满420秒、零包／零drop或Qt真实流采集成功。旧实验目录`bms-tcp-a66a6ef-20261104-01`保留，修复权限后应使用新目录重新捕获，不覆盖或继续使用已结束的捕获窗口。
+
+本机终端复查结果（同日）：用户明确说明直接使用鲁班猫本机终端，并回传`/dev/ttyUSB0`仍为root:dialout／0660、`test -r && test -w`实际输出`[PASS] 当前终端串口权限通过`。当前会话访问检查已恢复，可在这个同一终端继续网关预检；没有回传新的完整id、账户组记录或具体刷新方式，不指定为newgrp／桌面注销导致的修复，也不据此断言所有本机终端均已生效。该检查不打开串口，不作为新网关或真实TCP采集通过证据。后续有界脚本在关键检查处增加ERR失败提示，先完成不计时的预检再连续启动捕获和网关，避免等待聊天回传耗尽捕获窗口。
+
+后续03轮实物结果（同日）：用户回传新目录`bms-tcp-a66a6ef-20261104-03`的实际LISTEN／OPEN_SERIAL／control enabled，完整串口行统计1014，网关与日志保存退出均0；两路捕获先于网关就绪，tcpdump保存2041包、kernel drop=0，实时分析器得到目标单条双向TCP流且观察状态closed。这次真实运行说明该会话权限已不再阻挡网关打开设备，不推断具体用了哪种刷新方式，也不补写未贴出的完整id。用户随后明确本轮未点击STOP，现场三阶段心跳正常、未观察到复位、最终负载关闭；本轮不计入STOP命令验收，亦不登记为控制失败，无需重放命令补日志。
+
+离线收尾补证（同日）：同一PCAP实际读取2041包且全部complete、其余四类处理结果均0；导出2行CSV（表头加1流），端点／状态／方向包数与字节数与实时结果一致，标准库读回核对PASS，首末跨度169205329微秒。PCAP及CSV的SHA已经归档在交接第18.14.6节。实时分析器另有实际退出0、received=2043、capture dropped=0、interface dropped=0证据；后端累计接收2043不等于应用处理2041，不能只凭差值2定位具体包或登记为TCP网络丢包。当前采集与离线CSV目标已完成，无需重跑历史测试或硬件控制。
+
 ### 5.25 把目录后缀填进Bash子串语法，导致scp尝试上传到根目录
 
 现象（2026-11-01）：虚拟机执行`scp`时把目标写成`cat@192.168.1.102:${BMS_SERIAL_DIR:i9yBPJ}/`，认证后报`dest open "/bms_serial_recv.c": Permission denied`，实际上传目标退化为`/`。

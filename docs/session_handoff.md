@@ -1,8 +1,10 @@
 # Netflow Analyzer会话交接文档
 
-最后更新：2026-11-03（UTC+08:00）
+最后更新：2026-11-04（UTC+08:00）
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
+
+当前最新结果：STM32→鲁班猫网关→Windows Qt的真实TCP会话已在物理eth0完成PCAP捕获与离线流CSV一致性验收，2041包全部complete、1条closed双向流、捕获丢弃指标均0，详见第18.14.6节及第21节首条结论。本轮未点击STOP，不补做控制；没有业务代码改动，不因文档收尾重跑测试或重新打开硬件。后续历史段落中的“下一步”描述当时状态，不替代本条。
 
 ## 1. 新会话接手顺序
 
@@ -1833,6 +1835,375 @@ Linux VM的46项CTest已经通过，包括纯协议、队列、I/O和PTY＋127.0
 4. 下一阶段计划让独立netflow-analyzer在已核对的面向Qt网卡上旁路采集真实TCP会话，检查双向统计、握手／关闭状态和drop指标。先复核实际分析器程序及CLI，再给有界操作；本轮不启动抓包、不新增TCP探测客户端、不自动发送控制、不声称已实现TCP字节流重组或CMD应用层解析。
 
 
+### 18.14 BMS真实TCP旁路采集准备（11月3日历史方案，当前PCAP任务见18.14.1）
+
+目标是在鲁班猫面向Qt的网卡上，由独立netflow-analyzer旁路采集BMS网关与Qt的真实TCP通信，核对双向流统计、握手／关闭状态及特征输出。分析器不作为18080端口的TCP客户端或服务端、不打开UART、不转发控制命令，也不将UART日志当作其PCAP输入。已有功能足以开展首次验收，本轮不修改业务代码。
+
+本轮实际VM检查（2026-11-03）：
+
+- 用户已提交并推送`a66a6ef docs(gateway): record Qt hardware control validation`，本轮文档维护前分支`feature/flow-features`与远程同步、工作区干净；未代执行Git写操作。
+- `cmake --build build -j2`成功，显示无构建工作；仅复核本阶段相关的`capture_tests`、`offline_flow_acceptance`、`tcp_flow_state_tests`、`flow_feature_export_tests`，4/4通过、0.12秒。不是重跑当前全部46项，也不是板端结果，不重跑ML或历史长稳测试。
+- VM程序实际help与当前源码共同确认：实时模式支持interface／count／filter／feature-csv；实时特征导出必须有正count，普通`--csv`及可配置`--flow-idle-timeout`仅供离线。不能向后续实时命令加入这些离线选项。
+
+板端只读核对方案（尚未返回本轮结果）：
+
+- 查询hostname、架构、IPv4地址、eMMC可用空间及原分析器服务状态，不打开串口或抓包，不启停／改写服务配置。
+- 依既有ARM64测试及招聘会部署资料，仅检查三处历史候选：`/home/cat/build/netflow-analyzer-arm64-verify/bin/netflow-analyzer`、`/home/cat/bin/nfa-demo-7bce180/netflow-analyzer`、`/usr/local/bin/netflow-analyzer`；对实际存在且可执行者读取file、SHA-256及help。路径是待核对候选，不是本轮已确认程序；不存在则报告，不自动搜索全盘、重建、安装或覆盖旧版。
+- `--version`的0.2.0不足以区分历史功能阶段，须看实际help与产物身份。旧安装版历史help缺feature-csv，不能直接拿它承担新版特征验收；按本轮输出选择可用版本。若候选均缺失或不能运行，再决定最小部署方案，暂不启动硬件会话。
+
+核对后拟执行的完整实验（仍为计划）：
+
+- 用户先保持STM32待机、负载关闭及心跳正常。首轮网关采用默认只读模式、不加`--control`；仅需遥测通信产生一条真实TCP连接，不重复启动／停止／清除故障，不为抓包制造负载动作。
+- 提前准备两个板端终端及Windows Qt：分析器先启动，确认采集已准备后再启动有界网关，最后只由Qt连接；不使用Test-NetConnection／nc／Python客户端探测唯一网关会话。
+- 计划分析器90秒捕获窗口、网关60秒总预算，给连接建立和关闭预留前后捕获时间；最终命令在板端程序与地址确认后再给。BPF限定TCP、已核对的板端地址和端口18080，避免SSH及其他流量占用包数上限；不猜Windows源地址。
+- 若导出实时特征，配置足够大的有限count（拟10000）与定时SIGTERM正常收尾双重约束，不用小包数截断握手或FIN。输出放仓库外独立目录、日志直接重定向文件，避免Ctrl+C影响tee收尾；不自动修改setcap、服务用户、网卡或网络配置。
+- Qt保持接收，正常关闭连接或等待网关预算结束；分析器在关闭报文之后收尾。检查实际流方向、TCP状态、统计分类、两个drop及CSV；closed是正常关闭的目标观察结果，不预先写成已通过。活动流与已过期流均须检查，不能只看最终Flow summary。
+- UART文本行数、TCP包数与流特征行数不是同一单位：一个TCP包可承载半行／多行，ACK／握手／关闭也计包；该通信通常聚合成少量流，而非每条BMS遥测生成一条流。当前旁路状态机不做TCP字节流重组或BMS CMD语义解析，也不等于在线异常告警。
+
+本轮仅记录VM复核和板端检查方案；尚未启动本次网关、抓包或Qt会话，不将既有实物控制结果当作已完成分析器联动。提交建议为`docs(integration): plan passive BMS TCP capture`，Git由用户执行。
+
+### 18.14.1 当前任务：真实Ethernet PCAP与双向流CSV（2026-11-04，板端预检已回传）
+
+本节按用户新明确的任务执行，取代上一节原只读／90秒抓包／60秒网关／仅特征CSV方案。暂停SQLite方向；不新增数据库依赖、MCU／Qt代码、BMS应用层解析或自动控制，不重复全量历史测试。
+
+用户提供与确认的当前条件：
+
+- Windows控制代码基线`528da45`，Linux历史控制基线`cfaf3bf214446818ddeeeab4f72e7f948a7b8f99`；Windows工作区未由助手检查，不将该参考提交推断为未修改的运行产物身份。
+- 用户本次贴出的Windows ipconfig显示物理“以太网”IPv4为`192.168.1.100/24`、网关`192.168.1.1`。WSL的`172.20.208.1`、VMnet1的`192.168.2.1`、VMnet8的`192.168.78.1`不是本次Qt目标链路选用的Windows地址。
+- 用户明确确认Qt已断开TCP，STM32待机、负载输出关闭、心跳正常。随后只由用户在捕获就绪后连接Qt，观察60～90秒、人工点击一次STOP、核对界面再主动断开；不安排START／CLEAR或制造故障。
+
+本轮实际VM检查与产物：
+
+- 当前工作区为`/home/zcb/workspace/netflow-analyzer`，主机`zcb-Ubuntu`、`x86_64`、内核`7.0.0-38-generic`；分支`feature/flow-features`，HEAD及远程为`a66a6ef`，保留此前未提交的本文件18.14节修改。未使用另一份旧源码目录替代当前工作区。
+- README已读，但其中部分旧进度不代表当前功能；实际CLI为0.2.0，支持实时`--interface/--filter`与离线`--read/--csv`，没有`--write`。本轮目标保存原始PCAP并离线导出完整流CSV，不能把实时feature-csv当作完整流CSV。
+- 当前Debug缓存的CMAKE_HOME_DIRECTORY指向本工作区；仅构建`netflow_analyzer_cli`，输出无工作可做，未运行CTest。本轮无C源码、头文件、CMake或测试改动；比较cfaf3bf至当前HEAD的gateway／src／include／CMakeLists.txt未见代码差异。
+- VM实际分析器为`/home/zcb/workspace/netflow-analyzer/build/bin/netflow-analyzer`，x86-64 PIE、含debug_info；SHA-256为`781a5670d603e6764807dd6ace6cc288f27f79d05b1e83a304a139ba73a1aaf4`。该程序不是ARM64产物。
+- 从当前工作区创建独立构建目录`/home/zcb/build/netflow-bms-pcap-arm64-a66a6ef.CfXCvN`，使用现存官方SDK GCC 9.3.0及ARM64 libpcap 1.9.1 overlay；Release、BUILD_TESTING=OFF、CMAKE_SKIP_RPATH=ON，只构建分析器，23步成功、退出0。没有覆盖旧构建／安装目录或重跑板端测试。
+- 新构建的`bin/netflow-analyzer`为ARM aarch64、动态解释器`/lib/ld-linux-aarch64.so.1`、未strip；直接依赖libpcap.so.0.8和libc.so.6，程序最高GLIBC需求为2.17，未见RPATH／RUNPATH。SHA-256为`47ade7acd3e5b30029f9264b4052d92322718d19a25b3c0af5f22832da3b1aaa`；虽与历史演示产物摘要相同，这次来自当前工作区新构建，不是回到旧源码目录取文件。尚未传输到板端或运行，板端ABI／CLI仍待实际检查。
+- 当前用户没有SSH配置文件。助手只对历史候选`cat@192.168.1.102`进行一次15秒上限、BatchMode及StrictHostKeyChecking=yes的只读SSH身份／网络查询，得到`Permission denied (publickey,password)`、退出255，远端命令未执行。不会重复认证探测、收集密码或修改SSH设置；需用户在已有板端终端执行预检，密码只在本地终端输入。该失败不能据此确认板端当前hostname、架构、接口或网关状态。
+
+板端接下来只读核对：
+
+- 在用户当前实际使用的板端项目终端读取pwd／Git状态与HEAD；若不是Git目录则如实报告，不跳入另一份历史旧工作区替代当前版本。
+- 读取hostname、uname、当前用户、IPv4／链路、`ip route get 192.168.1.100`、TCP监听与已建立连接、网关／接收器／分析器／tcpdump进程；只列状态，不新建TCP探测连接、不杀未知进程。
+- 核对实际UART节点、udev驱动、当前会话权限、ModemManager及fuser占用。只查询已验证网关隔离产物的file／SHA／help；不因历史目录存在就打开串口，若当前已有网关占用，先报告后决定如何复用／正常结束，禁止第二个进程抢串口。
+- 根据去Windows的实际路由确认物理Ethernet接口，再查看其link及tcpdump支持的链路类型（-L，不开始保存数据），必须兼容EN10MB／Ethernet。不选any，不用未核对的eth0、IP或18080替代实际结果；同时核对tcpdump版本、可用存储和当前服务状态。
+
+待上述结果齐全后的有界采集约定（尚未启动）：
+
+- 新建仓库外唯一实验目录，记录新ARM64程序传输前后SHA、实际help及来源；不替换旧安装程序或启停原systemd服务。网关使用已核对产物和节点、显式IPv4／端口，120～180秒总预算，--control放末尾以供用户人工STOP；等待Qt同样计时。
+- BPF仅为`tcp and host <已确认Windows IPv4> and port <实际网关端口>`。在实际Ethernet接口上先启动tcpdump保存PCAP，并按板端实际help启动独立分析器的interface／filter实时入口；不假设分析器能write PCAP，不把PCAP路径传给实时csv选项。
+- 保存stdout／stderr、受控PID与退出码，设置墙钟和包数上限；就绪必须由真实进程与tcpdump监听日志等证据确认，明确提示用户后才连接Qt。不以进程已准备或0包日志作为采集通过，也不长时间阻塞助手等操作。
+- 用户观察60～90秒、人工一次STOP并主动断开后，再让握手／关闭包完整进入捕获并正常结束采集，保存tcpdump捕获／内核丢弃统计。若超时／异常提前结束，按实际状态记录，不补写closed或零drop。
+- 对同一PCAP校验身份／链路类型，用实际分析器read／csv导出完整流记录，选出目标双向TCP流。源码确认CSV为16列：protocol、tcp_state、两端IP／端口、双向packet／captured_bytes／wire_bytes及首末秒／微秒；实际数据仍待产生。端点按IP再端口规范化排序，不等同客户端／服务器；captured与wire累加捕获记录长度，不是BMS文本字节。
+- TCP包数不等于BMS报告条数；tcpdump内核捕获丢弃不等于TCP网络丢包。没有TCP字节流重组，不通过逐包搜索BMS文本判断消息丢失。PCAP、CSV和原始日志留仓库外，仅将脱敏摘要与可复现命令写入既有文档，Git由用户操作。
+
+当前状态：VM身份／CLI／CSV口径及新ARM64构建已核对；Windows物理IPv4与操作前安全状态已由用户确认。用户随后已回传板端身份、路由／Ethernet、进程／监听、UART占用及tcpdump链路类型，见18.14.2；产物部署、捕获就绪、PCAP、流CSV及流统计仍待验证。本轮尚无真实采集结果，不能出具目标流数值或采集通过结论。
+
+### 18.14.2 板端预检结果与隔离部署（2026-11-04，用户已回传部署预检通过）
+
+证据来源：用户附件`f14aa4b5-5f21-4a50-a142-5a47dc2c6b88/已粘贴的文本.txt`已完整读取，以下是板端回传结果，不是助手通过SSH执行的结果；助手仍无可用的非交互板端认证。
+
+| 项目 | 本次实际结果 |
+| --- | --- |
+| 身份 | `lubancat`、`aarch64`、内核`4.19.232`；cat UID1000，当前会话含dialout组 |
+| 工作目录 | `/home/cat`，不是Git仓库；未切到另一份旧工作树代替当前VM源码 |
+| Windows路由 | `192.168.1.100 dev eth0 src 192.168.1.102` |
+| 实际网卡 | `eth0 UP/LOWER_UP`，MTU1500，MAC`d2:33:17:12:93:f3`；硬件路径`/sys/devices/platform/fe2a0000.ethernet` |
+| 监听／连接 | ss未列18080监听或连接；已有远程连接为SSH等，不作为Qt会话 |
+| 相关进程 | ps未列bms-gateway、bms-serial-recv、netflow-analyzer或tcpdump |
+| 实际UART | `/dev/ttyUSB0`，root:dialout、0660，USB`1a86:7523`、驱动ch341；当前读写检查通过，fuser未列占用 |
+| ModemManager | loaded、inactive、dead |
+| tcpdump | `/usr/sbin/tcpdump`，4.9.3；libpcap1.9.1（TPACKET_V3） |
+| 链路类型 | tcpdump -L列EN10MB（Ethernet）及DOCSIS；本轮仅使用EN10MB，不用any或DOCSIS |
+| 根分区 | `/dev/mmcblk0p3` ext4，7.0G、已用6.5G、可用214M、97% |
+
+网关隔离产物`/home/cat/bms-control-v1.X3nWaz/bms-gateway`已由用户重新查询file／SHA／help：ARM aarch64，BuildID`e604df17e5961ef20b1d1d2c609e0c4cec343958`，SHA-256仍为`1aa74d69e8be36f91bfaf4b89652f9308249c56632f99de96d3330fb92ff7fde`，CLI为`SERIAL IPV4 PORT [SECONDS] [--control]`、默认30秒／1..300秒。查询help未打开串口；真实监听与后续控制能力仍需新会话证据。拟显式使用本次已确认空闲的192.168.1.102:18080，BPF为`tcp and host 192.168.1.100 and port 18080`。
+
+存储决定与待执行部署：
+
+- 根分区接近满，PCAP／CSV／运行日志安排在经重新核对挂载的数据卡，不直接写入/home/cat或/tmp；本轮不清理VS Code、软件包、历史实验，不格式化、挂载或修改服务。
+- `/media/usb0`仅是历史数据卡挂载候选，必须用findmnt的-M精确验证为挂载点，且设备号不同于根文件系统、当前可写、剩余至少1GiB；若不满足，立即停止并回传结果，不能创建一个普通根盘目录冒充数据卡。该空间阈值是本次预留，不代表可无限采集，后续仍用包数与墙钟限制。
+- ELF不放在可能带noexec的VFAT卡上。当前新构建的ARM64文件已在VM再次核对，62,504字节、SHA仍为`47ade7acd3e5b30029f9264b4052d92322718d19a25b3c0af5f22832da3b1aaa`；仅它和运行小型元数据放新eMMC运行目录，原安装与旧构建不覆盖。
+- 拟新运行目录`/home/cat/nfa-bms-capture-a66a6ef-20261104`；拟新数据目录`/media/usb0/netflow-analyzer-data/bms-tcp-a66a6ef-20261104-01`。二者尚未创建，创建前拒绝任何已存在目标，使用不带-p的mkdir确保不覆盖；若目标已存在保留并诊断，不删除重建。
+
+板端A：验证挂载并创建新目录（尚未执行）：
+
+```bash
+(
+    set -eu
+    test "$(uname -m)" = aarch64
+
+    NFA_DATA_MOUNT=/media/usb0
+    findmnt -n -M "$NFA_DATA_MOUNT" -o TARGET,SOURCE,FSTYPE,OPTIONS
+    test "$(stat -c %d "$NFA_DATA_MOUNT")" != "$(stat -c %d /)"
+    test -w "$NFA_DATA_MOUNT"
+    df -hT /home/cat "$NFA_DATA_MOUNT"
+    NFA_DATA_FREE_KIB="$(df -Pk "$NFA_DATA_MOUNT" | awk 'NR == 2 {print $4}')"
+    test "$NFA_DATA_FREE_KIB" -ge 1048576
+
+    NFA_RUN_DIR=/home/cat/nfa-bms-capture-a66a6ef-20261104
+    NFA_DATA_DIR=/media/usb0/netflow-analyzer-data/bms-tcp-a66a6ef-20261104-01
+    test -d /media/usb0/netflow-analyzer-data
+    test ! -e "$NFA_RUN_DIR"
+    test ! -e "$NFA_DATA_DIR"
+    mkdir -- "$NFA_RUN_DIR" "$NFA_DATA_DIR"
+    printf '运行目录：%s\n数据目录：%s\n目录准备完成，尚未开始捕获\n' \
+        "$NFA_RUN_DIR" "$NFA_DATA_DIR"
+)
+```
+
+虚拟机：仅在板端A成功后交互复制新程序，密码只在本地终端输入（尚未执行）：
+
+```bash
+NFA_ARM_BIN=/home/zcb/build/netflow-bms-pcap-arm64-a66a6ef.CfXCvN/bin/netflow-analyzer
+sha256sum "$NFA_ARM_BIN"
+if timeout --signal=TERM --kill-after=5s 90s \
+    scp -p -o ConnectTimeout=10 -o StrictHostKeyChecking=yes \
+        "$NFA_ARM_BIN" \
+        cat@192.168.1.102:/home/cat/nfa-bms-capture-a66a6ef-20261104/netflow-analyzer
+then
+    printf '程序传输退出码：0\n'
+else
+    NFA_COPY_STATUS=$?
+    printf '程序传输退出码：%s；停止后续操作\n' "$NFA_COPY_STATUS"
+fi
+```
+
+板端B：只在传输成功后验证新产物与数据路径，不启动实时入口（尚未执行）：
+
+```bash
+(
+    set -eu
+    NFA_BIN=/home/cat/nfa-bms-capture-a66a6ef-20261104/netflow-analyzer
+    NFA_DATA_DIR=/media/usb0/netflow-analyzer-data/bms-tcp-a66a6ef-20261104-01
+    NFA_ACTUAL_SHA="$(sha256sum "$NFA_BIN")"
+    printf '%s\n' "$NFA_ACTUAL_SHA"
+    test "${NFA_ACTUAL_SHA%% *}" = \
+        47ade7acd3e5b30029f9264b4052d92322718d19a25b3c0af5f22832da3b1aaa
+    file "$NFA_BIN"
+    ldd "$NFA_BIN"
+    "$NFA_BIN" --version
+    "$NFA_BIN" --help
+    findmnt -n -M /media/usb0 -o TARGET,SOURCE,FSTYPE,OPTIONS
+    test -d "$NFA_DATA_DIR"
+    test -w "$NFA_DATA_DIR"
+    printf '产物和数据目录预检通过，尚未启动抓包或网关\n'
+)
+```
+
+以上三段保留为部署操作记录，不再原样重跑创建目录或覆盖程序。用户随后回传挂载、目录创建、产物校验／ldd／实际CLI通过的结果，见18.14.3；未单独贴出SCP退出码，不补写。首轮仅用户人工STOP，不START／CLEAR；采集结束再离线read／csv导出同一PCAP。
+
+### 18.14.3 部署预检通过与捕获启动方案（2026-11-04，就绪输出见18.14.4）
+
+用户本次回传结果：
+
+- `/media/usb0`实际为`/dev/mmcblk1p1`的vfat挂载，rw、noexec、sync、uid／gid1000；30G、已用1.8G、可用28G、7%。根分区仍为214M空闲／97%，不在根分区保存PCAP／CSV／捕获日志。
+- 新运行目录`/home/cat/nfa-bms-capture-a66a6ef-20261104`与新数据目录`/media/usb0/netflow-analyzer-data/bms-tcp-a66a6ef-20261104-01`已创建，成功标记明确尚未开始捕获。
+- 板端新分析器SHA为`47ade7acd3e5b30029f9264b4052d92322718d19a25b3c0af5f22832da3b1aaa`，与当前VM隔离构建一致；file为ARM aarch64、动态解释器`/lib/ld-linux-aarch64.so.1`。实际ldd解析libpcap.so.0.8及libc.so.6均成功，version为0.2.0，实际help包含interface／filter与read／csv，无write。程序及数据目录预检通过，不等于实时采集通过。
+
+以下为交给用户在三个鲁班猫Bash终端执行的捕获启动方案，助手未远程执行。先打开并准备好三个终端，Qt保持断开。A／B分别前台运行，避免后台任务及tee的SIGINT生命周期歧义；各有420秒墙钟兜底和10000包上限，不是要求等满420秒。内层sh只记录其PID后exec实际命令，方便确认进程身份与后续精确停止，不新增业务代码。所有重定向使用noclobber，既有输出存在即停止，不覆盖或删除旧实验。
+
+终端A：tcpdump保存原始PCAP（待执行）：
+
+```bash
+(
+    set -euC
+    NFA_DATA_DIR=/media/usb0/netflow-analyzer-data/bms-tcp-a66a6ef-20261104-01
+    findmnt -n -M /media/usb0 >/dev/null
+    test -d "$NFA_DATA_DIR"
+    test -w "$NFA_DATA_DIR"
+    for NFA_NAME in traffic.pcap tcpdump.stdout tcpdump.stderr tcpdump.pid tcpdump.exit-code; do
+        test ! -e "$NFA_DATA_DIR/$NFA_NAME"
+    done
+    sudo -v
+    printf 'tcpdump即将启动；本终端保持运行，接着去终端B，不要连接Qt\n'
+    if sudo timeout --preserve-status --signal=INT --kill-after=5s 420s \
+        sh -c 'set -euC; printf "%s\n" "$$" > "$1"; shift; exec "$@"' \
+        nfa-tcpdump "$NFA_DATA_DIR/tcpdump.pid" \
+        /usr/sbin/tcpdump -i eth0 -y EN10MB -p -n -s 0 -U -c 10000 -Z cat \
+        -w "$NFA_DATA_DIR/traffic.pcap" \
+        'tcp and host 192.168.1.100 and port 18080' \
+        > "$NFA_DATA_DIR/tcpdump.stdout" 2> "$NFA_DATA_DIR/tcpdump.stderr"
+    then
+        NFA_DUMP_STATUS=0
+    else
+        NFA_DUMP_STATUS=$?
+    fi
+    printf '%s\n' "$NFA_DUMP_STATUS" > "$NFA_DATA_DIR/tcpdump.exit-code"
+    printf 'tcpdump退出码：%s\n' "$NFA_DUMP_STATUS"
+    cat "$NFA_DATA_DIR/tcpdump.stderr"
+)
+```
+
+终端B：当前新产物实时interface／filter入口，仅记录实时统计，不传实时csv选项（待执行）：
+
+```bash
+(
+    set -euC
+    NFA_DATA_DIR=/media/usb0/netflow-analyzer-data/bms-tcp-a66a6ef-20261104-01
+    NFA_BIN=/home/cat/nfa-bms-capture-a66a6ef-20261104/netflow-analyzer
+    NFA_STDBUF="$(command -v stdbuf)"
+    findmnt -n -M /media/usb0 >/dev/null
+    test -x "$NFA_BIN"
+    for NFA_NAME in live.stdout live.stderr live.pid live.exit-code; do
+        test ! -e "$NFA_DATA_DIR/$NFA_NAME"
+    done
+    sudo -v
+    printf '实时分析器即将启动；本终端保持运行，接着去终端C，不要连接Qt\n'
+    if sudo timeout --preserve-status --signal=TERM --kill-after=5s 420s \
+        sh -c 'set -euC; printf "%s\n" "$$" > "$1"; shift; exec "$@"' \
+        nfa-live "$NFA_DATA_DIR/live.pid" \
+        "$NFA_STDBUF" -oL -eL "$NFA_BIN" \
+        --interface eth0 --count 10000 \
+        --filter 'tcp and host 192.168.1.100 and port 18080' \
+        > "$NFA_DATA_DIR/live.stdout" 2> "$NFA_DATA_DIR/live.stderr"
+    then
+        NFA_LIVE_STATUS=0
+    else
+        NFA_LIVE_STATUS=$?
+    fi
+    printf '%s\n' "$NFA_LIVE_STATUS" > "$NFA_DATA_DIR/live.exit-code"
+    printf '实时分析器退出码：%s\n' "$NFA_LIVE_STATUS"
+    tail -n 30 "$NFA_DATA_DIR/live.stdout"
+    cat "$NFA_DATA_DIR/live.stderr"
+)
+```
+
+终端C：最多10秒的就绪检查，不启动网关、不打开串口、不建立TCP连接（待执行）：
+
+```bash
+(
+    set -eu
+    NFA_DATA_DIR=/media/usb0/netflow-analyzer-data/bms-tcp-a66a6ef-20261104-01
+    NFA_BIN=/home/cat/nfa-bms-capture-a66a6ef-20261104/netflow-analyzer
+    sudo -v
+    NFA_CAPTURE_READY=0
+    for NFA_TRY in 1 2 3 4 5 6 7 8 9 10; do
+        if test -s "$NFA_DATA_DIR/tcpdump.pid" &&
+           test -s "$NFA_DATA_DIR/live.pid" &&
+           grep -Fq 'listening on eth0, link-type EN10MB' "$NFA_DATA_DIR/tcpdump.stderr" &&
+           grep -Fxq 'Capture interface: eth0' "$NFA_DATA_DIR/live.stdout" &&
+           grep -Fxq 'BPF filter: tcp and host 192.168.1.100 and port 18080' "$NFA_DATA_DIR/live.stdout" &&
+           grep -Fxq 'Link type: Ethernet' "$NFA_DATA_DIR/live.stdout"; then
+            NFA_CAPTURE_READY=1
+            break
+        fi
+        sleep 1
+    done
+    if test "$NFA_CAPTURE_READY" -ne 1; then
+        printf '捕获未确认就绪；不要启动网关或连接Qt，请回传两个终端及日志输出\n'
+        exit 1
+    fi
+    NFA_DUMP_PID="$(cat "$NFA_DATA_DIR/tcpdump.pid")"
+    NFA_LIVE_PID="$(cat "$NFA_DATA_DIR/live.pid")"
+    case "$NFA_DUMP_PID" in ''|*[!0-9]*) exit 1;; esac
+    case "$NFA_LIVE_PID" in ''|*[!0-9]*) exit 1;; esac
+    test "$NFA_DUMP_PID" -gt 1
+    test "$NFA_LIVE_PID" -gt 1
+    sudo kill -0 "$NFA_DUMP_PID"
+    sudo kill -0 "$NFA_LIVE_PID"
+    test "$(sudo readlink "/proc/$NFA_DUMP_PID/exe")" = "$(readlink -f /usr/sbin/tcpdump)"
+    test "$(sudo readlink "/proc/$NFA_LIVE_PID/exe")" = "$(readlink -f "$NFA_BIN")"
+    ps -p "$NFA_DUMP_PID,$NFA_LIVE_PID" -o pid,user,etimes,args
+    sed -n '1,4p' "$NFA_DATA_DIR/tcpdump.stderr"
+    sed -n '1,10p' "$NFA_DATA_DIR/live.stdout"
+    printf 'CAPTURE_READY_GATEWAY_NOT_STARTED：两路捕获当前已就绪，网关尚未启动；先不要连接Qt，请回传此输出\n'
+)
+```
+
+只有C真实输出成功标记才能登记当前捕获就绪，不能从准备脚本或历史日志推断。pid文件经kill -0与/proc/exe核对，避免把退出后的旧日志当作当前运行；ps的etimes用于核对剩余采集预算。用户回传后再在C验证进程仍活跃及剩余预算，启动180秒网关并明确通知Qt连接192.168.1.102:18080。若等待过久，旧会话不得强行续接；先正常结束、保留旧文件，再另建新实验目录。
+
+需要提前取消时，可在各自前台A／B终端按Ctrl+C一次，观察日志及退出码；当前无tee管道，不用pkill／killall或猜测PID。更精确的后续停止会先核对记录PID的实际exe，再给tcpdump发SIGINT、实时分析器发SIGTERM，并回A／B核对收尾。正常目标是在Qt主动断开且关闭报文进入捕获后提前结束，不必等满420秒；兜底只是防止无人收尾无限运行。尚未收到捕获进程、PCAP或TCP流证据，部署通过不等于本轮采集通过。
+
+### 18.14.4 两路捕获已启动，待Qt真实会话（2026-11-04）
+
+用户回传终端C的实际输出：tcpdump PID为163099、用户cat、etimes为19秒；实时分析器PID为163205、用户root、etimes为7秒。tcpdump显示`listening on eth0, link-type EN10MB (Ethernet), capture size 262144 bytes`；分析器显示eth0、10000包上限、`tcp and host 192.168.1.100 and port 18080`、Ethernet链路和5秒指标周期。首个周期packets=0、active_flows=0，与Qt尚未接入的准备阶段相容，不作为真实TCP采集通过证据。就绪脚本已真实输出`CAPTURE_READY_GATEWAY_NOT_STARTED`。
+
+- 此为用户回传时两路捕获实际就绪，不保证随后仍在420秒预算内。启动网关前从各pid文件重新读取PID，核对`/proc/<pid>/exe`、进程存活及etimes不超过210秒，确保余下时间覆盖180秒网关总预算、190秒外层兜底和收尾余量。超时或进程退出则不启动网关，先保留旧文件并结束残留捕获，另开新实验目录；不复用旧日志冒充当前就绪。
+- 下一步命令供用户在鲁班猫终端C执行，助手不远程操作：复核已验证网关SHA、`/dev/ttyUSB0`的CH340身份／ch341绑定／当前会话权限、ModemManager仍inactive、端口18080无监听和串口无占用；然后以普通用户运行`/home/cat/bms-control-v1.X3nWaz/bms-gateway /dev/ttyUSB0 192.168.1.102 18080 180 --control`。外层`timeout --signal=TERM --kill-after=5s 190s`仅作兜底，stderr合并保存为数据目录下`gateway.runtime.txt`，管道两个退出码立即从PIPESTATUS保存至`gateway.exit-status.txt`。先检查目标日志不存在，不覆盖既有文件。
+- 只有实际出现`LISTEN 192.168.1.102:18080`且A／B仍运行时才由用户Windows Qt连接；OPEN_SERIAL与control enabled应在接入之后出现。不得为判断端口可达另启nc／Test-NetConnection或虚拟客户端，避免占用单客户端会话。`--control`只开启白名单能力，不自动发送任何MCU命令。
+- 本轮用户保持负载关闭／待机，观察60～90秒，其间仅人工点击一次STOP、保存实际CMD编号与ACK／ERR和后续遥测；不START、不CLEAR、不自动重连或为补日志重试。ACK UART_ACCEPTED只表示串口驱动接受字节，起始已经load=0不能据此证明负载运行态关断。用户随后主动断开Qt TCP；网关退出不隐式发STOP。
+- 网关收尾后等约2秒让关闭报文进入捕获，再在A／B各自前台终端按一次Ctrl+C，等待各自输出退出码与统计；也可按已记录PID并核对实际exe后精确发信号。保留A／B输出、网关日志及Qt请求／回执；下一轮再对已结束并落盘的同一PCAP离线read／csv。关闭是否完整、drop数、PCAP包数和双向流状态均待实际结果，不从准备成功推断。
+
+后续用户报告：在鲁班猫终端C执行网关启动整段后立即返回，没有任何输出。尚未收到LISTEN、OPEN_SERIAL、gateway日志或退出码，因此不能登记网关已启动或判定具体失败项。给出的命令在首个运行提示前使用了多项`test`及`set -e`，其中任一失败即可无解释退出；这是当前诊断方向，不代表已经确认权限、SHA、服务或捕获超时中的某项为根因。下一步只读打印这些实际状态及捕获PID／etimes／退出文件，不重跑启动段、不建立探测连接、不打开串口；即使定位后修正检查，也须重新核对420秒捕获窗口，保留旧数据，不盲目续接或覆盖。
+
+只读诊断回传（同日）：当前机器确为lubancat／aarch64；终端C的`id`仅含cat、sudo、audio、video，不含dialout。实际`/dev/ttyUSB0`为root:dialout／0660、1a86:7523／ch341，读／写检查均返回1；这是启动段在提示之前退出的直接权限障碍。网关SHA仍为1aa74d69…ff7fde、可执行，数据卡目录可写，ModemManager为inactive／dead，18080无监听，fuser返回1且没有占用。两路捕获PID均已不在，两个保存退出码均为0，网关两份运行记录不存在。此次没有Qt流采集通过证据，也不从退出0推断捕获结束原因或PCAP内容。
+
+下一步先由用户核对`id cat`／`getent group dialout`；若账户记录仍有dialout，刷新终端C的身份（新SSH登录或单独执行`newgrp dialout`进入新Shell），再回传`id`和只读权限检查。不重复加组、不放宽权限、不以sudo绕过；目前刷新尚未实际验证。权限通过后另建新的数据目录重开A／B捕获，本次01目录原样保留，不能重跑原目录覆盖输出。详细排查并入既有`docs/problem_log.md`第5.24节，不新建零散Markdown。
+
+本轮仅文档更新；没有改动源码、启动板端程序、自动发送真实控制或重跑历史测试。Git仍由用户执行，建议最终采集收尾后统一提交脱敏文档，不提交原始PCAP或硬件日志。
+
+### 18.14.5 本机终端权限复查通过，新一轮采集目录由02改为03（2026-11-04，待执行）
+
+用户回传`ls -l /dev/ttyUSB0`为root:dialout／0660，以及当前本机终端读写检查`[PASS] 当前终端串口权限通过`。这次访问检查已通过，后续网关应在这个相同终端／Shell执行；未收到新的完整id或实际采用的刷新方法，不指定为newgrp、SSH或注销桌面修复，不推断其他终端状态。未打开设备，也没有新网关会话或PCAP证据。
+
+原拟使用02，用户随后明确02目录已存在，并指定新目录改为`/media/usb0/netflow-analyzer-data/bms-tcp-a66a6ef-20261104-03`。本次完整重发的四段命令已全部改为03，旧01与02目录原样保留；02内具体文件／进程状态尚未回传，不将“目录被占用”扩展成已启动或完成一次采集。执行顺序为：终端C先完成不启动计时的身份／串口身份与权限／实际路由／两个产物SHA／服务、端口、占用和数据卡预检，再用不覆盖的mkdir创建03；随后用户连续执行终端A的tcpdump、终端B的实时分析器、同一终端C的有界就绪检查和网关启动，不在捕获运行中等待聊天回传。改为03后的四段命令已重新在VM通过`bash -n`，这是脚本语法检查，不是板端执行或业务验收；没有创建03或重启板端进程的助手实操证据。
+
+- A／B维持原物理eth0／EN10MB、Windows192.168.1.100／TCP18080的BPF、420秒及10000包上限、实际exec PID记录、各自输出和退出码；本次更新仅是用户手动执行命令，不改业务源码。关键检查增加ERR提示，失败会显示对应命令，不再只有静默test退出。
+- C在最多10秒就绪等待后核对PID、实际exe、存活及运行时间不超过210秒，打印CAPTURE_READY后立即运行已验证网关180秒总预算（190秒外层兜底，--control末尾），保留stderr和管道状态。只有现场出现LISTEN且A／B仍运行时才能用Windows Qt连接；不做额外TCP探测，也不自动发送MCU控制。若出现FAIL、捕获提前退出或既有03目录／文件，停止并回传，不删旧文件重试。
+- 用户在Qt观察60～90秒、最多人工一次STOP，保留能力／请求／回执及后续遥测，不START／CLEAR，不为了启用按钮而启动负载。主动断开后等网关返回、再等约2秒，于A／B各按一次Ctrl+C并等待统计、退出码。下一轮才离线分析已完整落盘的PCAP；无完整握手／关闭时如实记录，不预先宣称closed或零drop。
+
+本节保留准备时“权限预检通过，新一轮真实采集待执行”的状态；后续已执行结果见18.14.6，不再作为待执行指令。本轮只维护现有分类文档，未修改业务代码、用户组／设备权限／服务配置，未重跑历史测试，Git由用户执行。
+
+### 18.14.6 真实BMS TCP采集与PCAP到CSV一致性验收通过（2026-11-04）
+
+以下为用户回传的本次板端输出，不是VM回放或助手远程执行。数据目录为`/media/usb0/netflow-analyzer-data/bms-tcp-a66a6ef-20261104-03`；未回传新的源码／二进制变更，既有部署来源为VM的a66a6ef（下述采集不改源码），分析器为`/home/cat/nfa-bms-capture-a66a6ef-20261104/netflow-analyzer`，此前已在板端验证SHA为47ade7ac…3b1aaa。网关为`/home/cat/bms-control-v1.X3nWaz/bms-gateway`，此前已验证SHA为1aa74d69…ff7fde。Windows528da45仅为用户给出的控制基线，不替代Windows工作树检查。
+
+| 项目 | 实际回传结果 |
+| --- | --- |
+| 捕获接口／类型 | eth0、EN10MB（Ethernet），snapshot 262144字节 |
+| 当前过滤表达式 | `tcp and host 192.168.1.100 and port 18080`（按此次03命令执行；就绪日志确认程序与接口） |
+| 捕获启动先后 | 网关启动前tcpdump已运行8秒、live已运行4秒，输出CAPTURE_READY |
+| tcpdump收尾 | captured=2041、received by filter=2041、dropped by kernel=0；退出码0 |
+| 实时分析器收尾 | total=2041、complete=2041；truncated／malformed／unsupported／flow_rejected均0，退出码0 |
+| 实时后端统计 | received=2043、capture dropped=0、interface dropped=0 |
+| 网关 | LISTEN 192.168.1.102:18080、OPEN_SERIAL /dev/ttyUSB0、READY 115200/8N1 DTR=0 RTS=0 HUPCL=0，control enabled |
+| 网关收尾 | lines=1014、discarded=1、tail_bytes=0、discarding=0；网关／timeout退出0、tee退出0 |
+| 实时流 | 1条TCP流，观察到的tcp_state=closed |
+| A端点／B端点 | Windows 192.168.1.100:30502／LubanCat 192.168.1.102:18080 |
+| A→B | 1021包，captured=61272 B、wire=61272 B |
+| B→A | 1020包，captured=233958 B、wire=233958 B |
+| 首末包时间 | 1793785181.723066～1793785350.928395，跨度169.205329秒 |
+| 本轮STOP | 用户明确未点击STOP，不登记本轮STOP请求／回执或控制验收 |
+| 心跳与负载 | 用户现场确认打开串口／转发期间／退出后三阶段心跳正常，未观察到复位，最终负载关闭 |
+| 离线PCAP处理 | total=2041、complete=2041；其余四类均0，1条双向TCP流 |
+| CSV读回 | flows.csv为2行（16列表头＋1条流），protocol=6、tcp_state=closed，身份、状态、方向包数／字节数核对PASS |
+
+- 两方向合计2041包，与tcpdump捕获包数一致；捕获／原始记录长度各合计295230 B。方向由IP／端口规范化排序决定，A不是固定的客户端语义，本次恰好对应Windows。captured按caplen累计，wire按PCAP记录原始长度累计，均不是TCP应用正文长度，也不计入未由捕获记录提供的以太网前导码等物理开销。
+- `closed`是现有旁路TCP状态机的观察结果，不等同于内核socket状态或严格序列号／重传验证。169.205329秒是首末捕获时间差，不是整个进程墙钟时长或人工观察时长；此次未提供明确退出原因，不能认定是用户主动断开或运行满180秒。
+- tcpdump的kernel drop=0、实时分析器自己的capture dropped=0和interface dropped=0现已分别有实际回传，不是用一个句柄的值代填另一个。但这些捕获指标不证明TCP网络无丢包、无重传或Qt应用无缺行。实时received=2043来自pcap_stats累计快照，应用实际处理2041包，两个数属于不同统计层级；只据现有汇总不能还原额外2包的内容或明确原因，不直接登记为网络丢包、串口丢行或解析失败。应用、PCAP及离线CSV的2041包核对一致。
+- 1014是网关完整串口行入TCP输出缓存的统计，不是Qt确认接收条数；不把它等同于1020个B→A TCP包，也不将差值6直接解释为TCP控制包数。discarded=1与起始片段丢弃策略相容，没有原始字节证据还原其内容，不写成丢失一整条报告。
+- 当前已确认真实网卡采集、目标双向流聚合、观察到closed和网关正常收尾。用户随后明确本轮未点击STOP，因此本轮按“控制模式开启下的遥测TCP会话”记录，不计为STOP控制验收，也不将没有STOP回执记作控制失败；不能把control enabled当成实际发过命令或改写为不带--control的只读启动。无需为补STOP重做采集或重放硬件命令。三阶段心跳正常、未观察到复位和最终负载关闭属于用户现场确认，已补入表格；Qt本连接能力帧原文未贴出，不补写接收日志或具体内容。
+
+离线核对已实际执行并由用户回传，不再是仅在VM通过语法检查：板端以同一分析器运行`--read traffic.pcap --csv flows.csv`，不加idle切段、不传实时filter、不打开串口；脚本使用30秒外层兜底、拒绝覆盖输出、保存退出码和SHA。实际输出2041包全部complete、零拒绝／解析错误，导出并读回1条流，全部12项身份／状态／方向计数与实时结果相同，输出`[PASS] PCAP flow CSV identity, state and counters match live flow`。CSV首末时间实际也与实时汇总相同，`offline_duration_microseconds=169205329`。本次未另贴脚本第一行离线退出码，但流程已通过进入读回核对和SHA输出前的退出0检查，不编造未粘贴的原文。
+
+本轮运行参数记录（不再重跑或覆盖现有产物；完整PID／日志／拒绝覆盖封装见本节前面的方案与用户实际执行命令）：
+
+- PCAP：`/usr/sbin/tcpdump -i eth0 -y EN10MB -p -n -s 0 -U -c 10000 -Z cat -w "$NFA_DIR/traffic.pcap" 'tcp and host 192.168.1.100 and port 18080'`，外层sudo／timeout为420秒、INT、5秒强制结束宽限、preserve-status。
+- 实时分析器：`stdbuf -oL -eL "$NFA_BIN" --interface eth0 --count 10000 --filter 'tcp and host 192.168.1.100 and port 18080'`，外层sudo／timeout为420秒、TERM、5秒宽限、preserve-status。
+- 网关：`"$BMS_BIN" /dev/ttyUSB0 192.168.1.102 18080 180 --control`，外层timeout为190秒、TERM、5秒宽限，stderr合并tee保存；180秒包含等客户端时间，只有Qt接入后才打开串口。
+- 离线：`"$NFA_BIN" --read "$NFA_DIR/traffic.pcap" --csv "$NFA_DIR/flows.csv"`，外层timeout为30秒、TERM、5秒宽限。
+
+上述NFA_DIR为本节03数据目录，NFA_BIN和BMS_BIN为本节开头的两个实际板端产物路径。本次回传的完整SHA-256：
+
+| 产物 | SHA-256 |
+| --- | --- |
+| netflow-analyzer | `47ade7acd3e5b30029f9264b4052d92322718d19a25b3c0af5f22832da3b1aaa` |
+| traffic.pcap | `e97a0343729f3e437d948fcf919b189e414da167c472c6e0276b9fe96533e3f2` |
+| flows.csv | `c835dd66240f4bd74d7da5b3c84c16ce2409c73601ced3a11c6a77eaf95db0d0` |
+
+文件归档位置均在03数据目录：`traffic.pcap`、`flows.csv`、`tcpdump.stdout`／`tcpdump.stderr`／`tcpdump.exit-code`、`live.stdout`／`live.stderr`／`live.exit-code`、`gateway.runtime.txt`／`gateway.exit-status.txt`、`offline.stdout`／`offline.stderr`／`offline.exit-code`、`analysis-inputs.sha256`和`flows.sha256`。当前收到的是用户终端读回结果，不虚构助手直接读取了板端文件。
+
+本轮结论与边界：
+
+- 已通过：LubanCat物理eth0采集Qt与真实STM32网关遥测TCP流量、保存PCAP、单条双向流聚合及观察到closed、实时与同次PCAP离线CSV一致、捕获层丢弃指标均0、用户现场心跳及最终负载状态确认。
+- 未通过项：没有本轮新增失败。此前终端会话串口权限障碍已有只读PASS及真实打开串口证据；01窗口已结束、02目录已有等准备问题保留，不倒改为成功采集。
+- 未测试／未验证：本轮未点STOP，不补做控制命令；未逐条核对Qt收到的1014行，也未定位后端额外2包、验证严格TCP序列号／重传或常驻服务长期运行。未提供明确退出原因，不将closed认定为一定由用户主动断开触发。
+- 未实现且不在本轮扩展：TCP字节流重组、BMS应用层报文解析或从逐包搜索断言消息丢失。没有新加数据库、真实充放电实验或MCU／Qt代码变更。
+
+本次不因实物采集重复运行历史46项CTest，未修改源码。原始PCAP／Qt日志／板端运行文件保留在仓库外；仅两份既有分类文档由用户在当前VM权威工作树review、stage、commit、push。建议提交标题`docs(integration): verify BMS TCP capture and CSV replay`，助手不执行Git写操作。
+
 ## 19. ARM Linux开发板计划
 
 用户已经收到野火LubanCat-2N，并开始首次上板环境准备。选择原因主要是：
@@ -1930,6 +2301,8 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 然后先检查流特征、版本化导出、CLI生命周期、测试、文档和Git提交状态，再进入数据集对齐；性能方法见`docs/performance_baseline.md`与`docs/multiflow_longrun_baseline.md`，交叉构建方法见`docs/cross_compilation.md`。
 
 ## 21. 本次交接结论
+
+最新收尾（2026-11-04）：真实BMS遥测TCP会话已完成“物理eth0采集→PCAP→离线完整流CSV”闭环，03数据目录为`/media/usb0/netflow-analyzer-data/bms-tcp-a66a6ef-20261104-03`。tcpdump、实时分析器及离线处理均对应2041个完整包，1条TCP流、观察到closed，Windows→网关1021包／61272 B、反向1020包／233958 B；CSV读回身份、状态和计数核对PASS。实时后端received=2043、两个drop为0，额外2包未定位，不当作网络丢包。用户确认本轮未点击STOP，三阶段心跳正常、未观察到复位、最终负载关闭。当前VM源版本`a66a6ef67f1166794d9678f40d7b320024d90f04`、分支feature/flow-features；运行产物SHA、实际命令和日志清单见18.14.6。只有两份已有分类文档待用户review／commit／push，源码未改、未重跑历史测试，不提交原始PCAP／日志、不默认继续控制、数据库或真实充放电实验。建议提交`docs(integration): verify BMS TCP capture and CSV replay`。下面11月1日及10月段落保留为历史快照，其中“最新”和“下一步”均指当时状态。
 
 最新两项信号收尾（2026-11-01）：接收程序已由用户提交为`5258927`，源码摘要未变；当前保留3份未提交的验收文档，不覆盖已有工作。板端`sigint-5s.yrjSSf`和`sigterm-5s.uhjKgd`分别有明确INT／TERM发送记录，两次均收尾24行、丢弃1段、尾部0字节、退出0，退出后未查到占用；用户分别确认各次三阶段心跳正常、未观察到复位。SIGINT前ModemManager明确已临时停止，首次149行运行时是否停止仍未知，SIGTERM前的复查输出未提供。完整证据见第18.12节；下一步先确认STM32供电，再安全地测试断连，不直接扩展TCP网关。受控信号路径通过不等于实际键盘Ctrl+C、拔线恢复或systemd部署通过。以下首次硬件接入及10月记录保留为历史快照；源码及Git仍由用户操作。
 
