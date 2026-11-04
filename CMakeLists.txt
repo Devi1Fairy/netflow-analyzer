@@ -216,11 +216,50 @@ set_target_properties(
 
 enable_project_warnings(bms_gateway)
 
+# 纯文本遥测解析，不依赖串口、TCP或SQLite。
+add_library(
+    bms_telemetry STATIC
+    gateway/bms_telemetry.c
+)
+
+target_include_directories(
+    bms_telemetry
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/gateway"
+)
+
+enable_project_warnings(bms_telemetry)
+
 # 引入CTest并创建BUILD_TESTING选项。
 include(CTest)
 
 if(BUILD_TESTING)
- # 非阻塞控制I/O测试：仅使用管道和本机Socket。
+
+    add_executable(
+        bms_telemetry_tests
+        tests/unit/test_bms_telemetry.c
+    )
+
+    target_link_libraries(
+        bms_telemetry_tests
+        PRIVATE
+            bms_telemetry
+    )
+
+    enable_project_warnings(bms_telemetry_tests)
+
+    add_test(
+        NAME bms_telemetry_tests
+        COMMAND bms_telemetry_tests
+    )
+
+    set_tests_properties(
+        bms_telemetry_tests
+        PROPERTIES
+            TIMEOUT 10
+    )
+
+    # 非阻塞控制I/O测试：仅使用管道和本机Socket。
     add_executable(
         bms_control_io_tests
         tests/unit/test_bms_control_io.c
