@@ -252,6 +252,25 @@ if(NFA_ENABLE_BMS_SQLITE)
     )
 
     enable_project_warnings(bms_store)
+
+    add_executable(
+        bms_import
+        gateway/bms_import.c
+    )
+
+    target_link_libraries(
+        bms_import
+        PRIVATE
+            bms_store
+    )
+
+    set_target_properties(
+        bms_import
+        PROPERTIES
+            OUTPUT_NAME "bms-import"
+    )
+
+    enable_project_warnings(bms_import)
 endif()
 
 # 引入CTest并创建BUILD_TESTING选项。
@@ -881,6 +900,23 @@ if(BUILD_TESTING)
         REQUIRED
         COMPONENTS Interpreter
     )
+
+    if(NFA_ENABLE_BMS_SQLITE)
+        add_test(
+            NAME bms_import_tests
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/test_bms_import.py
+                --program
+                $<TARGET_FILE:bms_import>
+        )
+
+        set_tests_properties(
+            bms_import_tests
+            PROPERTIES
+                TIMEOUT 30
+        )
+    endif()
 
     # 测试专用二进制；不安装，禁止用来连接物理串口。
     add_executable(

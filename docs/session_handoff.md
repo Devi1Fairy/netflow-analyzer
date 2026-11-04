@@ -4,7 +4,7 @@
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
-当前任务（2026-11-04）：用户已提交`ca22417 feat(gateway): add bounded BMS telemetry parser`，VM现有47/47项Debug CTest复核通过（13.00秒）。下一步提供由用户填写的可选SQLite批量存储模块及软件测试；候选代码已在仓库外独立编译并通过ASan／UBSan，不等于仓库已增加或通过第48项测试，详见第18.16节。没有接入真实串口、改变网关生命周期或在板端部署数据库；真实TCP采集证据仍见第18.14.6节。
+当前结果（2026-11-04）：用户已录入独立日志导入CLI及集成测试，当前父提交为`87ccb36`，5个相关文件待用户提交。VM构建及49/49项Debug CTest复核通过（14.31秒）；用户将118条历史BMS日志导入`/home/zcb/bms-import-v1.ULkGJr/bms.sqlite3`，只读查询与quick_check通过，原接收时间未知保留0，详见第18.17节。助手仅更新文档，没有改业务源码、重开硬件或在板端部署数据库；真实TCP采集证据仍见第18.14.6节。
 
 ## 1. 新会话接手顺序
 
@@ -22,6 +22,10 @@ cmake -E chdir build ctest --output-on-failure
 ```
 
 预期基线：
+
+- 当前VM复核（2026-11-04，导入阶段）：分支`feature/flow-features`，父HEAD为`87ccb36`；CMakeLists.txt、gateway/bms_store.h、gateway/bms_import.c、tests/integration/test_bms_import.py及本交接文档为本步待提交文件，均属当前工作，不覆盖或回退。构建无待编译目标，49/49项Debug CTest通过（14.31秒、退出0），其中bms_import_tests为0.15秒。用户实际历史日志数据库及现存stdout／stderr已只读核对，完整证据与原导入退出码未回传的边界见18.17。
+
+- 当前VM复核（2026-11-04，SQLite阶段）：分支`feature/flow-features`，HEAD为`87ccb36`，文档更新前工作区干净且与远程同步；构建无待编译目标，开启SQLite与可选ML的48/48项Debug CTest通过（15.06秒）。用户已安装libsqlite3-dev和sqlite3，实际包版本均为3.45.1-1ubuntu2.8。日志导入CLI及第49项测试尚待用户录入，不把仓库外候选验证当作已集成。
 
 - 当前VM复核（2026-11-04，解析阶段）：分支`feature/flow-features`，HEAD为`ca22417`，文档更新前工作区干净；构建无待编译目标，47/47项Debug CTest通过（13.00秒），包含新增bms_telemetry_tests。VM有SQLite运行库3.45.1，但未安装libsqlite3-dev和sqlite3命令行；仅为候选代码验证在仓库外下载／解包匹配的开发包，没有安装系统包。SQLite存储源码及CMake注册仍待用户填写和验收。
 
@@ -2231,7 +2235,7 @@ fi
 
 用户实际提交标题为`feat(gateway): add bounded BMS telemetry parser`，新增解析模块的仓库软件验收已完成；下一步为第18.16节的可选SQLite模块，不重复板端实验。
 
-### 18.16 BMS SQLite批量存储（2026-11-04，候选软件验证通过，待用户录入）
+### 18.16 BMS SQLite批量存储（2026-11-04，VM仓库验收通过）
 
 本轮目标：提供`gateway/bms_store.h`、`gateway/bms_store.c`、`tests/unit/test_bms_store.c`及两处CMake插入代码，由用户自行填写；助手只维护本交接文档，不改业务源码或执行Git写操作。独立模块不链接到当前bms_gateway，网络分析主链继续不依赖数据库。
 
@@ -2246,11 +2250,54 @@ fi
 
 实际验证：
 
-- VM当前已安装libsqlite3-0 3.45.1-1ubuntu2.8，但未安装开发包或CLI。助手只在`/tmp/nfa-bms-sqlite-check.1iRkHu`下载并解包同版本Ubuntu libsqlite3-dev，用其中头文件与系统运行库独立编译候选模块；CMake 3.28.3的SQLite3查找检查通过。没有安装软件、修改系统配置或创建仓库源码。
+- 上轮候选验证时，VM仅安装libsqlite3-0 3.45.1-1ubuntu2.8，开发包和CLI尚缺失。助手只在`/tmp/nfa-bms-sqlite-check.1iRkHu`下载并解包同版本Ubuntu libsqlite3-dev，用其中头文件与系统运行库独立编译候选模块；CMake 3.28.3的SQLite3查找检查通过。该次助手没有安装软件、修改系统配置或创建仓库源码；用户后续安装结果见下条。
 - 候选源码经标准输入编译到临时对象文件，GCC 13.3.0、C11、Wall／Wextra／Wpedantic／Werror、ASan／UBSan下四组通过、退出0：20列记录的19个业务／元数据列关闭后逐项读回（含引号字符串、负数、32位边界）；第二条记录触发SQL错误时整批回滚且后续可写；BEGIN及COMMIT两种锁竞争返回BUSY且不留下半批；128条／64字节ID边界、重复sample允许及资源清理。测试只创建并清理自己独立临时目录中的模拟数据库。
-- 回滚本身失败后的unusable分支已有防护设计，但未注入验证。没有仓库bms_store_tests、ARM64 SQLite、SD卡实际写入、设备实测、磁盘满、损坏恢复、掉电耐久或长期性能证据。
+- 上述候选验证之后，用户已录入并提交为`87ccb36`；助手在当前VM构建并完整回归，48/48项Debug CTest通过（15.06秒、退出0），包含bms_store_tests。用户实际安装的开发包与CLI均为3.45.1-1ubuntu2.8，不再报告为当前缺失。
+- 回滚本身失败后的unusable分支已有防护设计，但未注入验证。ARM64 SQLite、SD卡实际写入、实时设备入库、磁盘满、损坏恢复、掉电耐久或长期性能仍无验收证据。
 
-用户下一步在VM安装libsqlite3-dev和sqlite3后录入代码，以`cmake -S . -B build -DNFA_ENABLE_BMS_SQLITE=ON`配置，先运行bms_store_tests再完整回归。暂不在根分区仅余214M的板端安装依赖、写数据库或格式化现有卡。用户回传验收后再更新本节，建议提交标题`feat(gateway): add optional SQLite telemetry storage`。
+用户已采用提交标题`feat(gateway): add optional SQLite telemetry storage`。下一步为18.17的离线日志导入，不直接把同步数据库写入接进控制主循环，也不在根分区最近仅余214M的板端安装依赖、写数据库或格式化现有卡。
+
+### 18.17 BMS历史日志导入CLI（2026-11-04，VM仓库与用户历史日志验收通过，待提交）
+
+用户已填写`gateway/bms_import.c`、`tests/integration/test_bms_import.py`及CMake两处插入，并对bms_store.h补充时间字段注释，不改变表结构。助手只维护本交接文档，不填写仓库业务源码或代执行Git。实际CLI为`bms-import INPUT_LOG NEW_DATABASE DEVICE_ID SESSION_ID`，目标名bms_import、产物名bms-import，仅在NFA_ENABLE_BMS_SQLITE启用时构建；集成测试已放在既有Python查找之后，当前开启SQLite及可选ML共49项。本步父提交为87ccb36，以上5个相关文件仍待用户提交。
+
+输入与数据边界：
+
+- 只读取已经结束且不再变化的普通日志文件，最多16 MiB，单行总长度最多1024字节（含LF或CRLF）。Linux O_PATH取得节点引用后先fstat确认类型，再经/proc/self/fd读取同一普通文件；拒绝符号链接、目录、FIFO等，不打开串口驱动或建立TCP连接。该工具使用Linux接口，不宣称纯POSIX跨系统可移植。
+- 使用固定行缓冲和最多128条待写记录；逐条解析BMS行，允许空行及不以BMS开头的普通ASCII诊断行并计数跳过。非法BMS字段、控制字节、超长行或没有LF结尾的尾行导致整个导入失败，不把可疑半行当成完整样本。运行中检测文件大小、mtime、ctime常规变化并拒绝发布，不将此检查当作防恶意篡改的快照机制。
+- 历史日志没有逐条接收时间，received_unix_us=0保留为未知；不得把导入时刻、文件mtime或sample伪造为原采样／接收时间。设备和采集会话标识由用户指定，本版不自动推断硬件唯一ID、追加导入、去重或合并多个数据库。
+
+输出与失败边界：
+
+- 先用mkstemp在最终目标同一目录创建.part.XXXXXX临时数据库，按批事务写入，完整解析且关闭输入和数据库后再用renameat2(RENAME_NOREPLACE)无覆盖发布。现有输出或符号链接不覆盖，文件系统不支持时失败，不退回可覆盖的rename。
+- 解析／数据库等业务失败时不发布最终路径，stdout不输出成功统计，stderr报错并给出保留的不完整临时库路径；早前已提交的128条批次可能存在于临时库，不冒充全文件事务。临时文件不自动删除、不自动续传或重试。最终发布之后若stdout输出本身失败，错误明确说明数据库已经发布，不承诺这一类I/O错误仍无最终文件。
+- 只有全部完成才输出input_lines、imported_rows、skipped_lines、received_unix_us=0。无覆盖发布是可见性和覆盖保护，不代表掉电耐久；未增加父目录fsync或验证SD卡断电。信号中断可能留下.part文件，不能手工改名伪装成功。
+
+实际验证：
+
+- 原仓库48/48项VM Debug回归通过（15.06秒）。候选C文件经标准输入编译到`/tmp/nfa-bms-import-check.SOYAWY`，当前bms_store／bms_telemetry也重编译到该目录；C11、Wall／Wextra／Wpedantic／Werror、ASan／UBSan下，Python四组通过、退出0。覆盖260条跨批导入、LF／CRLF、跳过与查询、旧输出和链接保护、非法ID／空文件／坏数字／NUL／超长／无LF尾行／128条已提交后失败不发布、1024字节合法边界及目录／FIFO／链接／16MiB超限拒绝。严格ASan退出码及UBSan遇错终止配置下再次通过。
+- VM现有历史文件`/home/zcb/bms-tcp-v1.Qz3z3E/receive.txt`为22656字节。助手只复制到上述临时目录的historical-118.log，用候选CLI写入historical-118.sqlite3，手动测试标识为historical-bms／offline-check；输出input_lines=118、imported_rows=118、skipped_lines=0、received_unix_us=0，退出0。只读查询COUNT=118、sample最小286605／最大286839、接收时间最小／最大均0。原文件及副本SHA-256均为`d6c2c741ad5c701d9b424e78de5e3de0430e86e661d24b1eec3e60a592dbaad2`，导入后原文件摘要未变。这是VM回放11月1日保存的历史接收日志，不是重新抓取硬件、板端数据库验收或实际电池充放电。
+- 用户随后回传正式构建产物的导入／查询结果，助手在当前工作树重新构建并完整回归：49/49项Debug CTest通过、14.31秒、退出0，bms_import_tests通过（0.15秒）。新源码、测试、两处CMake及时间注释已读回核对，git diff --check通过；没有替用户写源码或执行Git写操作。
+- 尚未分别注入验证：输入运行中变化、发布时晚到的竞争者、发布后stdout错误、磁盘满、信号中断、父目录掉电持久性及ARM64／VFAT行为。当前通过的是VM历史文件回放，不是板端实时入库或实际电池充放电。
+
+用户正式导入与助手只读复核结果：
+
+| 核对项 | 实际结果 |
+| --- | --- |
+| 数据目录 | `/home/zcb/bms-import-v1.ULkGJr`，数据库为bms.sqlite3（16 KiB），原始数据不入Git |
+| 保存的运行输出 | import.stdout为69字节，显示input_lines=118、imported_rows=118、skipped_lines=0、received_unix_us=0；import.stderr为0字节 |
+| 数据库记录 | COUNT=118，device_id=bms-demo-01，session_id=historical-118-01；全部118条接收时间为0，表示未知 |
+| sample范围 | 286605～286839；不据计数步长推断采样时序或零丢失 |
+| 前三条读回 | sample依次286605／286607／286609，cell0_mv均3227，temp_est_dC为259／259／260，i_ma均0，state=1、load=0；不作为新硬件状态测量 |
+| 结构快速检查 | sqlite3 -readonly执行PRAGMA quick_check返回ok；该检查不是掉电耐久或全部数据真实性保证 |
+| 数据库SHA-256 | `01bd58a037e7ed5a2fb6ef57a89889b5c805d63790e6fc3aed7fd702b1796c71` |
+| 历史输入SHA-256 | 仍为`d6c2c741ad5c701d9b424e78de5e3de0430e86e661d24b1eec3e60a592dbaad2`，原日志未修改 |
+
+用户这次没有贴出原导入进程退出码，目录中也没有单独退出码记录，不补写该数值；已确认最终库、完整统计、stderr为空和查询一致性。助手本轮独立构建／CTest退出0与只读查询成功，不能替代原进程退出状态。
+
+当前VM构建产物`build/bin/bms-import`的SHA-256为`dc25f14ad29241ff758916fa99e0fe0b13d2ddde323e1e20ddc7aa689d746dc2`；源码gateway/bms_import.c为`440e3f86992f5b178ba8e1733b895ec1deffa2cdbdfef8c34117832cc57b06ed`，集成测试为`a598b4ee6ddedde7f31a4a7f49d3dad64a6664e1890f46860b3a23ce061aa102`。这是未提交工作树与本机构建的指纹，不当作ARM64产物或新增提交号。
+
+本步可以由用户review后提交`feat(gateway): add bounded BMS log importer`，仅stage上述5个文件，不提交数据库、历史原日志、构建产物或临时库。下一阶段先设计串口采集与Qt连接生命周期的解耦，再接存储与上板；不能直接再起第二个进程争用串口，也不因本轮回放成功默认启用服务或开展新的硬件动作。
 
 ## 19. ARM Linux开发板计划
 
@@ -2349,6 +2396,8 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 然后先检查流特征、版本化导出、CLI生命周期、测试、文档和Git提交状态，再进入数据集对齐；性能方法见`docs/performance_baseline.md`与`docs/multiflow_longrun_baseline.md`，交叉构建方法见`docs/cross_compilation.md`。
 
 ## 21. 本次交接结论
+
+当前收尾（2026-11-04，历史日志导入）：用户已录入CLI与测试，父HEAD为`87ccb36`，5个相关文件待提交；VM 49/49项Debug CTest复核通过（14.31秒）。正式目录`/home/zcb/bms-import-v1.ULkGJr`读回118条、sample范围286605～286839、全部时间未知为0、quick_check=ok，stdout完整且stderr为空，原日志摘要未变；原导入进程退出码未回传，不补写。助手只更新交接文档，不改业务源码、不重跑硬件或执行Git写操作，完整指纹与边界见18.17。下一步由用户review／提交，再设计串口采集与Qt连接解耦；ARM64实时入库、SD部署及掉电等仍待验证。以下为此前阶段快照。
 
 当前推进（2026-11-04，SQLite准备）：解析模块已提交`ca22417`且VM 47/47项Debug CTest通过（13.00秒），文档中上一轮“待录入”已更新为实际仓库验收。接着提供可选、独立的SQLite存储模块及事务软件测试，由用户录入；候选代码在仓库外ASan／UBSan测试通过，仓库48项、ARM64及SD卡数据库均待验证。助手没有安装系统包、填写业务源码、改网关／MCU／Qt运行链、打开硬件或执行Git写操作，详见18.16。以下记录保留为此前阶段快照。
 

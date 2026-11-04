@@ -20,6 +20,7 @@ typedef struct {
 typedef struct {
     const char *device_id;
     const char *session_id;
+    /* 网关接收Unix微秒；0表示历史日志时间未知，不是MCU采样时间。 */
     int64_t received_unix_us;
     bms_telemetry_t telemetry;
 } bms_store_row_t;
@@ -35,7 +36,7 @@ int bms_store_open(bms_store_t *store, const char *path);
 /*
  * 同步写入1..128条；每次调用使用一个事务。
  * ID为1..64字节可打印ASCII、NUL结束；输入借用至函数返回。
- * received_unix_us是网关接收时间，不是MCU采样时间，要求非负。
+ * received_unix_us为非负网关接收Unix微秒；0表示未知，不是采样时间。
  * 已知写入失败时回滚本批；返回失败不自动重试或宣称恰好一次。
  * 发生回滚失败时标记unusable，只允许关闭，不继续写入。
  */
