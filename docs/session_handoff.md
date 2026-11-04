@@ -4,7 +4,7 @@
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
-当前任务（2026-11-04）：真实TCP采集文档已由用户提交为`00aafac`，工作转向BMS历史数据存储的准备。先由用户填写独立的遥测文本解析模块、单元测试及CMake注册，不接入真实串口回调、不增加SQLite依赖、不改变既有网关生命周期。VM原有46/46项CTest本轮复核通过；拟提供代码的临时独立编译及ASan／UBSan测试通过，不等于仓库已增加或通过第47项测试，详细状态见第18.15节。实物采集的2041包／1条closed双向流及证据边界仍见第18.14.6节；本轮不重开硬件。
+当前任务（2026-11-04）：用户已提交`ca22417 feat(gateway): add bounded BMS telemetry parser`，VM现有47/47项Debug CTest复核通过（13.00秒）。下一步提供由用户填写的可选SQLite批量存储模块及软件测试；候选代码已在仓库外独立编译并通过ASan／UBSan，不等于仓库已增加或通过第48项测试，详见第18.16节。没有接入真实串口、改变网关生命周期或在板端部署数据库；真实TCP采集证据仍见第18.14.6节。
 
 ## 1. 新会话接手顺序
 
@@ -22,6 +22,8 @@ cmake -E chdir build ctest --output-on-failure
 ```
 
 预期基线：
+
+- 当前VM复核（2026-11-04，解析阶段）：分支`feature/flow-features`，HEAD为`ca22417`，文档更新前工作区干净；构建无待编译目标，47/47项Debug CTest通过（13.00秒），包含新增bms_telemetry_tests。VM有SQLite运行库3.45.1，但未安装libsqlite3-dev和sqlite3命令行；仅为候选代码验证在仓库外下载／解包匹配的开发包，没有安装系统包。SQLite存储源码及CMake注册仍待用户填写和验收。
 
 - 当前VM复核（2026-11-04）：分支`feature/flow-features`，HEAD为`00aafac docs(integration): verify BMS TCP capture and CSV replay`，本轮文档更新前工作区干净；现有构建无待编译目标，启用可选ML的46/46项CTest通过（16.75秒）。这是新增解析模块前的软件基线，不是新的板端结果。后续历史条目中的测试数、未提交状态及“下一步”按各自日期解释。
 
@@ -2206,7 +2208,7 @@ fi
 
 本次不因实物采集重复运行历史46项CTest，未修改源码。原始PCAP／Qt日志／板端运行文件保留在仓库外；仅两份既有分类文档由用户在当前VM权威工作树review、stage、commit、push。建议提交标题`docs(integration): verify BMS TCP capture and CSV replay`，助手不执行Git写操作。
 
-### 18.15 BMS历史数据存储准备：独立遥测解析（2026-11-04，待用户录入及仓库验收）
+### 18.15 BMS历史数据存储准备：独立遥测解析（2026-11-04，VM仓库验收通过）
 
 用户在采集收尾后询问数据库是否应放在网关SD卡，随后要求继续。当前目标是为电池遥测建立可持久化的数据入口，不是把netflow流CSV当作电池数据。拟先形成“完整BMS文本行→有类型的结构体→后续SQLite”的链路；数据库、表结构、写入线程和Qt历史查询均尚未实现。
 
@@ -2223,11 +2225,32 @@ fi
 
 - 2026-11-04，在VM现有HEAD上构建并运行原46项CTest，46/46通过、16.75秒、退出0；本轮没有重新运行板端历史测试。
 - 拟提供的头文件、实现及测试以标准输入分别编译到仓库外的临时对象文件，不创建或修改仓库业务文件。GCC 13.3.0、C11、Wall／Wextra／Wpedantic／Werror及ASan／UBSan下，四组测试通过、退出0：完整16字段／非NUL输入／行尾与字段换序，有符号和数值边界，缺失／重复／未知字段及失败不改output，控制字节与1024／1025字节边界。临时产物目录为`/tmp/nfa-bms-telemetry-proposal.E90pzz`，它不是部署包或已提交源码。
-- 用户尚未填写并验收以上文件；仓库仍注册46项测试。新增后预期为47项，必须以用户实际CMake／CTest输出确认，不能提前登记47/47或ARM64解析通过。没有新SQLite依赖、数据库文件、设备打开或真实MCU命令。
+- 上述临时验证之后，用户已录入并提交为`ca22417`，当前检查与远程同步、工作区干净；助手在此提交运行构建及完整CTest，47/47通过、13.00秒、退出0。此为VM仓库实际验收，不是ARM64解析验收。没有接入串口回调、设备打开或真实MCU命令。
 
 后续计划：解析验收后在VM用临时数据库验证SQLite参数绑定、事务及读回，再讨论上板。历史板端数据卡挂载为`/media/usb0`、VFAT、noexec／sync，根分区最近用户回传只余214M；不要把数据库或大依赖装进根分区，不格式化现有卡。常驻记录还需显式设计串口生命周期：现有网关仅在Qt接入后开串口且单会话有总预算，直接增加INSERT不会自动得到Qt离线期间的连续记录。未设计或验证前不宣称常驻历史采集完成。
 
-建议用户录入并验收后的提交标题：`feat(gateway): add bounded BMS telemetry parser`。本节仅记录准备和临时软件验证，待收到用户测试结果再更新验收状态。
+用户实际提交标题为`feat(gateway): add bounded BMS telemetry parser`，新增解析模块的仓库软件验收已完成；下一步为第18.16节的可选SQLite模块，不重复板端实验。
+
+### 18.16 BMS SQLite批量存储（2026-11-04，候选软件验证通过，待用户录入）
+
+本轮目标：提供`gateway/bms_store.h`、`gateway/bms_store.c`、`tests/unit/test_bms_store.c`及两处CMake插入代码，由用户自行填写；助手只维护本交接文档，不改业务源码或执行Git写操作。独立模块不链接到当前bms_gateway，网络分析主链继续不依赖数据库。
+
+拟定契约：
+
+- 由调用者以`{0}`初始化并独占维护上下文，通过open／write_batch／close管理磁盘数据库和预编译语句，不复制上下文或并发使用；返回SQLite结果码，成功为SQLITE_OK。失败打开时释放句柄，不宣称删除已经创建的文件。
+- 使用版本化表名`bms_samples_v1`，保存16个原始遥测字段，以及设备标识、采集会话标识、网关接收Unix微秒和数据库行ID，共20列。接收时间不等于MCU采样时间；sample不加唯一约束，不作为跨重启或跨设备的全局ID。当前不保存原始行，也未实现表结构迁移、去重或Qt历史查询。
+- ID限定1～64字节可打印ASCII；数值统一用sqlite3_bind_int64，避免UINT32_MAX经32位有符号绑定变负。字符串使用参数绑定及SQLITE_TRANSIENT复制，不拼接为SQL。
+- 每次调用1～128条，一个BEGIN IMMEDIATE／COMMIT事务；失败时检查事务状态并回滚，回滚失败则标记上下文不可继续写。失败不自动重试、不承诺恰好一次；不能从一般I/O失败推断绝无提交。
+- 显式采用DELETE回滚日志和FULL同步，不启用WAL；busy_timeout=100只限制锁竞争等待，不是整个磁盘I/O或批次的硬实时上限。当前接口是同步软件模块，不可据此把磁盘写入直接放进控制主循环；异步队列、拥塞／磁盘满策略和常驻生命周期仍待设计。
+- CMake拟新增默认OFF的`NFA_ENABLE_BMS_SQLITE`；仅启用时find_package(SQLite3 REQUIRED)，使用SQLite::SQLite3导入目标并注册bms_store_tests。当前47项基础上启用后预期48项，必须等实际仓库配置及测试结果，不提前登记48/48。
+
+实际验证：
+
+- VM当前已安装libsqlite3-0 3.45.1-1ubuntu2.8，但未安装开发包或CLI。助手只在`/tmp/nfa-bms-sqlite-check.1iRkHu`下载并解包同版本Ubuntu libsqlite3-dev，用其中头文件与系统运行库独立编译候选模块；CMake 3.28.3的SQLite3查找检查通过。没有安装软件、修改系统配置或创建仓库源码。
+- 候选源码经标准输入编译到临时对象文件，GCC 13.3.0、C11、Wall／Wextra／Wpedantic／Werror、ASan／UBSan下四组通过、退出0：20列记录的19个业务／元数据列关闭后逐项读回（含引号字符串、负数、32位边界）；第二条记录触发SQL错误时整批回滚且后续可写；BEGIN及COMMIT两种锁竞争返回BUSY且不留下半批；128条／64字节ID边界、重复sample允许及资源清理。测试只创建并清理自己独立临时目录中的模拟数据库。
+- 回滚本身失败后的unusable分支已有防护设计，但未注入验证。没有仓库bms_store_tests、ARM64 SQLite、SD卡实际写入、设备实测、磁盘满、损坏恢复、掉电耐久或长期性能证据。
+
+用户下一步在VM安装libsqlite3-dev和sqlite3后录入代码，以`cmake -S . -B build -DNFA_ENABLE_BMS_SQLITE=ON`配置，先运行bms_store_tests再完整回归。暂不在根分区仅余214M的板端安装依赖、写数据库或格式化现有卡。用户回传验收后再更新本节，建议提交标题`feat(gateway): add optional SQLite telemetry storage`。
 
 ## 19. ARM Linux开发板计划
 
@@ -2326,6 +2349,8 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 然后先检查流特征、版本化导出、CLI生命周期、测试、文档和Git提交状态，再进入数据集对齐；性能方法见`docs/performance_baseline.md`与`docs/multiflow_longrun_baseline.md`，交叉构建方法见`docs/cross_compilation.md`。
 
 ## 21. 本次交接结论
+
+当前推进（2026-11-04，SQLite准备）：解析模块已提交`ca22417`且VM 47/47项Debug CTest通过（13.00秒），文档中上一轮“待录入”已更新为实际仓库验收。接着提供可选、独立的SQLite存储模块及事务软件测试，由用户录入；候选代码在仓库外ASan／UBSan测试通过，仓库48项、ARM64及SD卡数据库均待验证。助手没有安装系统包、填写业务源码、改网关／MCU／Qt运行链、打开硬件或执行Git写操作，详见18.16。以下记录保留为此前阶段快照。
 
 当前推进（2026-11-04）：采集收尾已提交为`00aafac`，VM原46/46项CTest再次通过（16.75秒）。现在提供由用户录入的纯BMS遥测解析模块、单元测试和CMake注册，为后续SQLite做准备；候选代码仅在仓库外完成独立编译与ASan／UBSan验证，仓库47项集成验收及ARM64解析均待实际结果。本轮助手只维护本交接文档，不填写业务源码、改网关运行行为、安装数据库、打开硬件或执行Git写操作，详见18.15。以下“最新收尾”为此前采集或历史阶段快照，不替代本条任务。
 

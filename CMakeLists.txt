@@ -230,10 +230,60 @@ target_include_directories(
 
 enable_project_warnings(bms_telemetry)
 
+option(
+    NFA_ENABLE_BMS_SQLITE
+    "Build optional BMS SQLite storage"
+    OFF
+)
+
+if(NFA_ENABLE_BMS_SQLITE)
+    find_package(SQLite3 REQUIRED)
+
+    add_library(
+        bms_store STATIC
+        gateway/bms_store.c
+    )
+
+    target_link_libraries(
+        bms_store
+        PUBLIC
+            bms_telemetry
+            SQLite::SQLite3
+    )
+
+    enable_project_warnings(bms_store)
+endif()
+
 # 引入CTest并创建BUILD_TESTING选项。
 include(CTest)
 
 if(BUILD_TESTING)
+
+    if(NFA_ENABLE_BMS_SQLITE)
+        add_executable(
+            bms_store_tests
+            tests/unit/test_bms_store.c
+        )
+
+        target_link_libraries(
+            bms_store_tests
+            PRIVATE
+                bms_store
+        )
+
+        enable_project_warnings(bms_store_tests)
+
+        add_test(
+            NAME bms_store_tests
+            COMMAND bms_store_tests
+        )
+
+        set_tests_properties(
+            bms_store_tests
+            PROPERTIES
+                TIMEOUT 10
+        )
+    endif()
 
     add_executable(
         bms_telemetry_tests
