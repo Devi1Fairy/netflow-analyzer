@@ -4,7 +4,7 @@
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
-当前结果（2026-11-04）：用户已录入独立日志导入CLI及集成测试，当前父提交为`87ccb36`，5个相关文件待用户提交。VM构建及49/49项Debug CTest复核通过（14.31秒）；用户将118条历史BMS日志导入`/home/zcb/bms-import-v1.ULkGJr/bms.sqlite3`，只读查询与quick_check通过，原接收时间未知保留0，详见第18.17节。助手仅更新文档，没有改业务源码、重开硬件或在板端部署数据库；真实TCP采集证据仍见第18.14.6节。
+当前任务（2026-11-04）：用户已提交`4607f1f feat(gateway): add bounded BMS log importer`，文档更新前工作区干净；VM构建及49/49项Debug CTest复核通过（13.63秒）。现在为“串口采集不依赖Qt连接”准备独立的有界遥测队列，候选代码在仓库外通过ASan／UBSan及重复并发测试，待用户录入，不能提前登记第50项或常驻网关完成，详见第18.18节。现有网关、TCP控制、串口配置和SQLite运行链均未改，不启动硬件；118条历史回放见18.17。
 
 ## 1. 新会话接手顺序
 
@@ -22,6 +22,8 @@ cmake -E chdir build ctest --output-on-failure
 ```
 
 预期基线：
+
+- 当前VM复核（2026-11-04，生命周期解耦准备）：分支`feature/flow-features`，HEAD为`4607f1f`，与远程同步且文档更新前工作区干净。构建无待编译目标，启用SQLite及可选ML的49/49项Debug CTest通过（13.63秒、退出0）。当前代码仍为Qt接入后打开串口、单会话结束即退出；新队列、存储线程及独立于Qt的运行模式均未集成。
 
 - 当前VM复核（2026-11-04，导入阶段）：分支`feature/flow-features`，父HEAD为`87ccb36`；CMakeLists.txt、gateway/bms_store.h、gateway/bms_import.c、tests/integration/test_bms_import.py及本交接文档为本步待提交文件，均属当前工作，不覆盖或回退。构建无待编译目标，49/49项Debug CTest通过（14.31秒、退出0），其中bms_import_tests为0.15秒。用户实际历史日志数据库及现存stdout／stderr已只读核对，完整证据与原导入退出码未回传的边界见18.17。
 
@@ -2257,9 +2259,9 @@ fi
 
 用户已采用提交标题`feat(gateway): add optional SQLite telemetry storage`。下一步为18.17的离线日志导入，不直接把同步数据库写入接进控制主循环，也不在根分区最近仅余214M的板端安装依赖、写数据库或格式化现有卡。
 
-### 18.17 BMS历史日志导入CLI（2026-11-04，VM仓库与用户历史日志验收通过，待提交）
+### 18.17 BMS历史日志导入CLI（2026-11-04，VM验收通过，已提交4607f1f）
 
-用户已填写`gateway/bms_import.c`、`tests/integration/test_bms_import.py`及CMake两处插入，并对bms_store.h补充时间字段注释，不改变表结构。助手只维护本交接文档，不填写仓库业务源码或代执行Git。实际CLI为`bms-import INPUT_LOG NEW_DATABASE DEVICE_ID SESSION_ID`，目标名bms_import、产物名bms-import，仅在NFA_ENABLE_BMS_SQLITE启用时构建；集成测试已放在既有Python查找之后，当前开启SQLite及可选ML共49项。本步父提交为87ccb36，以上5个相关文件仍待用户提交。
+用户已填写`gateway/bms_import.c`、`tests/integration/test_bms_import.py`及CMake两处插入，并对bms_store.h补充时间字段注释，不改变表结构。助手只维护本交接文档，不填写仓库业务源码或代执行Git。实际CLI为`bms-import INPUT_LOG NEW_DATABASE DEVICE_ID SESSION_ID`，目标名bms_import、产物名bms-import，仅在NFA_ENABLE_BMS_SQLITE启用时构建；集成测试已放在既有Python查找之后，开启SQLite及可选ML共49项。本步父提交为87ccb36，随后用户已将5个相关文件提交为4607f1f，当前检查与远程同步，不再报告为未提交。
 
 输入与数据边界：
 
@@ -2297,7 +2299,36 @@ fi
 
 当前VM构建产物`build/bin/bms-import`的SHA-256为`dc25f14ad29241ff758916fa99e0fe0b13d2ddde323e1e20ddc7aa689d746dc2`；源码gateway/bms_import.c为`440e3f86992f5b178ba8e1733b895ec1deffa2cdbdfef8c34117832cc57b06ed`，集成测试为`a598b4ee6ddedde7f31a4a7f49d3dad64a6664e1890f46860b3a23ce061aa102`。这是未提交工作树与本机构建的指纹，不当作ARM64产物或新增提交号。
 
-本步可以由用户review后提交`feat(gateway): add bounded BMS log importer`，仅stage上述5个文件，不提交数据库、历史原日志、构建产物或临时库。下一阶段先设计串口采集与Qt连接生命周期的解耦，再接存储与上板；不能直接再起第二个进程争用串口，也不因本轮回放成功默认启用服务或开展新的硬件动作。
+用户已提交`feat(gateway): add bounded BMS log importer`（4607f1f），5个相关文件已归档，数据库、历史原日志、构建产物和临时库不入Git。下一阶段为18.18的生命周期解耦准备，不直接再起第二个进程争用串口，也不因本轮回放成功默认启用服务或开展新的硬件动作。
+
+### 18.18 串口／Qt生命周期解耦准备：有界遥测队列（2026-11-04，候选验证通过，待用户录入）
+
+代码检查依据：当前bms_gateway.c先等待accept，接入后关闭listener，再打开／配置串口；bms_control_run绑定一个client_fd，客户端结束会话即返回。仅在完整行回调中同步执行SQLite会引入磁盘／锁等待，也不会得到Qt离线期间的数据。本轮不直接重写该入口，不改变旧CLI的无人接入／单客户端单会话／总预算／默认只读和显式控制契约。
+
+后续目标架构（计划，尚未实现）：
+
+- 同一进程的主循环是唯一串口及TCP控制所有者；新增显式模式才允许在没有Qt时采集，初次联调仍有总运行预算，旧命令保持兼容。Qt断开只结束网络会话和未发控制队列，不关闭采集或重放命令；新连接重新初始化会话，存储线程绝不发送UART控制。
+- 每条完整遥测由主线程解析并填写接收时间，按值尝试入队；设备及采集会话标识由之后的存储线程上下文稳定持有，不随Qt重连改变。Unix接收时间与队列超时不同：前者应由真实采集填入，后者使用CLOCK_MONOTONIC。
+- 一个存储线程独占bms_store及SQLite，通过队列取样、限时批量刷新。SIGINT／SIGTERM处理器仍只置标志，主循环再关闭队列，消费者排空并报告写入结果后join；不能用volatile sig_atomic_t代替线程同步或在信号处理器中操作互斥锁。
+- 队列满／锁忙仅是明确拒绝入队，不是自动落盘或隐式丢弃策略；之后的上层必须计数并确定告警／存储故障策略，不宣称零丢失。入队成功只表示内存接受，不等于SQLite提交。磁盘失败、退出预算和Qt慢客户端处理仍待实现与验证。
+
+本轮仅提供由用户填写的gateway/bms_sample_queue.h、gateway/bms_sample_queue.c、tests/unit/test_bms_sample_queue.c及CMake两处插入。拟在NFA_ENABLE_BMS_SQLITE内查找Threads并建立独立库，公开链接bms_telemetry及Threads::Threads；不链接到当前网关或启动存储线程。测试目标单独使用--wrap=pthread_cond_timedwait观察实际等待，不能把包装器放进正式库。当前49项基础上预期50项，必须等用户实际仓库验收后记录。
+
+候选接口与边界：
+
+- bms_sample_t只包含接收Unix微秒和bms_telemetry_t，不保留串口行／字符串／动态对象指针。固定最多256个值槽，初始化选择1～256容量；上下文须{0}初始化，成功后不可复制，初始化／销毁不与使用者并发。
+- try_push用pthread_mutex_trylock，不等待队列锁或空间；EBUSY为锁忙、EAGAIN为满、ECANCELED为关闭，均未入队；不覆盖旧数据。其他同步错误停止组件且不自动重试。它是互斥锁保护的队列，不是无锁／wait-free或硬实时保证。
+- pop对空队列使用CLOCK_MONOTONIC条件变量和同一次绝对截止时间，参数1～60000ms；用while复查条件，应对无数据唤醒及超时／到达同时发生。ETIMEDOUT及关闭取空的ECANCELED不修改输出；不把调度与获取互斥锁当作硬时限。
+- close保留旧记录、广播唤醒等待者，后续push拒绝；pop仍按FIFO排空后返回ECANCELED。destroy要求先close、消费者结束并join且队列已空；不能用destroy的EBUSY检测代替join，不使用pthread_cancel。所有函数直接返回错误码，不把pthread错误放进errno。
+- 目标为一个采集生产者／一个存储消费者；本轮没有多生产者／多消费者、实时采集延迟、数据库吞吐或队列零拒绝承诺。
+
+实际验证：
+
+- 4607f1f上的现有仓库49/49项Debug CTest通过（13.63秒、退出0）。源码／旧网关未修改，本轮不在板端重跑历史测试。
+- 候选头文件／实现／测试通过标准输入分别编译为仓库外对象，目录`/tmp/nfa-bms-sample-queue-check.Ut2BTE`，GCC 13.3.0、C11、Wall／Wextra／Wpedantic／Werror、pthread及ASan／UBSan。三组输出通过、退出0：按值复制及FIFO环回、容量／锁忙／超时／关闭排空；通过条件等待包装与有界信号量握手，验证实际等待、无数据唤醒后重新等待、数据／关闭唤醒；10000条合成值跨线程按序传递。严格ASan退出码及UBSan遇错终止下连续重复50轮通过。
+- 并发测试让步重试仅用于验证全部合成记录的顺序，不是生产者实际运行的重试／背压策略。未执行TSan、同步错误注入、实际墙钟调整、存储线程、Qt断连后继续入库、ARM64或真实串口实验，不把这些功能写成完成。
+
+下一步用户录入并运行bms_sample_queue_tests及完整回归，助手再更新第50项实际验收。随后先连接存储线程及临时数据库软件验证，再接新增运行模式及PTY重连测试，最后单独安排有界板端联调；不得直接运行第二个串口进程、启用常驻systemd或自动发送MCU命令。建议通过后提交标题：`feat(gateway): add bounded telemetry queue for async storage`。
 
 ## 19. ARM Linux开发板计划
 
@@ -2396,6 +2427,8 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 然后先检查流特征、版本化导出、CLI生命周期、测试、文档和Git提交状态，再进入数据集对齐；性能方法见`docs/performance_baseline.md`与`docs/multiflow_longrun_baseline.md`，交叉构建方法见`docs/cross_compilation.md`。
 
 ## 21. 本次交接结论
+
+当前推进（2026-11-04，生命周期解耦准备）：用户已提交4607f1f，VM 49/49项Debug CTest复核通过（13.63秒），文档更新前工作区干净。拟由用户填写独立有界遥测队列及并发单元测试，为后续单串口主循环＋SQLite专属线程做准备；候选代码在仓库外ASan／UBSan及50轮重复测试通过，仓库第50项、存储线程及新运行模式均未实现／验收。当前仍是原有单会话网关，助手只改本交接文档，不动源码、设备或Git，详见18.18。以下为此前阶段快照。
 
 当前收尾（2026-11-04，历史日志导入）：用户已录入CLI与测试，父HEAD为`87ccb36`，5个相关文件待提交；VM 49/49项Debug CTest复核通过（14.31秒）。正式目录`/home/zcb/bms-import-v1.ULkGJr`读回118条、sample范围286605～286839、全部时间未知为0、quick_check=ok，stdout完整且stderr为空，原日志摘要未变；原导入进程退出码未回传，不补写。助手只更新交接文档，不改业务源码、不重跑硬件或执行Git写操作，完整指纹与边界见18.17。下一步由用户review／提交，再设计串口采集与Qt连接解耦；ARM64实时入库、SD部署及掉电等仍待验证。以下为此前阶段快照。
 

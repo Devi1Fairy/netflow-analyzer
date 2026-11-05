@@ -239,6 +239,23 @@ option(
 if(NFA_ENABLE_BMS_SQLITE)
     find_package(SQLite3 REQUIRED)
 
+    set(THREADS_PREFER_PTHREAD_FLAG ON)
+    find_package(Threads REQUIRED)
+
+    add_library(
+        bms_sample_queue STATIC
+        gateway/bms_sample_queue.c
+    )
+
+    target_link_libraries(
+        bms_sample_queue
+        PUBLIC
+            bms_telemetry
+            Threads::Threads
+    )
+
+    enable_project_warnings(bms_sample_queue)
+
     add_library(
         bms_store STATIC
         gateway/bms_store.c
@@ -279,6 +296,38 @@ include(CTest)
 if(BUILD_TESTING)
 
     if(NFA_ENABLE_BMS_SQLITE)
+
+        add_executable(
+            bms_sample_queue_tests
+            tests/unit/test_bms_sample_queue.c
+        )
+
+        target_link_libraries(
+            bms_sample_queue_tests
+            PRIVATE
+                bms_sample_queue
+        )
+
+        enable_project_warnings(bms_sample_queue_tests)
+
+        # 仅测试目标观察消费者进入等待，不影响正式库。
+        target_link_options(
+            bms_sample_queue_tests
+            PRIVATE
+                "-Wl,--wrap=pthread_cond_timedwait"
+        )
+
+        add_test(
+            NAME bms_sample_queue_tests
+            COMMAND bms_sample_queue_tests
+        )
+
+        set_tests_properties(
+            bms_sample_queue_tests
+            PROPERTIES
+                TIMEOUT 10
+        )
+
         add_executable(
             bms_store_tests
             tests/unit/test_bms_store.c
