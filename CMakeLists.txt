@@ -270,6 +270,20 @@ if(NFA_ENABLE_BMS_SQLITE)
 
     enable_project_warnings(bms_store)
 
+    add_library(
+        bms_store_worker STATIC
+        gateway/bms_store_worker.c
+    )
+
+    target_link_libraries(
+        bms_store_worker
+        PUBLIC
+            bms_store
+            bms_sample_queue
+    )
+
+    enable_project_warnings(bms_store_worker)
+
     add_executable(
         bms_import
         gateway/bms_import.c
@@ -296,6 +310,37 @@ include(CTest)
 if(BUILD_TESTING)
 
     if(NFA_ENABLE_BMS_SQLITE)
+
+        add_executable(
+            bms_store_worker_tests
+            tests/unit/test_bms_store_worker.c
+        )
+
+        target_link_libraries(
+            bms_store_worker_tests
+            PRIVATE
+                bms_store_worker
+        )
+
+        enable_project_warnings(bms_store_worker_tests)
+
+        # 包装器只属于测试，不链接进正式网关。
+        target_link_options(
+            bms_store_worker_tests
+            PRIVATE
+                "-Wl,--wrap=bms_sample_queue_pop"
+        )
+
+        add_test(
+            NAME bms_store_worker_tests
+            COMMAND bms_store_worker_tests
+        )
+
+        set_tests_properties(
+            bms_store_worker_tests
+            PROPERTIES
+                TIMEOUT 20
+        )
 
         add_executable(
             bms_sample_queue_tests
