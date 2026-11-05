@@ -1,464 +1,362 @@
-# Netflow Analyzer
+# netflow-analyzer
 
-基于Linux C11的网络流量分析与异常检测学习项目。项目面向嵌入式Linux应用开发和网络协议分析岗位，逐步实现数据包采集、协议解析、双向流量聚合、异常检测、可视化与ARM Linux部署。
+一个运行在 Linux/ARM64 上的 C11 网络流分析服务。
 
-## 当前版本
+从离线 PCAP 或实时网卡读取数据，安全解析 Ethernet、IPv4、TCP、UDP、ICMP，按双向流统计包数、字节数和 TCP 连接状态，导出流记录与模型特征。已部署到鲁班猫 LubanCat-2N，并通过独立 BMS 网关与 STM32、Windows Qt 完成真实 TCP 联动。
 
-当前源码版本：`v0.2.0`。
+## 已完成与实测结果
 
-`v0.0.1`只建立了可构建、可运行、可测试的工程骨架；`v0.1.0`已经形成第一条可用的离线分析链路：
+| 验证项 | 已记录结果 |
+| --- | --- |
+| 当前主机测试 | x86_64 Debug **51/51 项 CTest 通过**，启用 SQLite 与可选 PyTorch 测试 |
+| ARM64 回归 | LubanCat-2N 完整 **37/37 项**通过；这是 2026-10-12 的板端基线，不是当前全部 51 项 |
+| 网卡受控负载 | 128 条流、约 **9 Kpps**，发送约 10 分钟，处理 **540 万包**，捕获与接口两个 drop 指标均为 0 |
+| 真实设备通信 | STM32 ↔ Linux 网关 ↔ Windows Qt；捕获 **2041 个 TCP 包**，实时统计与 PCAP 离线流 CSV 一致 |
+| 模型部署一致性 | 既有 **63775 条 TCP 候选**在 ARM64 分批推理，分类与 PC 逐条一致；不是检测准确率 100% |
+| 最小权限部署 | 分析器以专用非 root 用户运行，systemd 仅授予 **CAP_NET_RAW** |
 
-```text
-离线PCAP
-   │
-   ▼
-libpcap读取
-   │
-   ▼
-Ethernet II → IPv4 → TCP / UDP / ICMP
-   │
-   ▼
-规范化双向五元组
-   │
-   ▼
-流表聚合 → 逐包预览 + 流汇总
+硬件：**LubanCat-2N / RK3568 / 四核 Cortex-A55 / 2 GB 内存 / 8 GB eMMC**。受控负载不是吞吐上限测试，捕获 drop 为 0 也不等于 TCP 网络无丢包。原始方法与限制见[多流与长稳基线](docs/multiflow_longrun_baseline.md)、[ARM64 测试验收](docs/arm64_test_validation.md)、[模型部署记录](docs/tcp_arm64_inference.md)。
+
+状态核对日期：2026-11-05。程序版本号仍为 `0.2.0`，后续开发能力按当前源码及验收记录说明，不将计划写成已实现。
+
+## 项目架构
+
+```mermaid
+flowchart LR
+    A["离线 PCAP / 实时网卡"] --> B["libpcap 采集<br/>实时模式可选 BPF"]
+    B --> C["Ethernet / IPv4<br/>TCP / UDP / ICMP 安全解析"]
+    C --> D["数据标准化<br/>规范化双向五元组"]
+    D --> E["固定容量哈希流表<br/>双向统计 / 过期 / 淘汰"]
+    E --> F["TCP 生命周期跟踪"]
+    F --> G["指标 / 流 CSV / 特征 CSV"]
+    G -.->|离线数据处理| H["标签审计 / 18维编码<br/>PyTorch 基线实验"]
 ```
 
-因此，`v0.1.0`可以视为一个完整版本迭代，但不是整个项目完成。它具备明确输入、完整处理链、可观察输出和自动化验收；实时抓包、流过期、应用层协议、异常检测、可视化和开发板部署仍属于后续版本。
+| 模块 | 当前能力 |
+| --- | --- |
+| 抓包与协议解析 | 离线 PCAP、实时网卡、BPF；以实际捕获长度检查边界，区分完整、截断、畸形、不支持和流表拒绝 |
+| 双向流管理 | 规范化五元组、FNV-1a 哈希、256 槽开放寻址表、方向计数与删除标记；满表拒绝或按 last_seen 淘汰最旧流 |
+| TCP 状态 | 旁路观察握手、中途捕获、FIN 关闭和 RST；不是内核 socket 状态，也不做 TCP 字节流重组 |
+| 运行与输出 | 非阻塞 libpcap + poll、SIGINT/SIGTERM 收尾、静默周期指标、流记录与版本化特征 CSV |
+| 边缘部署 | ARM64 原生构建、两条交叉编译链、ABI/依赖检查、非 root systemd 部署 |
+| BMS 网关 | 独立 C11/POSIX 应用，串口完整行转 TCP；默认只读，显式启用后支持白名单控制 |
+| BMS 数据存储 | 16 字段解析、SQLite 批量事务、历史日志导入、有界队列、专属存储线程；**尚未接入实时网关** |
 
-`v0.2.0`在这条链路上增加了流过期清理、FNV-1a哈希流表、CSV导出、实时抓包和BPF过滤。当前CLI可以通过`--interface NAME [--count PACKETS] [--filter EXPRESSION]`从网卡读取数据包，并复用离线模式的协议解析、双向流聚合和终端汇总流程。省略`--count`时持续运行到收到停止信号，显式提供时则作为人工验收或测试的有限包数上限。
+网络分析主链不依赖 Python、PyTorch 或 SQLite。BMS 网关不嵌入分析器，分析器也不负责电池保护或 MOS 控制。
 
-当前`Unreleased`开发进度进一步为实时模式加入`SIGINT`和`SIGTERM`优雅退出，以及基于`pcap_stats()`的运行统计。用户按下Ctrl+C或服务管理器发送终止信号后，程序会中断阻塞的libpcap读取，沿正常控制流取得libpcap累计统计、关闭采集句柄，并输出已经处理的数据包、抓包丢弃情况和流汇总。
+## 5 分钟快速开始
 
-实时主循环现在还会按数据包事件时间执行流过期：使用不会随乱序包倒退的时间高水位，每5秒扫描一次，并把空闲30秒的流在处理当前包之前输出和删除。过期记录先复制到调用者提供的固定容量缓冲区，因此删除槽位后终端仍能取得完整结果；程序结束时分别显示累计过期流和仍在流表中的流。
+以下命令在 Linux 开发机的项目根目录执行。需要准备自己的 Ethernet/IPv4 PCAP；`/path/to/input.pcap` 是占位路径。
 
-实时模式还会按单调时钟约每5秒输出一次运行指标，包括区间包数、完整/截断/畸形/不支持/流表拒绝分类、捕获/线路字节数、PPS、Mbps、活动流数量、流表占用率、过期流和容量淘汰流数量。采集句柄使用非阻塞模式，主循环通过`poll()`等待网卡可读或最多1秒超时，因此即使没有任何匹配包，也能定期输出零流量报告，同时避免忙轮询持续占用CPU。
-
-程序退出时还会输出流表线性探测统计：数据包路径操作次数、实际检查槽位总数、平均探测长度、最大探测长度和计数是否饱和。`flow_table_find()`等管理查询不进入该统计，满载新流最终返回`ENOSPC`之前发生的完整扫描仍会记录，因此可以区分正常查找成本与容量拒绝成本。选择`evict-oldest`时，同一次满表探测还会确定最旧流并在原槽位完成替换，应用层不接触流表槽位，也不再发起淘汰后的第二次哈希探测。
-
-当前`Unreleased`还为每条TCP流增加了旁路连接状态跟踪。状态机根据规范化流方向和TCP标志识别`unobserved`、`syn-seen`、`syn-ack-seen`、`established`、`midstream`、`fin-seen`、`fin-bidirectional`、`closed`和`reset`。终端流汇总与离线CSV复用同一组稳定名称；UDP和ICMP的`tcp_state`明确写为`not-applicable`。该状态机描述分析器实际观察到的报文过程，不等同于Linux内核socket状态，也尚未执行序列号确认、乱序处理或TCP字节流重组。
-
-当前`Unreleased`已经建立第一版机器学习数据接口：`flow_features_t`把聚合完成的双向流转换为持续时间、包/字节总量、平均包长、方向不平衡度和TCP生命周期特征，`--feature-csv FILE`按`flow_features_v1`固定模式导出。离线模式可以直接生成特征；实时模式必须同时提供`--count`，并把运行期间过期、被容量策略淘汰以及停止时仍留在流表中的三类互斥记录写入同一个文件。特征文件仍只保存模型输入；身份、标签连接和匹配质量通过独立的`flow_sample_metadata_v1` sidecar记录，不把IP、端口或标签混入模型特征。
-
-公开数据集试点选择CTU-13 Scenario 7。仓库提供只依赖Python标准库的标签、身份和匹配审计工具，把官方`From-Botnet`保守映射为`malicious`、`From-Normal`映射为`benign`，其余未知方向和Background标签统一排除；真实标签文件得到63条恶意、1669条正常和112345条排除记录。公开的全流量文件实际为7466160包的Ethernet pcapng，捕获内容按42至66字节截断但保留原始线路长度；前1000包试验中604包完整进入流聚合、396包被安全判为截断，最终生成47条流特征且没有容量拒绝。第一轮匹配审计中这47条流均不属于保守监督集合，感染主机DNS子集的2条流又都覆盖多个同标签Argus生命周期；工具因此保留`unmatched`或歧义状态，而不会伪造唯一标签。当前仍没有可靠的一对一训练样本，也没有训练、评估或部署模型。
-
-## v0.2.0新增
-
-- 为流表增加稳定哈希、开放寻址和按最后活动时间清理过期流的接口；
-- 支持将聚合后的流记录导出为CSV文件；
-- 支持通过`--interface NAME --count PACKETS`进行有界实时抓包；
-- 支持通过`--filter EXPRESSION`为实时抓包安装BPF过滤器；
-- 使用离线自动化测试和`lo`真实流量完成BPF过滤验收。
-
-## v0.1.0已经实现
-
-- 使用libpcap读取离线Ethernet PCAP文件；
-- 使用带边界检查的字节游标读取二进制网络数据；
-- 统一记录时间戳、`caplen`、`wirelen`、原始数据视图和解析状态；
-- 解析Ethernet II、IPv4、TCP、UDP和ICMP头部；
-- 识别不支持、格式错误、捕获截断和IPv4分片等状态；
-- 按IPv4协议号把负载分发到TCP、UDP或ICMP解析器；
-- 使用规范化双向五元组把正向和反向数据包归入同一条流；
-- 分方向统计包数、字节数、首包时间和末包时间；
-- 使用调用者提供存储的定长流表完成离线聚合；
-- 分析PCAP中的全部数据包，同时只预览前5个包，避免大量输出淹没终端；
-- 提供13个C语言单元测试和1个Python端到端验收测试；
-- 通过CMake组织构建、严格编译警告、CTest和`compile_commands.json`。
-
-## 当前版本边界
-
-当前版本有意保持实现简单，便于先验证数据模型和处理链：
-
-- 实时模式已经支持BPF过滤、`SIGINT`/`SIGTERM`优雅退出、libpcap抓包统计和周期运行指标，但打开网卡仍需要相应Linux权限；
-- `pcap_stats()`字段的精确统计范围依赖操作系统和捕获后端，不能假定`Capture received packets`一定等于应用输出的`Total packets`；
-- 只支持Ethernet链路类型和IPv4，不支持VLAN、IPv6与隧道封装；
-- 已跟踪基本TCP握手、FIN关闭、RST中止和中途捕获状态，但不做IPv4分片重组、TCP乱序/字节流重组和校验和验证；
-- 流表容量仍固定为256个槽位；已有流在满载时仍可更新，实时模式默认让新流数据包计入`flow_rejected`，也可以通过`--flow-full-policy evict-oldest`按`last_seen`淘汰最久未活动流并接纳当前包。该策略已经在一次满表探测中同时选择最旧流并原位替换，不再重复探测；当前仍没有动态扩容；
-- 实时流过期暂时固定为空闲30秒、每5秒事件时间扫描一次，尚未开放CLI配置；
-- 流过期的事件时间只随实际收到的数据包推进，接口完全静默时要等下一包到来才判断旧流；周期运行指标使用单调时钟，因此静默时仍会按时输出；
-- 尚未解析DNS、HTTP等应用层协议；
-- 已实现版本化流特征提取、稳定样本ID、标签匹配审计和sidecar元数据导出，但真实CTU-13试点尚未形成可靠的一对一训练样本，也未实现规则异常检测、机器学习训练/推理、Qt界面或云端展示；
-- ARM Linux开发板已完成原生Debug/Release构建、当前18项CTest、离线跨平台一致性、两种交叉产物、物理网卡抓包、真实TCP完整关闭、单流/多流性能、满载边界、流表探测成本和10分钟长稳基线；最新官方SDK产物又完成单次满表扫描优化复测，300个UDP新流对应300次探测操作、44次最旧流淘汰、256条最终流和零drop。
-- LubanCat-2N已完成非root systemd手工启停、开机自启、异常恢复、连续失败限速和第一批低风险沙箱加固：服务进程使用无登录专用用户，只获得`CAP_NET_RAW`且`NoNewPrivs=1`；静默周期日志、真实ICMP、双向流汇总和SIGTERM收尾均进入journal。一次重启中接口时间戳能力查询短暂返回`EBUSY`，`Restart=on-failure`等待2秒后成功恢复；持续使用不存在接口时，显式的`30s/5次`策略在5次失败后拒绝第6次启动。systemd 245安全评分由`5.2 MEDIUM`降为`3.7 OK`，服务长稳仍待验证。
-- 目标镜像的`resize-all.service`会扫描`/proc/mounts`中的已挂载分区；一次SD卡持久化挂载实验触发VFAT重建且恢复失败。该服务现已禁用、屏蔽并通过跨boot验证；板端Git工作树已通过Git Bundle恢复到eMMC ext4，新构建目录中的18项CTest全部通过。修正`usbmount`配置后，数据卡由唯一挂载管理者以`uid=1000,gid=1000,fmask=0133,dmask=0022,noexec`自动挂载，普通用户读写测试通过；SD卡只承担PCAP、CSV、数据集和日志存储。
-
-## 项目目录
-
-```text
-netflow-analyzer/
-├── CMakeLists.txt
-├── README.md
-├── CHANGELOG.md
-├── include/analyzer/
-│   ├── app.h
-│   ├── byte_reader.h
-│   ├── capture.h
-│   ├── packet_info.h
-│   ├── ethernet.h
-│   ├── ipv4.h
-│   ├── tcp.h
-│   ├── udp.h
-│   ├── icmp.h
-│   ├── ipv4_dispatch.h
-│   ├── flow_key.h
-│   ├── flow_record.h
-│   ├── tcp_flow_state.h
-│   ├── flow_features.h
-│   ├── flow_feature_export.h
-│   ├── flow_table.h
-│   └── flow_expiration.h
-├── src/
-│   ├── main.c
-│   ├── app/app.c
-│   ├── common/byte_reader.c
-│   ├── capture/capture.c
-│   ├── protocol/
-│   │   ├── packet_info.c
-│   │   ├── ethernet.c
-│   │   ├── ipv4.c
-│   │   ├── tcp.c
-│   │   ├── udp.c
-│   │   ├── icmp.c
-│   │   └── ipv4_dispatch.c
-│   ├── flow/
-│   │   ├── flow_key.c
-│   │   ├── flow_record.c
-│   │   ├── tcp_flow_state.c
-│   │   ├── flow_features.c
-│   │   ├── flow_table.c
-│   │   └── flow_expiration.c
-│   └── output/
-│       ├── flow_export.c
-│       └── flow_feature_export.c
-├── tests/
-│   ├── unit/
-│   └── integration/test_offline_flow.py
-├── scripts/check_target_env.sh
-├── packaging/systemd/
-│   ├── netflow-analyzer.service
-│   └── netflow-analyzer.default
-├── docs/
-│   ├── problem_log.md
-│   ├── technical_decisions.md
-│   └── systemd_deployment.md
-└── labs/
-```
-
-`build/`和`build-release/`是CMake生成的构建目录，不属于源代码，不应提交到Git。
-
-## 环境要求
-
-正式程序需要：
-
-- Linux；
-- 支持C11的GCC或Clang；
-- CMake 3.16或更高版本；
-- Make或Ninja；
-- pkg-config；
-- libpcap开发包。
-
-启用测试时还需要Python 3。Python只负责端到端验收，不是正式程序的运行依赖。
-
-Ubuntu安装命令：
+### 安装基础环境
 
 ```bash
-# 更新本机的软件包索引。
 sudo apt update
-
-# 安装C/CMake构建环境、Ninja、libpcap开发包和测试解释器。
-sudo apt install build-essential cmake ninja-build pkg-config libpcap-dev python3
+sudo apt install build-essential cmake pkg-config libpcap-dev python3
 ```
 
-## Debug构建
+要求支持 C11 的编译器及 CMake 3.16+。Python 用于测试，正式网络分析程序不需要 Python 运行时。
 
-在项目根目录执行：
+### 构建
 
 ```bash
-# -S .指定当前目录为源码目录。
-# -B build把生成文件放入build目录。
-# Debug保留调试信息，适合日常开发、GDB和单元测试。
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
-
-# 根据build中生成的规则编译全部目标。
-cmake --build build
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j2
 ```
 
-主要构建产物：
+主程序为 `build/bin/netflow-analyzer`，网关为 `build/bin/bms-gateway`。不要使用 `sudo cmake`；已有构建目录应继续使用原生成器，不强行切换 Make/Ninja。
 
-```text
-build/bin/netflow-analyzer    命令行主程序
-build/bin/*_tests             C语言单元测试程序
-build/lib/libanalyzer_core.a  核心静态库
-```
-
-如果`build`已经使用其他CMake生成器配置，不要直接切换`-G Ninja`。可以继续使用原生成器，或新建另一个构建目录。
-
-## Release构建
+### 运行测试
 
 ```bash
-# Release启用编译优化。
-# BUILD_TESTING=OFF表示发布构建不生成测试目标，也不要求Python。
-cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-
-# 编译发布程序。
-cmake --build build-release
-```
-
-Release主程序位于`build-release/bin/netflow-analyzer`。
-
-## 命令行使用
-
-```bash
-# 显示帮助和所有可用参数。
-./build/bin/netflow-analyzer --help
-
-# 显示由CMake项目版本传入的程序版本。
-./build/bin/netflow-analyzer --version
-
-# 读取并分析一个离线PCAP文件。
-./build/bin/netflow-analyzer --read /path/to/input.pcap
-
-# 按30秒空闲边界拆分同一五元组的离线流生命周期。
-./build/bin/netflow-analyzer \
-    --read /path/to/input.pcap \
-    --flow-idle-timeout 30
-
-# 分析离线PCAP，并把最终双向流记录写入一个新CSV文件。
-./build/bin/netflow-analyzer \
-    --read /path/to/input.pcap \
-    --csv /path/to/flows.csv
-
-# 分析离线PCAP，并生成版本化的模型特征CSV。
-./build/bin/netflow-analyzer \
-    --read /path/to/input.pcap \
-    --feature-csv /path/to/flow-features.csv
-
-# 从lo实时读取4个数据包，然后输出逐包预览和双向流汇总。
-sudo ./build/bin/netflow-analyzer \
-    --interface lo \
-    --count 4
-
-# 不设置包数上限，持续运行到Ctrl+C或外部SIGTERM。
-sudo ./build/bin/netflow-analyzer \
-    --interface lo \
-    --filter "icmp"
-
-# 只接收lo上的IPv4 ICMP流量；--count只统计匹配过滤器的数据包。
-sudo ./build/bin/netflow-analyzer \
-    --interface lo \
-    --count 4 \
-    --filter "icmp"
-
-# 流表满载时淘汰last_seen最早的流，并接纳当前新流。
-sudo ./build/bin/netflow-analyzer \
-    --interface lo \
-    --count 300 \
-    --filter "udp and dst portrange 30000-30299" \
-    --flow-full-policy evict-oldest
-
-# 有限实时采集结束后，导出所有已结束和仍活动流的特征。
-sudo ./build/bin/netflow-analyzer \
-    --interface lo \
-    --count 300 \
-    --filter "udp and dst portrange 30000-30299" \
-    --flow-full-policy evict-oldest \
-    --feature-csv /tmp/udp-features.csv
-```
-
-若要观察周期运行指标，可以省略包数上限，让程序跨越多个5秒区间：
-
-```bash
-sudo ./build/bin/netflow-analyzer \
-    --interface lo \
-    --filter "icmp"
-```
-
-先保持接口静默，确认出现`packets=0`报告；再在另一个终端运行`ping -i 0.2 -c 30 127.0.0.1`，确认流量进入后续报告；最后等待流量再次归零并按Ctrl+C结束。
-
-验证ICMP过滤时，可以让上面的过滤命令在终端1等待，再在终端2执行：
-
-```bash
-ping -c 2 127.0.0.1
-```
-
-验证实时流过期时，可以在终端1运行过滤后的4包采集，在终端2先执行一次IPv4 ping，等待至少31秒后再执行一次：
-
-```bash
-ping -c 1 127.0.0.1
-sleep 31
-ping -c 1 127.0.0.1
-```
-
-第二次ping的第一包到来时，程序会先输出第一段ICMP流，再用当前包创建新的流。最终输出应同时包含：
-
-```text
-Expired flows: 1
-Flow summary: 1 flow(s)
-```
-
-当前参数：
-
-| 参数 | 作用 |
-|---|---|
-| `-h`、`--help` | 显示帮助 |
-| `-V`、`--version` | 显示版本 |
-| `-r FILE`、`--read FILE` | 分析离线PCAP文件 |
-| `-i NAME`、`--interface NAME` | 选择实时抓包网卡 |
-| `-c N`、`--count N` | 可选的实时包数上限，N必须大于0；省略时持续运行到停止信号 |
-| `--filter EXPRESSION` | 为实时抓包安装BPF过滤表达式；含空格时需要使用引号 |
-| `--flow-full-policy POLICY` | 设置实时流表满载策略：默认`reject`，或使用`evict-oldest`淘汰最久未活动流 |
-| `--flow-idle-timeout SECONDS` | 为离线PCAP启用正整数秒的空闲分段；省略时保持整文件聚合 |
-| `--csv FILE` | 把流记录导出到一个新CSV文件，不覆盖已有文件 |
-| `--feature-csv FILE` | 把最终流转换为`flow_features_v1`特征CSV；实时模式必须同时提供`--count` |
-
-离线分析会先显示文件与链路类型，再预览前5个数据包。程序仍会处理文件中的所有数据包，最后输出总包数、预览包数和双向流汇总。TCP流汇总包含`tcp_state`；指定`--csv`后，应用层在聚合成功后创建CSV文件，写入固定表头和全部流记录，其中TCP写入稳定阶段名称，UDP和ICMP写入`not-applicable`。C11的独占创建模式会在目标已存在时失败，避免静默覆盖原文件。
-
-`--flow-idle-timeout`只对离线模式生效。启用后，程序使用PCAP包时间戳的最大已观察值作为事件时间高水位，在当前包入表前导出并删除已空闲流。这使同一五元组能在长时间空闲后形成新生命周期；省略该选项时仍保持原有的整份PCAP聚合语义。该选项提供可审计的分段能力，但不声称与Argus或任何公开数据集的私有分流规则完全一致。
-
-`--feature-csv`使用另一套面向训练和推理输入的数据契约。它可以与离线`--csv`同时使用，但两个路径必须不同；两类输出都使用`"wx"`独占创建，拒绝覆盖已有文件。实时模式若省略`--count`会拒绝启动特征导出，避免持续服务无限增长文件并耗尽开发板存储。
-
-第一版特征模式固定为：
-
-| 字段 | 含义 |
-|---|---|
-| `schema_version` | 当前固定为`flow_features_v1`，属于格式元数据，不作为模型输入 |
-| `protocol` | IPv4上层协议号；当前支持ICMP 1、TCP 6、UDP 17，应按类别特征处理 |
-| `duration_microseconds` | `last_seen - first_seen`，单位微秒 |
-| `total_packet_count` | 双向数据包总数 |
-| `total_captured_byte_count` | 双向实际捕获字节总数 |
-| `total_wire_byte_count` | 双向线路原始字节总数 |
-| `mean_captured_bytes_per_packet` | 平均每包捕获字节数 |
-| `mean_wire_bytes_per_packet` | 平均每包线路字节数 |
-| `packet_count_imbalance_ratio` | 双向包数差的绝对值除以总包数，范围0～1 |
-| `wire_byte_count_imbalance_ratio` | 双向线路字节差的绝对值除以总线路字节数，范围0～1 |
-| `tcp_state_applicable` | TCP为1，非TCP为0 |
-| `tcp_phase` | TCP生命周期类别；非TCP写为`not-applicable` |
-| `tcp_handshake_completed` | 是否完整观察到TCP三次握手；非TCP固定为0 |
-
-每条流只在生命周期本次结束时写一行：实时过期流在删除时写出，被淘汰流在槽位覆盖前写出，采集结束后再写出最终剩余流。因此三组记录互不重叠，合起来构成这次有限采集的完整流集合。特征文件有意不包含IP、端口和异常标签，防止第一版模型直接记忆设备或服务标识；这也意味着后续使用公开数据集时，必须明确建立标签或样本标识的对齐规则，不能仅凭当前CSV自动获得监督学习标签。
-
-### 特征与标签sidecar
-
-同一次离线分析可以同时生成普通流CSV和特征CSV。普通流CSV保留标签匹配所需的端点与时间，特征CSV只保存模型输入：
-
-```bash
-./build/bin/netflow-analyzer \
-    --read /path/to/scenario-7.pcap \
-    --csv /tmp/scenario-7-flows.csv \
-    --feature-csv /tmp/scenario-7-features.csv
-
-python3 scripts/audit_ctu13_flow_matches.py \
-    /path/to/capture20110816-2.binetflow \
-    /tmp/scenario-7-flows.csv \
-    --capture-id ctu13-scenario-7 \
-    --metadata-output /tmp/scenario-7-metadata.csv
-```
-
-`--capture-id`与`--metadata-output`必须同时提供。元数据目标使用独占创建，不覆盖已有文件；审计失败时会尝试删除本次产生的不完整文件。要用`feature_row_number`连接特征，普通流CSV和特征CSV必须来自同一次分析，并使用相同的流生命周期配置。
-
-`flow_sample_metadata_v1`包含：
-
-| 字段组 | 作用 |
-|---|---|
-| `metadata_schema_version`、`feature_schema_version` | 声明sidecar和特征文件的数据契约版本 |
-| `feature_row_number` | 从1开始定位特征CSV的数据行，表头不计入 |
-| `sample_id` | `flow_sample_id_v1:`加规范化身份的SHA-256摘要；用于稳定关联，不是标签或安全签名 |
-| `capture_id`、协议、规范化端点、首末Unix微秒 | 建立可复现身份，只存在于sidecar，不自动进入模型 |
-| `match_status`、`candidate_count`、`label_group` | 保存唯一、未匹配、同标签歧义或冲突标签歧义及其证据 |
-| `is_trainable` | 只有唯一匹配且标签为`benign`或`malicious`时为1 |
-
-元数据工具不会静默选择歧义候选，也不会生成训练集。下一阶段仍需用候选空闲阈值重跑真实匹配审计，确认能否得到足够的唯一样本。
-
-实时分析会等待网卡流量；提供`--count`时，达到指定数据包数量后结束，省略时则持续运行。两种模式收到`SIGINT`或`SIGTERM`停止请求后，都会取得libpcap运行统计、关闭采集句柄并输出流汇总。不提供`--filter`时，计数针对接口上返回的全部数据包，不只包含用户主动执行`ping`等命令产生的流量；例如VS Code及其本地服务也可能通过`lo`持续交换TCP数据。提供过滤器后，libpcap在数据包进入应用读取循环前执行匹配，只有匹配包会进入协议解析、流聚合和可选的`--count`计数。`--count`限制处理包数而不是等待时间；没有足够的匹配流量时程序会继续等待，用户可以使用Ctrl+C安全结束并保留已经聚合的结果。
-
-实时过期调度器使用捕获数据包时间戳的最大值作为时间高水位，避免乱序包让时间倒退。扫描发生在当前包加入流表之前，因此同一五元组在空闲30秒后重新出现时，旧记录会先输出和删除，当前包再建立新记录。`Expired flows`是运行期间已经输出的累计数量，最终`Flow summary`只包含仍留在流表中的记录。
-
-周期运行指标与流过期使用不同的时间概念：前者使用`CLOCK_MONOTONIC`测量真实运行间隔，后者使用数据包时间戳维护事件时间。`captured_mbps`按应用实际取得的`caplen`计算，`wire_mbps`按`wirelen`计算；二者都使用真实经过秒数作分母，而不是假定每次恰好5.000秒。libpcap打开接口时配置的读取超时属于抓包缓冲区超时，不保证在完全静默时唤醒读取，因此实时句柄显式设置为非阻塞，并由`poll()`提供有界等待。
-
-每个成功取得的数据包最终只进入`complete`、`truncated`、`malformed`、`unsupported`或`flow_rejected`中的一类。周期报告显示当前窗口增量，多个窗口的分类需要求和；退出时的`Processing results`显示整个运行过程的累计量。`flow_rejected`统计无法进入满载流表的数据包数量，不是不同流的数量。
-
-实时输出中的`Total packets`表示应用实际从libpcap取得的包数；`Capture received packets`、`Capture dropped packets`和`Interface dropped packets`来自捕获后端。它们观察的层级不同，不能通过`Capture received packets - Total packets`计算丢包。例如在Linux的`lo`接口上执行`ping -c 2`时，应用会处理2个请求和2个响应，共4个逻辑ICMP包；内核捕获统计可能同时计算每个包的outgoing和incoming事件而报告8，libpcap再抑制交付给应用的回环重复副本。这种`Total packets: 4`、`Capture received packets: 8`的结果不是应用重复处理或发生4个丢包。
-
-## 自动化测试
-
-```bash
-# 先编译，确保测试程序和主程序都是最新版本。
-cmake --build build
-
-# 执行CMake已经注册的全部测试。
-# --output-on-failure只在失败时展开测试输出，便于定位问题。
 cmake -E chdir build ctest --output-on-failure
 ```
 
-当前x86_64 Debug构建共21项测试：
+测试数量取决于 SQLite 和 ML 开关；上面的基础配置不保证注册全部 51 项。自动化测试使用合成数据、临时文件、管道、伪终端和本机 TCP，不需要公开数据集或真实 STM32。
 
-- 19项C语言单元测试，分别验证字节读取、抓包与BPF及非阻塞等待封装、数据模型、各层协议解析、分发、流键、流记录、TCP状态机、流表、流过期调度、周期运行指标、普通CSV、流特征计算和版本化特征CSV格式化；
-- 1项Python端到端测试内部运行确定性PCAP场景，并额外验证6包ICMP聚合得到的精确特征行以及已有特征文件不会被覆盖；
-- 1项Python标签审计测试使用临时合成CSV验证三类映射、字段契约、空标签、缺失字段、空文件和不存在文件，不依赖仓库外的公开数据集。
-
-新增标签审计测试前的20项测试已经在Release优化构建以及启用AddressSanitizer、UndefinedBehaviorSanitizer的独立Debug构建中通过；当前没有出现Sanitizer诊断或泄漏报告。新增的第21项是只使用Python标准库的外部数据契约测试，目前已经在x86_64 Debug测试树通过，尚未随Release和Sanitizer构建重新配置执行。Sanitizer参数暂时通过独立构建目录传入，尚未固化为CMake Preset。
-
-只运行端到端验收：
+### 读取 PCAP 并导出
 
 ```bash
-# -R按测试名称筛选，只运行离线流聚合验收。
-cmake -E chdir build ctest -R offline_flow_acceptance --output-on-failure
+NFA_DEMO_DIR="$(mktemp -d /tmp/nfa-demo.XXXXXX)"
+
+./build/bin/netflow-analyzer \
+    --read /path/to/input.pcap \
+    --csv "$NFA_DEMO_DIR/flows.csv" \
+    --feature-csv "$NFA_DEMO_DIR/features.csv"
 ```
 
-## 模块职责
+两个 CSV 必须使用不同路径，且都拒绝覆盖已有文件。离线模式无需抓包特权。
 
-| 模块 | 当前职责 |
-|---|---|
-| `main.c` | 安装和恢复实时模式的POSIX信号处理器，调用应用接口，并把错误码转换为进程退出状态 |
-| `app.c` | 解析CLI参数，组织离线或实时采集、停止请求、协议解析、流表更新、周期运行指标和输出 |
-| `byte_reader` | 对无符号字节执行边界检查、跳过、读取和切片 |
-| `capture` | 隔离libpcap类型和错误信息，统一封装离线文件、实时网卡采集、BPF编译安装、非阻塞等待、读取中断和实时抓包统计 |
-| `packet_info` | 保存一个数据包的元数据、原始视图和解析结果 |
-| `ethernet` | 解析MAC地址、EtherType和Ethernet负载 |
-| `ipv4` | 解析IPv4头部、地址、长度、协议号和负载 |
-| `tcp`、`udp`、`icmp` | 解析对应传输层或控制协议字段 |
-| `ipv4_dispatch` | 根据IPv4协议号选择具体解析器 |
-| `flow_key` | 生成与方向无关的规范化双向五元组 |
-| `flow_record` | 保存一条流、两个方向的统计信息，并为TCP流推进独立连接状态 |
-| `tcp_flow_state` | 根据规范化方向和TCP标志跟踪握手、中途捕获、FIN关闭与RST中止，提供稳定状态名称 |
-| `flow_table` | 查找或创建流记录、聚合数据包，并在过期删除前返回值副本 |
-| `flow_expiration` | 维护事件时间高水位、扫描周期和空闲截止时间，处理乱序及整数边界 |
-| `flow_features` | 从完整双向流记录生成持续时间、总量、平均值、方向不平衡度和TCP生命周期特征 |
-| `runtime_metrics` | 根据单调时钟和累计计数生成处理结果分类、区间PPS、Mbps、流表占用率及过期流指标 |
-| `flow_export` | 把流记录转换成具有固定字段顺序的CSV表头和数据行，包括TCP状态或非TCP的`not-applicable` |
-| `flow_feature_export` | 按`flow_features_v1`验证并输出版本化特征CSV，不拥有或关闭调用者的`FILE *` |
+### 实时抓包
 
-## ARM Linux部署准备
-
-仓库中的环境检查脚本只做准备性检查，不安装软件，也不修改系统：
+终端 A：只抓回环接口上的 IPv4 ICMP，最多 4 包，外层提供 20 秒等待保护。
 
 ```bash
-# 在开发电脑上检查通用构建依赖；非ARM只会给出提示。
-sh scripts/check_target_env.sh
-
-# 在开发板上要求目标必须是ARM，并检查完整测试环境。
-sh scripts/check_target_env.sh --expect-arm --with-tests
+sudo timeout --preserve-status --signal=INT --kill-after=5s 20s \
+    ./build/bin/netflow-analyzer \
+    --interface lo --count 4 --filter "icmp"
 ```
 
-LubanCat-2N已经完成ARM64原生Debug/Release构建、当前18项板端CTest、确定性离线PCAP端到端验收，以及来自VMware NAT虚拟机的物理网卡ICMP实时抓包。新增TCP状态功能也已在`lo`上通过真实HTTP/1.0连接验收：应用处理12个完整TCP包，聚合为1条双向流并最终输出`tcp_state=closed`，两个drop字段均为0。板端Python 3.8.10最初无法解释Python 3.9才支持的`list[tuple[...]]`类型注解；验收脚本改用`typing.List`和`typing.Tuple`后，目标测试及全量18项CTest均通过。
+看到抓包接口和过滤器信息后，在终端 B 产生流量：
 
-板载系统位于容量8GB的eMMC；当前根文件系统约7.0GB，已用5.4GB、可用1.4GB。一次为VFAT SD卡固化挂载权限的实验暴露了目标镜像中`usbmount`与`resize-all.service`的冲突：扩容辅助脚本扫描已挂载分区并重建了VFAT，但恢复失败。该服务现已禁用、屏蔽并通过跨boot验证；源码权威副本仍在开发电脑和GitHub，板端工作树已通过Git Bundle恢复到`/home/cat/workspace/netflow-analyzer`的ext4目录。源码约2.4MB，新Debug构建树约3.2MB，当前18项板端CTest全部通过。SD卡现在由`usbmount`唯一挂载，普通用户读写链路通过，只保存PCAP、CSV、数据集和日志。
+```bash
+ping -4 -c 2 127.0.0.1
+```
 
-开发电脑已经完成两条ARM64交叉编译和板端运行链：一条使用鲁班猫官方Buildroot GCC 9.3及隔离的板端libpcap overlay，另一条使用Ubuntu GCC 13、从板端导出的完整sysroot和GCC `-B`启动文件前缀。两种产物均为AArch64 ELF、只要求`GLIBC_2.17`，并在板端通过`ldd`、`--help`和实时ICMP抓包。完整Shell环境变量、CMake参数、ABI检查与故障记录见[交叉编译手册](docs/cross_compilation.md)。
+达到包数后提前结束；没有足够匹配包时，外层超时发送 SIGINT。直接运行分析器时也可用 Ctrl+C 正常收尾。**`--count` 限制包数，不限制等待时间。** 查看全部入口：
 
-提交`740d5ab`的官方SDK ARM64产物已经通过暂存安装打包并部署为systemd服务。程序和配置由root拥有，运行进程使用`netflow-analyzer`专用账户；systemd只授予`CAP_NET_RAW`，不把文件capability永久写入ELF。首次手工启停处理4个完整ICMP包、聚合1条双向流，两个drop字段为0，并在SIGTERM后正常收尾。完整的Linux命令、用户/组、权限、capability、journal、故障定位和回滚见[非root systemd部署手册](docs/systemd_deployment.md)。
+```bash
+./build/bin/netflow-analyzer --help
+./build/bin/bms-gateway --help
+```
 
-开发板上的CTest为3.16.3，低于`--test-dir`参数所需的3.20，因此测试时应先进入构建目录再运行`ctest`。同一确定性6包PCAP此前在x86_64与ARM64原生构建上得到一致标准输出和退出状态；工作树恢复到eMMC后，当前18项板端测试已经重新全部通过。Release单流基线最高约9 Kpps、20万包零drop、每包CPU约6.95微秒；128流长稳基线以约9 Kpps处理540万包，全部分类为`complete`，两个drop为0、每包CPU约6.24微秒，RSS采样从首到尾保持564 KiB。300流容量测试也精确得到256个完整流和44个`flow_rejected`。完整方法见[单流性能基线](docs/performance_baseline.md)和[多流与长稳基线](docs/multiflow_longrun_baseline.md)。
+## STM32、Linux 网关与 Qt 联动
 
-## 后续迭代
+已验证链路：
 
-建议按以下顺序推进：
+```text
+STM32F103ZET6（采集、保护、MOS控制）
+    ↕ 板载 CH340 / USB TO UART，115200 / 8N1 / 无流控
+LubanCat-2N：bms-gateway（串口与TCP之间的应用层网关）
+    ↕ TCP/IP
+Windows：Qt 上位机（遥测展示及显式控制）
 
-1. 完成数小时或数天的systemd服务方式长稳，并评估journal容量策略；
-2. 处理同一五元组关闭后重新建连，随后增加TCP乱序与字节流重组，再进入DNS、HTTP等应用层解析；
-3. 当前继续保持单线程；只有后续测量证明单线程成为瓶颈，才复审实验中的阻塞队列和线程流水线；
-4. 如果真实负载超过256条活跃流，再根据占用率、探测长度、拒绝和淘汰数据评估可配置容量、重建或动态扩容；
-5. 使用`flow_sample_metadata_v1`对候选空闲阈值重跑真实数据匹配审计；获得足够的唯一样本后，再建立可复现的Python训练/评估流程，规则异常检测和模型在线推理仍需分别实现；
-6. 在稳定的数据接口之上实现Qt上位机，并按需要扩展云端展示。
+LubanCat 以太网
+    ├─ tcpdump 保存 PCAP
+    └─ netflow-analyzer 旁路分析双向流量与 TCP 状态
+```
 
-版本变化见[CHANGELOG.md](CHANGELOG.md)，实际问题、原因和修复过程见[docs/problem_log.md](docs/problem_log.md)，技术、环境和硬件选型见[docs/technical_decisions.md](docs/technical_decisions.md)，两种ARM64构建方式见[docs/cross_compilation.md](docs/cross_compilation.md)，非root服务安装见[docs/systemd_deployment.md](docs/systemd_deployment.md)，首轮板端测量见[docs/performance_baseline.md](docs/performance_baseline.md)。
+STM32 固件和 Qt 源码属于独立的 [stm32-bms-prototype](https://github.com/Devi1Fairy/stm32-bms-prototype) 项目；本仓库的 `gateway/` 保存 Linux 网关代码。采样、保护和 MOS 控制始终由 MCU 本地执行。
+
+### 网关接口与安全边界
+
+当前 CLI 格式：
+
+```text
+bms-gateway SERIAL IPV4 PORT [SECONDS] [--control]
+```
+
+- 运行预算为 1～300 秒，默认 30 秒，等待客户端也计时；端口 0 保留给软件测试。
+- 当前为**单客户端、单会话**：Qt 接入后才打开串口，客户端断开后结束，不自动重连。
+- 默认只读；只有末尾显式提供 `--control`，且串口配置成功后，才发送 `GW 2 CONTROL\n`。
+- 遥测保留原始正文，以单个 LF 分帧。控制请求解析后只映射 `STOP→T`、`START→S`、`CLEAR→C`，不透传 TCP 原文到 UART。
+- 合法请求编号为 1～4294967295，会话内严格递增；请求正文最多 64 字节，待写控制队列最多 8 项、1000ms 过期，STOP 可取消尚未写入的 START/CLEAR。
+- `ACK <编号> UART_ACCEPTED` 只表示串口驱动接受了一个字节，不代表 MCU 已执行；结果仍需观察后续 BMS 状态。
+- 保留 DTR=0、RTS=0、HUPCL=0 的已验证配置和关闭行为，不发送隐式控制动作。
+- 实物接入前核对串口身份、当前会话权限与占用，避免第二个进程争抢串口；开口、转发和退出后都要观察 MCU 心跳。板载 USB TO UART 同时供电，拔线不能当作单纯的通信断连。
+
+真实设备联调已由用户确认启动、停止、清除故障可用；这不等于已完成真实电池充放电、故障注入或产品级保护验证。首次接线、权限和运行前检查见[交接文档第18节](docs/session_handoff.md)。
+
+### 真实 TCP 流量验收
+
+2026-11-04 在板端 `eth0` / Ethernet 上，先启动捕获，再连接 Qt；该次 BPF 为：
+
+```text
+tcp and host 192.168.1.100 and port 18080
+```
+
+这是历史实验地址，不是新部署的默认配置。再次运行前须核对实际接口、地址、串口身份、权限与占用，不用额外 TCP 探测抢占网关会话。
+
+| 方向 | 端点 | 包数 | 捕获字节 / 原始记录字节 |
+| --- | --- | ---: | ---: |
+| A → B | Windows 192.168.1.100:30502 → 网关 192.168.1.102:18080 | 1021 | 61272 / 61272 |
+| B → A | 网关 → Windows | 1020 | 233958 / 233958 |
+
+合计 2041 包、1 条观察到 `closed` 的双向 TCP 流；实时汇总与同次 PCAP 导出的流 CSV 身份、状态和计数一致。该次只观察遥测，用户未点击 STOP，不将它登记为控制命令验收。
+
+分析器不提供 `--write`；PCAP 由 tcpdump 保存，再使用 `--read` / `--csv` 回放。分析器不打开 UART、不作为网关的 TCP 客户端，也不解析或重组 TCP 中的 BMS 消息。完整命令、SHA-256 和统计限制见[交接文档第18.14.6节](docs/session_handoff.md)。
+
+## BMS SQLite：已实现组件，实时接入待完成
+
+当前代码已具备：
+
+- 严格解析 16 个 BMS 遥测字段，拒绝缺失、重复、未知字段及整数越界。
+- SQLite 预编译参数绑定、每批最多 128 条、事务失败回滚。
+- 历史日志导入 CLI：拒绝覆盖目标数据库，成功后发布新文件。
+- 最多 256 项的按值队列；满、锁忙和关闭分别返回明确错误。
+- 专属存储线程：自己打开、写入和关闭 SQLite；按批量或单调时钟期限提交，关闭队列后提交尾批，并报告结果。
+
+**尚未实现实时网关接入。** 当前 `bms-gateway` 没有数据库参数，也没有“Qt 离线仍采集”的运行模式。新的完整行采集生产者仅为待录入方案，不计入已提交能力或第 52 项测试。
+
+### 启用 SQLite 组件
+
+```bash
+sudo apt install libsqlite3-dev sqlite3
+
+cmake -S . -B build -DNFA_ENABLE_BMS_SQLITE=ON
+cmake --build build -j2
+
+cmake -E chdir build ctest \
+    -R '^bms_(telemetry|store|sample_queue|store_worker|import)_tests$' \
+    --output-on-failure
+```
+
+历史日志导入示例（需替换输入路径）：
+
+```bash
+NFA_DB_DEMO_DIR="$(mktemp -d /tmp/nfa-bms-import.XXXXXX)"
+
+./build/bin/bms-import \
+    /path/to/receive.txt \
+    "$NFA_DB_DEMO_DIR/bms.sqlite3" \
+    demo-device historical-run-01
+```
+
+输入只接受不超过 16 MiB 的普通日志文件及完整 LF/CRLF 行；历史接收时间未知时明确写 `received_unix_us=0`，不伪造为导入时间。已在 VM 从真实历史日志读回 **118 条记录**；这不是板端实时入库验收。
+
+入队成功不等于数据库提交；存储失败不自动重试或补传。SD 卡数据库的文件系统锁、容量、介质故障和掉电恢复仍待专项验证，不能把组件测试通过解释为这些问题已解决。
+
+## 本地 AI 实验及其与 AI 应用开发的关联
+
+这里的 AI 是**离线监督二分类与端侧推理实验**，不是已上线的异常预警或大模型网络分析系统。
+
+```text
+公开 PCAP → 同一 C 特征提取器 → 流/特征 CSV
+→ 标签身份、生命周期边界与跨流复用审计
+→ 按来源划分数据 → 18维 TCP 输入 → 训练侧预处理
+→ PyTorch 线性二分类 → 模型/预处理参数保存 → ARM64 推理对照
+```
+
+训练使用 IoT-23 Scenario 3-1 的 57767 条候选，验证使用 Scenario 8-1 的 6008 条候选。18 维由 9 项数值与 9 类 TCP 阶段独热编码组成；IP、端口、来源和标签不作为输入，预处理只在训练集合拟合。
+
+63775 条既有候选在鲁班猫分批推理，与 PC 分类逐条一致，最大 logit 绝对差约 `1.91e-6`。这证明部署一致性，**不证明检测效果达标**：
+
+- 验证集只有 2 条正常 TCP，6008 条全部判恶意，平衡准确率为 0.5。
+- Scenario 42-1 的 1440 条正常候选诊断中，444 条误报，误报率约 30.83%；该来源已被查看，不是最终盲测集。
+- 输入特征存在跨来源同向量异标签问题；不能仅凭训练分数或增加网络深度声称解决。
+- 尚未接入实时告警，也未实现机器学习异常检测。
+
+工程价值在于数据采集、数据预处理、状态管理、可靠性测试、可观测性和边缘部署。这些是 AI 应用落地所需的基础能力，但项目本身不等同于训练大型模型或实现成熟检测产品。
+
+详见[训练基线](docs/tcp_linear_baseline.md)、[正常流误报诊断](docs/tcp_normal_diagnostic.md)、[候选来源记录](docs/iot23_pilot_provenance.md)与[ARM64 推理验收](docs/tcp_arm64_inference.md)。
+
+### 可选 ML 测试
+
+网络分析与 BMS 基础功能不要求安装 PyTorch。开发机如需运行 ML 测试，可在独立环境安装本仓库记录的依赖：
+
+```bash
+sudo apt install python3-venv
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-ml.txt
+
+cmake -S . -B build \
+    -DNFA_ML_PYTHON_EXECUTABLE:FILEPATH="$PWD/.venv/bin/python"
+
+cmake --build build -j2
+cmake -E chdir build ctest --output-on-failure
+```
+
+当前 51 项计数需要**同时启用 SQLite 和 ML**。未配置 `NFA_ML_PYTHON_EXECUTABLE` 时不会注册 4 项 PyTorch 测试；SQLite 默认为 OFF。板端 Python 3.8 的兼容环境与开发机不同，不应直接照搬此依赖文件，按[ARM64 测试手册](docs/arm64_test_validation.md)准备。
+
+## 命令与数据契约
+
+### 分析器参数
+
+| 参数 | 作用与限制 |
+| --- | --- |
+| `--help` / `--version` | 查看当前二进制接口与版本 |
+| `--read FILE` | 分析离线 Ethernet PCAP |
+| `--interface NAME` | 实时抓取指定接口；需要相应抓包权限 |
+| `--count N` | 正整数实时处理包数上限；省略则运行到停止信号 |
+| `--filter EXPR` | 实时 BPF 过滤；含空格时加引号 |
+| `--flow-full-policy reject\|evict-oldest` | 实时满表拒绝新流，或淘汰最旧流 |
+| `--flow-idle-timeout SECONDS` | 仅离线模式，按正整数秒空闲分段；省略时保持整文件聚合 |
+| `--csv FILE` | 离线导出完整流记录；不覆盖已有文件 |
+| `--feature-csv FILE` | 导出版本化流特征；实时模式必须同时提供 `--count` |
+
+短参数：`-h`、`-V`、`-r`、`-i`、`-c`。普通 CSV 与特征 CSV 可以在同一次离线运行生成，但路径不能相同。
+
+### 流 CSV 与特征 CSV
+
+流 CSV 保留 `protocol`、`tcp_state`、`endpoint_a_ip`、`endpoint_a_port`、`endpoint_b_ip`、`endpoint_b_port`；两个方向分别使用 `a_to_b_*` 与 `b_to_a_*` 的包数/捕获字节/原始记录字节列，时间使用 `first_seen_seconds`、`first_seen_microseconds`、`last_seen_seconds`、`last_seen_microseconds`。A/B 来自端点规范化排序，不保证 A 总是连接发起方。
+
+`captured` 累计实际 `caplen`，`wire` 累计 PCAP 记录的原始包长，均不是 TCP 应用正文长度，也不额外补算捕获记录没有提供的物理开销。
+
+特征文件模式为 `flow_features_v1`：
+
+| 列名 | 含义 |
+| --- | --- |
+| `schema_version` | 格式版本，不作为模型输入 |
+| `protocol` | IPv4 上层协议号：ICMP 1、TCP 6、UDP 17 |
+| `duration_microseconds` | 首末包时间差，微秒 |
+| `total_packet_count` | 双向包数 |
+| `total_captured_byte_count` | 双向实际捕获字节 |
+| `total_wire_byte_count` | 双向原始记录字节 |
+| `mean_captured_bytes_per_packet` | 平均捕获包长 |
+| `mean_wire_bytes_per_packet` | 平均原始记录包长 |
+| `packet_count_imbalance_ratio` | 方向包数不平衡度，0～1 |
+| `wire_byte_count_imbalance_ratio` | 方向字节不平衡度，0～1 |
+| `tcp_state_applicable` | TCP 状态是否适用 |
+| `tcp_phase` | 旁路观察的 TCP 阶段 |
+| `tcp_handshake_completed` | 是否观察到完整握手 |
+
+TCP 阶段包括 `unobserved`、`syn-seen`、`syn-ack-seen`、`established`、`midstream`、`fin-seen`、`fin-bidirectional`、`closed`、`reset`；非 TCP 写为 `not-applicable`。
+
+同次有限实时采集中，特征来自过期、容量淘汰和退出时仍活动的三组互斥记录。身份和标签通过独立 sidecar 连接，不混入特征。关联时必须使用同一次分析的流/特征文件、相同行号与生命周期配置；唯一匹配还需检查标签复用及时间边界，不能按行号直接给任意 CSV 贴标签。
+
+### 指标口径
+
+- 周期指标按 `CLOCK_MONOTONIC` 约每 5 秒输出；无匹配包也报告零流量。
+- 实时流过期按包时间高水位推进，固定空闲 30 秒、每 5 秒事件时间扫描；完全静默时等下一包触发，不是后台定时删流。
+- `Processing results` 的五类互斥；`flow_rejected` 统计被拒绝的数据包，不是不同流的数量。
+- `pcap_stats` 与应用处理计数属于不同层级，不能用 received 减 total 计算网络丢包；TCP 包数也不等于 BMS 报告条数。
+
+## 部署与技术边界
+
+已完成两条 ARM64 交叉构建链：官方 Buildroot SDK，以及通用 GCC + 板端 sysroot。交付前需检查架构、动态依赖、GLIBC 要求与 SHA-256，不能仅凭相同的 `0.2.0` 版本字符串认定产物相同。
+
+分析器的 systemd 模板位于 `packaging/systemd/`，使用专用用户、`CAP_NET_RAW`、`NoNewPrivileges` 及文件系统等限制；参数来自 `/etc/default/netflow-analyzer`，日志进入 journal。**该模板不是 BMS 网关或 SQLite 的服务部署。**
+
+- 当前分析主链支持 Ethernet II 和 IPv4，不支持 VLAN、IPv6、隧道、IP 分片重组、TCP 乱序/字节流重组或校验和验证。
+- DNS 仅实现并测试了独立的 12 字节固定头解析，未接入采集主链，不包含域名压缩、资源记录、DNS 事务匹配或完整 DPI。
+- 流表固定 256 槽，有删除标记与满表策略，没有动态扩容。`evict-oldest` 使用一次满表扫描完成最旧流选择和替换；300 新流测试中探测操作由 344 降到 300，不是所有场景的耗时下降比例。
+- 抓包分析主链仍是单线程；新增 pthread 队列/线程用于独立 BMS 存储组件，不能写成已完成多线程抓包流水线。
+- Netflow 是项目名称；当前未实现 NetFlow/IPFIX 导出协议。
+- eMMC 空间有限，源码与可执行文件保留在 Linux 文件系统；板端数据卡为 VFAT/`noexec`，不能照搬 venv 或构建树。长期日志、数据容量和 SQLite 掉电可靠性需要分别管理与验证。
+- 不提供自动阻断、网络攻击确认或在线告警；不以本项目软件代替真实电池安全保护验证。
+
+部署步骤见[交叉编译](docs/cross_compilation.md)与[非 root systemd 部署](docs/systemd_deployment.md)，故障处理见[问题记录](docs/problem_log.md)。
+
+## 目录与资料导航
+
+```text
+include/analyzer/      网络分析核心的公开接口
+src/                   抓包、协议、双向流、TCP状态、指标及CSV
+gateway/               独立BMS串口/TCP网关、控制协议、SQLite组件
+scripts/               标签审计、候选数据、特征预处理及模型实验
+tests/unit/            C单元与组件测试
+tests/integration/     CLI、PTY/TCP、数据契约及ML测试
+packaging/systemd/     分析器服务和默认参数模板
+docs/                  部署、测量、故障、数据与验收记录
+labs/                  独立实验，不代表正式主链已集成
+```
+
+`build*/` 为生成目录。原始 PCAP、数据库、模型和板端运行日志保留在仓库外，不提交敏感通信数据或大体积产物。
+
+| 想了解的内容 | 文档 |
+| --- | --- |
+| 单流性能与测量方法 | [performance_baseline.md](docs/performance_baseline.md) |
+| 多流容量与540万包长稳 | [multiflow_longrun_baseline.md](docs/multiflow_longrun_baseline.md) |
+| ARM64工具链与服务部署 | [cross_compilation.md](docs/cross_compilation.md)、[systemd_deployment.md](docs/systemd_deployment.md) |
+| 板端完整37项测试 | [arm64_test_validation.md](docs/arm64_test_validation.md) |
+| 数据来源、模型与误报限制 | [iot23_pilot_provenance.md](docs/iot23_pilot_provenance.md)、[tcp_linear_baseline.md](docs/tcp_linear_baseline.md)、[tcp_normal_diagnostic.md](docs/tcp_normal_diagnostic.md) |
+| 模型在鲁班猫的推理一致性 | [tcp_arm64_inference.md](docs/tcp_arm64_inference.md) |
+| BMS实物联动、抓包和SQLite阶段 | [session_handoff.md 第18节](docs/session_handoff.md) |
+| 其他本地LLM部署试验及质量限制 | [local_llm_deployment.md](docs/local_llm_deployment.md) |
+| 实际故障与技术取舍 | [problem_log.md](docs/problem_log.md)、[technical_decisions.md](docs/technical_decisions.md) |
+
+## 后续路线
+
+1. 将采集生产者、独立存储线程与 TCP 会话接入显式新网关模式，保留旧只读/控制 CLI；先做 PTY 与本机网络回归，再安排实物验收。
+2. 验证 Qt 离线持续采集、断连不清采集队列、重新接入及慢客户端处理，明确存储背压和故障上报。
+3. 对板端 SQLite 数据盘做容量、锁竞争、介质故障与安全收尾验证，再考虑轮转、备份和长期服务。
+4. 在有需求和证据支持时扩展主机/时间窗行为特征、DNS解析或流表容量；规则检测、机器学习异常检测与实时预警仍属后续路线。
+
+## 版本沿革
+
+- `v0.0.1`：可构建、可运行、可测试的工程骨架。
+- `v0.1.0`：离线 PCAP → 安全协议解析 → 双向流聚合。
+- `v0.2.0`：增加哈希流表、过期、CSV、实时抓包与 BPF。
+- 后续 `Unreleased`：信号收尾、周期指标、TCP状态、版本化特征、ARM64部署、本地模型实验、BMS联动及可选SQLite组件；完成度以各模块代码及上述验收为准。
+
+完整阶段记录见 [CHANGELOG.md](CHANGELOG.md) 与 [技术决策](docs/technical_decisions.md)。

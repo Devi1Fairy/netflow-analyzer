@@ -4,7 +4,7 @@
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
-当前任务（2026-11-05）：用户已提交`c0f62a3 add bounded telemetry queue for async storage`，文档更新前工作区干净且与远程同步；VM构建及50/50项Debug CTest复核通过（13.34秒）。下一步提供独立SQLite消费者线程及临时数据库软件测试，由用户录入；候选代码通过仓库外严格编译、ASan／UBSan和重复测试，仓库第51项仍待集成验收，详见18.19。现有网关、TCP控制、串口配置均未改，不启动硬件；Qt离线持续采集、实时入库及ARM64新组件尚未验证。118条历史回放见18.17。
+当前任务（2026-11-05）：用户已提交`ec4dc48 feat(gateway): add asynchronous SQLite storage worker`，文档更新前工作区干净且与远程同步；VM构建及51/51项Debug CTest复核通过（13.90秒）。本轮提供完整行解析／接收时间／入队的采集生产者及PTY到SQLite软件闭环测试，由用户录入；候选代码在仓库外通过严格编译、ASan／UBSan及50轮重复验证，仓库第52项仍待集成验收，详见18.20。旧网关入口、TCP控制、串口配置均未改；没有启动真实硬件，新增显式网关运行模式、Qt离线持续采集及ARM64实时入库均未验收。
 
 ## 1. 新会话接手顺序
 
@@ -22,6 +22,8 @@ cmake -E chdir build ctest --output-on-failure
 ```
 
 预期基线：
+
+- 当前VM复核（2026-11-05，采集生产者准备）：分支`feature/flow-features`，HEAD为`ec4dc48`，与远程同步且文档更新前工作区干净。构建无待编译目标，启用SQLite及可选ML的51/51项Debug CTest通过（13.90秒、退出0），其中bms_store_worker_tests为0.19秒。队列及独立SQLite线程已录入；新采集生产者仍待填写，当前旧bms-gateway仍先等Qt接入再开串口，并非已实现Qt离线持续采集。
 
 - 当前VM复核（2026-11-05，存储线程准备）：分支`feature/flow-features`，HEAD为`c0f62a3`，与远程同步且文档更新前工作区干净。构建无待编译目标，启用SQLite及可选ML的50/50项Debug CTest通过（13.34秒、退出0），新增队列已在实际仓库验收。独立SQLite线程仍为待用户录入候选，不把仓库外测试登记成51项或硬件实时入库。
 
@@ -2334,7 +2336,9 @@ fi
 
 队列录入及第50项仓库验收现已完成。下一步先连接存储线程及临时数据库软件验证（18.19），再接新增运行模式及PTY重连测试，最后单独安排有界板端联调；不得直接运行第二个串口进程、启用常驻systemd或自动发送MCU命令。原建议标题为`feat(gateway): add bounded telemetry queue for async storage`，用户实际提交标题以上述c0f62a3为准。
 
-### 18.19 SQLite专属消费者线程（2026-11-05，候选验证通过，待用户录入）
+### 18.19 SQLite专属消费者线程（2026-11-05，已录入并提交）
+
+最新验收：用户已录入并提交为`ec4dc48 feat(gateway): add asynchronous SQLite storage worker`；本轮VM工作区干净，构建无待编译目标，51/51项Debug CTest通过（13.90秒、退出0），其中存储线程测试0.19秒。下文“候选”“待用户录入”和50项基线描述最初提供阶段，不替代本条当前验收。此模块尚未链接到旧网关运行入口，也没有新增ARM64／SD／真实串口结果。
 
 本轮有界目标：将已有有界队列和同步bms_store连接为独立线程组件，SQLite句柄仅在线程内部创建／使用／关闭；不改变旧bms_gateway入口或其链接关系，不打开串口，不发送TCP／UART控制，不执行Git写操作。助手只维护本交接文档，用户填写gateway/bms_store_worker.h、gateway/bms_store_worker.c、tests/unit/test_bms_store_worker.c及CMake两处注册。
 
@@ -2354,7 +2358,28 @@ fi
 - 测试目标单独用--wrap=bms_sample_queue_pop，在预填队列成功取样后增加25ms处理成本；正式库不包含包装器。将截止时间故意改成逐样本滑动的仓库外缺陷变体时，持续输入检查按预期失败（退出1）；这不是实际仓库出现的新故障。
 - 最终候选在泄漏检查／UBSan遇错终止设置下连续50轮通过。不把这登记成实际仓库第51项。未执行TSan、pthread_create失败注入、真实满盘／介质故障／掉电、SD卡、ARM64或真实串口实验，也没有Qt离线持续入库结果。
 
-用户录入后先运行bms_store_worker_tests，再完整回归；当前配置预计51项，须等实际输出验收。建议通过后提交标题：`feat(gateway): add asynchronous SQLite storage worker`。随后才设计显式新网关模式、生产者背压统计和PTY连接／断开验证，不直接以现有单会话入口宣称常驻采集完成。
+线程录入及第51项仓库验收现已完成，实际提交标题与原建议一致。下一步补齐采集生产者的解析／接收时间／背压统计，并先验证PTY到SQLite闭环（18.20）；之后才把采集、网络会话和存储组合到显式新网关模式，不直接以现有单会话入口宣称常驻采集完成。
+
+### 18.20 采集生产者与PTY到SQLite闭环（2026-11-05，候选验证通过，待用户录入）
+
+本轮范围：提供gateway/bms_ingest.h、gateway/bms_ingest.c、tests/unit/test_bms_ingest.c及CMake注册，由用户填写。旧bms_gateway和bms_control_run的UART／网络所有权及CLI均不改，不打开物理串口、不自动发送S／T／C、不启用服务。助手只更新本交接文档，源码与Git仍由用户操作。
+
+候选采集回调：
+
+- bms_ingest_init只绑定已初始化队列并清零计数；context由唯一采集线程持有，初始化及统计读取不与回调并发。完整行正文仅在调用期间借用，解析后的bms_sample_t按值尝试入队，不保存串口行指针，不执行SQLite或网络／UART操作。
+- 对16字段解析成功的遥测，在完整行回调中读取CLOCK_REALTIME并转换为正Unix微秒；0仍保留给历史未知时间，不把数据库写入时刻、MCU采样时刻或sample计数当接收时间。系统实时时钟可能调整，不能假定接收时间单调；队列与提交超时仍使用CLOCK_MONOTONIC。
+- 非遥测计ignored，疑似BMS但格式／范围错误计invalid，两者均不进入数据库；合法遥测try_push成功计enqueued。EAGAIN／EBUSY分别计rejected_full／rejected_busy，该条不存、不等待、不重试，回调返回0继续接收。它是明确允许缺口并计数的策略，不保证零丢失，未来上层必须展示拒绝计数。
+- 时钟错误、队列关闭和其他同步错误计fatal_errors／last_error，回调返回-1并设置errno供主循环终止本次采集。一般同步错误可能发生在队列复制之后，不自动重试或将失败数当作确定未入队。该回调既不负责关闭队列，也不执行隐式MCU停机。
+- serial stats.lines表示行整理器成功交给回调的非空完整行，包括ignored／invalid／满或忙拒绝，并非enqueued，更不等于数据库committed_rows。信号处理器仍只置标志；正常收尾由主循环停止生产、close队列、join存储线程、检查结果、destroy。
+
+实际软件验证：
+
+- ec4dc48上的实际仓库51/51项Debug CTest通过（13.90秒、退出0）。本轮未改源码／CMake，仅候选通过标准输入编译到`/tmp/nfa-bms-ingest-check.Ao2d0F`，GCC 13.3.0、C11、Wall／Wextra／Wpedantic／Werror、pthread、ASan／UBSan。
+- 候选两组通过：按值复制及固定接收时间、非样本／坏格式、实际队列满／持锁忙、时钟EIO／溢出／零时刻、关闭队列错误；PTY输入经过原bms_serial_receive_fd及行整理器，得到4条回调（1条非样本、1条坏格式、2条完整样本），启动片段丢弃1段、pending尾部未入库，最终SQLite读回2条及字段／设备会话标识／固定时间一致。
+- 两个链接包装器仅用于测试：clock_gettime只替换CLOCK_REALTIME以确定性断言时间及注入错误，MONOTONIC调用真实实现；queue_pop用信号量在消费者首次取样前暂缓，待生产者完成后再释放，避免记录数受trylock竞争影响。数据库READY先于PTY打开，收尾close→释放消费者→join→检查提交→destroy。它不证明真实并发运行零拒绝，线程并发／定时提交由已有组件测试覆盖。
+- 最终候选在泄漏检查与UBSan遇错终止设置下连续50轮通过。未使用TCP客户端、真实串口、MCU控制字节、板端SD数据库或Qt联调；测试无需Qt不代表旧bms-gateway已能在Qt离线时持续采集。仓库第52项尚待用户录入和实际回归。
+
+下一步：用户录入后运行bms_ingest_tests及完整回归，当前配置预期52项；建议通过后提交`feat(gateway): add timestamped telemetry ingestion`。随后设计显式新运行模式及PTY网络接入／断开测试，主循环必须独立检查存储线程FAILED状态，不能仅依靠新行到来时发现失败，也不能让Qt断连关闭采集队列。真实硬件联调另行安排，不启动第二个串口进程。
 
 ## 19. ARM Linux开发板计划
 
@@ -2453,6 +2478,8 @@ sh scripts/check_target_env.sh --expect-arm --with-tests
 然后先检查流特征、版本化导出、CLI生命周期、测试、文档和Git提交状态，再进入数据集对齐；性能方法见`docs/performance_baseline.md`与`docs/multiflow_longrun_baseline.md`，交叉构建方法见`docs/cross_compilation.md`。
 
 ## 21. 本次交接结论
+
+当前推进（2026-11-05，采集生产者准备）：存储线程已提交ec4dc48，VM 51/51项Debug CTest通过（13.90秒），文档更新前工作区干净。新生产者候选及PTY→完整行→解析／接收时间→队列→SQLite测试已在仓库外ASan／UBSan及50轮重复验证，由用户录入，仓库52项尚待实际验收。当前旧网关仍是Qt接入后开串口的单会话入口，未声明Qt离线持续采集、重连或ARM64实时入库完成。助手只维护本交接文档，不改硬件／源码或代执行Git，详见18.20。以下为此前阶段快照。
 
 当前推进（2026-11-05，SQLite线程准备）：队列已由用户提交为c0f62a3，VM 50/50项Debug CTest通过（13.34秒），文档更新前工作区干净。新消费者线程候选在仓库外严格编译及ASan／UBSan五组、50轮重复测试通过，由用户填写源码／测试／CMake；仓库51项及ARM64／实时入库仍待验证。助手只更新本交接文档，不改旧网关或硬件，也不执行Git写操作，详见18.19。以下为此前阶段快照。
 
