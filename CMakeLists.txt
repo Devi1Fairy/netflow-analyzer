@@ -1410,6 +1410,38 @@ if(BUILD_TESTING)
             PROPERTIES TIMEOUT 20
         )
 
+        # 原点预测回放自测：此前尚未注册。
+        add_test(
+            NAME load_forecast_pilot_tests
+            COMMAND
+                ${NFA_ML_PYTHON_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_load_forecast_pilot.py
+                --capacity-library
+                $<TARGET_FILE:load_capacity_replay>
+                --self-test
+        )
+
+        set_tests_properties(
+            load_forecast_pilot_tests
+            PROPERTIES TIMEOUT 60
+        )
+
+        # 新增上界校准自测。
+        add_test(
+            NAME load_upper_calibration_tests
+            COMMAND
+                ${NFA_ML_PYTHON_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/evaluate_load_upper.py
+                --capacity-library
+                $<TARGET_FILE:load_capacity_replay>
+                --self-test
+        )
+
+        set_tests_properties(
+            load_upper_calibration_tests
+            PROPERTIES TIMEOUT 60
+        )
+
     endif()
 
     # 创建CSV流记录导出单元测试程序。
