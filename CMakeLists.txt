@@ -119,6 +119,29 @@ target_compile_definitions(
 
 enable_project_warnings(analyzer_core)
 
+# 离线预测回放使用的C接口。
+# 不修改抓包主程序，也不依赖Python或PyTorch。
+add_library(
+    load_capacity_replay
+    SHARED
+    src/metrics/load_capacity.c
+    src/metrics/load_capacity_bridge.c
+)
+
+target_include_directories(
+    load_capacity_replay
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+
+target_link_libraries(
+    load_capacity_replay
+    PRIVATE
+        m
+)
+
+enable_project_warnings(load_capacity_replay)
+
 # 创建命令行主程序目标。
 add_executable(
     netflow_analyzer_cli
