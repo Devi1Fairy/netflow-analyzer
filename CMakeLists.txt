@@ -142,6 +142,38 @@ target_link_libraries(
 
 enable_project_warnings(load_capacity_replay)
 
+# 固定MLP与上界的独立C回放程序，不依赖libpcap或PyTorch。
+add_executable(
+    load_forecast_replay_cli
+    src/load_forecast_replay.c
+    src/metrics/load_capacity.c
+)
+
+set_target_properties(
+    load_forecast_replay_cli
+    PROPERTIES OUTPUT_NAME "load-forecast-replay"
+)
+
+target_include_directories(
+    load_forecast_replay_cli
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+
+target_link_libraries(
+    load_forecast_replay_cli
+    PRIVATE m
+)
+
+target_compile_options(
+    load_forecast_replay_cli
+    PRIVATE
+        -fno-fast-math
+        -ffp-contract=off
+)
+
+enable_project_warnings(load_forecast_replay_cli)
+
 # 创建命令行主程序目标。
 add_executable(
     netflow_analyzer_cli
@@ -1439,6 +1471,21 @@ if(BUILD_TESTING)
 
         set_tests_properties(
             load_upper_calibration_tests
+            PROPERTIES TIMEOUT 60
+        )
+
+        add_test(
+            NAME load_forecast_native_tests
+            COMMAND
+                ${NFA_ML_PYTHON_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/verify_load_forecast_c.py
+                --program
+                $<TARGET_FILE:load_forecast_replay_cli>
+                --self-test
+        )
+
+        set_tests_properties(
+            load_forecast_native_tests
             PROPERTIES TIMEOUT 60
         )
 
