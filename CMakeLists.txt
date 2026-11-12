@@ -91,6 +91,7 @@ add_library(
     src/output/flow_feature_export.c
     src/flow/flow_expiration.c
     src/metrics/runtime_metrics.c
+    src/metrics/load_capacity.c
     src/flow/tcp_flow_state.c
 )
 
@@ -1462,6 +1463,32 @@ if(BUILD_TESTING)
 
     set_tests_properties(
         runtime_metrics_tests
+        PROPERTIES
+            TIMEOUT 5
+    )
+
+    # 验证预测包数到容量风险的映射，不依赖模型、网络或硬件。
+    add_executable(
+        load_capacity_tests
+        tests/unit/test_load_capacity.c
+    )
+
+    target_link_libraries(
+        load_capacity_tests
+        PRIVATE
+            analyzer_core
+            m
+    )
+
+    enable_project_warnings(load_capacity_tests)
+
+    add_test(
+        NAME load_capacity_tests
+        COMMAND load_capacity_tests
+    )
+
+    set_tests_properties(
+        load_capacity_tests
         PROPERTIES
             TIMEOUT 5
     )
