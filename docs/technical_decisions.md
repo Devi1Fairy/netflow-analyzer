@@ -68,7 +68,7 @@
 | TD-044 | 应用层DNS解析先建立独立、长度有界的协议模块 | 固定头与合成测试完成／尚未接入采集链 |
 | TD-045 | BMS的Linux接入放在独立gateway目录，先验证有界串口接收 | 有界接收及SIGINT／SIGTERM收尾通过／TCP网关尚未实现 |
 | TD-046 | TCP控制显式启用，隔离解析、队列及事件循环 | 接口及验证边界见正文历史记录 |
-| TD-047 | 面向分析端容量风险预测，分离流量预测、容量标定与告警判定 | 校准上界已提交／纯C候选对照通过；提示代价待确认、容量未实测、未上板 |
+| TD-047 | 面向分析端容量风险预测，分离流量预测、容量标定与告警判定 | 原生C板端3792起点一致／滚动历史候选通过；在线采集与容量标定待测 |
 
 ## 3. 核心语言与运行平台
 
@@ -1230,7 +1230,7 @@ normal简化提示词对照随后退出0，生成5.22 token/s、墙钟24.00秒�
 
 ### TD-047：面向分析端容量风险预测，分离负载预测、容量标定与业务判定
 
-状态：容量判定器`f006680`、点预测/C回放`bfbf3c0`及校准上界`2d70578`均已由用户提交；当前VM的54/54项CTest通过（18.47秒），两个脚本自测均已注册。第四批纯C推理候选通过VM内存／stdin验证及ARM64静态交叉编译，源码仍由用户从对话录入；不是55项已集成通过或板端部署验收。尚未接入在线采集、未标定板端容量、未提供实时预测服务。以下各批记录按其日期与提交解释。
+状态：容量判定器`f006680`、点预测/C回放`bfbf3c0`、上界`2d70578`及原生C推理`dd4fa23`已由用户提交；最近VM的55/55项CTest通过（19.67秒）。用户已回传ARM64原生推理：3792个起点与PC C参考一致，总耗时0.59秒、峰值RSS1408 KiB、退出0；容量仍SIMULATED。第六批滚动历史输入候选通过独立软件与真实数据回放，待用户录入，未冒称56项集成通过。尚未接入在线闭窗／服务、未标定板端容量。以下各批记录按阶段解释。
 
 业务对象：根据面试目标公司的公开流量采集与分发业务，选取“分析端未来持续负载可能超过安全处理能力”作为项目试点，而非围绕单台BMS是否需要预测展开。公开产品资料只能证明业务方向，不能证明公司内部已使用本项目模型或有相同设计。参考[公司网络可视化产品介绍](https://www.sinovatio.com/news/3a19b693-97a0-15e8-910f-1b3416486ae2)。
 
@@ -1358,6 +1358,46 @@ normal简化提示词对照随后退出0，生成5.22 token/s、墙钟24.00秒�
 证据根目录`/home/zcb/datasets/netflow-analyzer/cesnet-timeseries24-v1/native-check.11vgFd`，最终机构0在`final-development/native-pilot-341g5w6h`、机构1在`protocol-check/native-pilot-iq_5dnl_`，保存model.bin、cases.bin、native.csv、stderr与report.json。合成测试拒绝坏魔数/长度、非法参数、非有限/负数/小数/过大包数、第二条坏记录、重复起点，UBSan候选运行无报告。最终VM二进制SHA-256为`2acb9fe1c414c5ee633164f6eb3f7aa801632d86c62de861ca86bc5ebc971e34`。
 
 一次VM资源复放为约0.02秒、最大RSS2212 KiB，包含进程启动、文件I/O、MLP、上界、容量判断、CSV暂存与输出；不是纯前向耗时、网卡吞吐或板端指标。x86_64优化二进制约21 KiB；ARM64静态交叉编译产物约688 KiB，经file核对为aarch64静态ELF，尚未在LubanCat执行。当前所有输出容量来源固定SIMULATED，旧板端9 Kpps不能替代容量标定。
+
+#### 第五批：当前提交的ARM64运行包与实物预检（2026-11-12）
+
+用户已录入第四批源码和CMake并提交为`dd4fa231a8ad01e6a40beed92e39d9cb446e9f73`；VM的55/55项CTest通过（19.67秒），包括`load_forecast_native_tests`。本轮仅维护已有文档，没有修改业务源码或执行Git写操作。
+
+用户实际结果在`/home/zcb/datasets/netflow-analyzer/cesnet-timeseries24-v1/native-runs/native-pilot-jq9oh4ap`：3792个起点、模型1571参数，点预测风险／上界风险／首风险窗差异均0，点预测／上界最大相对误差约1.61e-7。重新核对模型、样本、PC二进制与report.json摘要，并重放C输出，与既有native.csv逐字节相同。未重新训练或校准，不把这次复放当作新的泛化验证。
+
+从当前提交的C源码使用Ubuntu aarch64-linux-gnu-gcc 13.3.0、C11、O2、static、关闭fast-math和浮点收缩构建；file核对为aarch64静态ELF。程序703896字节，SHA-256为`d1e98da1ee51b78ae318ecb2646338420b711b2b08e7e407e8e2492090ea5d87`；不依赖板端PyTorch。交叉编译不能代替实物运行。
+
+包路径为`/home/zcb/datasets/netflow-analyzer/cesnet-timeseries24-v1/arm64-packages/load-arm64-dd4fa23-wonv_0we/load-forecast-arm64-dd4fa23.tar.gz`，670955字节，SHA-256为`7a8cc30df3244b09de3ce1e53a3b45bc8f6197788c18828ef9af88085df95c7f`。解包文件合计1984931字节，包括程序、model.bin、cases.bin、pc-native.csv、pc-report.json、manifest.json、SHA256SUMS及source-snapshot.tar，本机全部摘要校验通过。源码快照仅打包既有提交；运行包不提交Git。
+
+此前对文档历史地址cat@192.168.1.102的一次15秒有界、BatchMode、严格已知主机校验的只读查询返回255／Permission denied (publickey,password)，该自动SSH未取得板端数据。本轮用户从鲁班猫本地终端回传当前环境：hostname=lubancat、aarch64、内核4.19.232；用户cat(uid/gid1000，组含dialout/sudo/audio/video)；根分区ext4总7.0G、已用6.5G、可用249M(97%)；/media/usb0为/dev/mmcblk1p1、VFAT、rw/nodev/noexec/sync/uid1000，可用28G；Python3.8.10，/usr/bin/time存在。该用户实物输出已通过部署环境预检，但不证明虚拟机到板端的交互SSH传输已完成。密码只在用户终端输入。
+
+本轮再次核对670955字节运行包SHA-256与上述记录相同，并在VM用既有3792行PC参考测试标准库比较函数：同文件通过，风险值变化、数值超差、NaN和缺行均可识别；仅在内存执行，没有写入候选Python源码或生成板端报告。拟由用户先创建唯一目录/home/cat/nfa-load-dd4fa23-wonv_0we与/media/usb0/netflow-analyzer-data/load-dd4fa23-wonv_0we，再从VM交互scp该包、板端核对总包及逐文件摘要，将程序复制到eMMC目录。既有目录或结果文件存在则停止，保留原结果。
+
+计划执行时用/usr/bin/time单独记录60秒有界C进程及文件I/O，保存board-native.csv、board-runtime.txt、board-time.txt和board-exit-status.txt；随后以Python标准库逐行核对3792条时间戳、点预测／上界、两种风险、首风险窗和峰值预算比，数字采用rtol=2e-6、atol=0.01包，离散判断要求一致。对照脚本确认aarch64、实际执行文件摘要和退出0后才输出board-validation.json；其Python内存／耗时不计入C推理的time日志。程序尚未传输或在板端运行，不能记录推理通过或实测资源数字；完整命令由用户从对话执行。
+
+传输排查补记：用户随后反馈本地包校验OK后scp无进一步可见输出，粘贴回显出现交错；未提供scp退出码或认证日志，尚不能定位连接、认证或SFTP阶段。助手复核本地包仍完整，检查时VM未列出在运行的scp；该时点观察不能证明已传输成功。下一步由用户Ctrl+C收尾、核对板端当前IPv4，再单独执行有界ssh -v检查认证与目标目录，成功后再尝试单独scp。
+
+用户随后回传独立SSH诊断：使用password认证成功、执行SSH_OK、hostname=lubancat，目标/home/cat/nfa-load-dd4fa23-wonv_0we为cat所有的drwx------目录，远端及本地SSH退出码均0。连接、交互认证、板端身份与目标目录现已确认；原scp无输出的具体根因仍未定位，不能将旧BatchMode认证失败套用到本次成功会话，也不能单凭SSH成功声称传输完成。下一步由用户单独执行60秒有界scp -O -v，以传统SCP方式绕过可能的SFTP阶段并记录退出码，随后板端核对压缩包SHA-256；新传输与C推理结果均待回传，未改SSH配置或Git。
+
+后续根据实际预检选择目录：程序放允许执行的eMMC目录，模型／样本／输出可放已确认可写的数据盘；历史VFAT数据盘为noexec，不能直接执行其中程序，并需保留C暂存CSV所用根分区空间。随后做一次有界离线推理，记录退出码、RSS与墙钟，以Python标准库逐行比较3792条预测、风险和首窗口；C推理本身不依赖Python。所有容量仍为SIMULATED；不把离线处理耗时当作网卡吞吐，板端结果回传前不记录通过，也不改写37项历史ARM64回归结论。
+
+实物验收补记（2026-11-12，用户终端输出）：前述准备与排查段为执行前快照。本轮用户确认传输并执行成功，随后回传board-exit-status.txt=0、board-validation.json、board-runtime.txt及time摘要。3792个起点的origin、numeric、point_risk、upper_risk、upper_first_step、upper_ratio差异均0；点预测及上界相对PC C参考的最大绝对差异均0。平台aarch64、内核4.19.232、比较脚本Python3.8.10，源提交为`dd4fa231a8ad01e6a40beed92e39d9cb446e9f73`。程序摘要`d1e98da1ee51b78ae318ecb2646338420b711b2b08e7e407e8e2492090ea5d87`、CSV摘要`4de8e88bdec1eb18e655219f45fc3802c0fd509afea2ddc67669f6ee77fd545d`与实际VM包manifest完全一致。
+
+C运行日志为samples=3792 capacity_source=SIMULATED；time墙钟0:00.59、最大RSS1408 KiB、Exit status 0。该耗时包含进程启动、文件I/O、预处理、MLP、校准上界、容量判断和CSV输出，不含后续Python比较，不当作单次纯前向耗时或网卡吞吐。板端数据仍在`/media/usb0/netflow-analyzer-data/load-dd4fa23-wonv_0we`；助手未登录代跑。用户粘贴内容另存为`/home/zcb/datasets/netflow-analyzer/cesnet-timeseries24-v1/arm64-results/load-native-dd4fa23-ktae74rh/user-reported-board-result.json`，明确full_original_board_files_received=false，不冒充scp取得的完整原始文件。
+
+该批完成固定模型的ARM64部署一致性验收；不改变C与PyTorch原有微小浮点差异及误报／漏报业务代价，也不代表当前55项全部在板端通过。online_window_builder_verified和measured_capacity_verified仍为false，数据仍是公开数据的离线输入，容量仍SIMULATED。
+
+#### 第六批：有界滚动历史与18个原始模型输入（2026-11-12）
+
+本轮提供include/analyzer/load_history.h、src/metrics/load_history.c、tests/unit/test_load_history.c完整候选及CMake插入位置，用户从对话录入；业务源码未直接写入仓库或外部文件。现有55项基线未因文档更新重复全跑，新第56项仍待用户集成。纯C候选通过stdin严格编译、UBSan，以及固定源数据的滚动回放。
+
+接口只接受调用者已确认结束的600秒窗口，保存1008个时间连续窗口的包数及可用性，固定环形存储；本次VM sizeof=9096字节。complete表示采集覆盖整窗，quality_ok表示计数可信，二者任一false的窗口保留位置但不成为有效零流量。原始0包在标记有效时可用，计数上限2^53-1确保转double不丢整数精度。时间相位保留，不要求UTC整10分钟；向前时间缺口清除逻辑历史、不补0，重复／倒退返回ESTALE并保持历史不变，非法字段返回EINVAL。调用者遇错误必须使当次预测不可用，不能重用未变的旧输出。
+
+历史满后按最近12窗、前一日对应3窗、前一周对应3窗提取18个double，顺序与原模型相同；读取失败输出保持原值。只要求实际18个所需窗口质量有效，未被模型读取的不可用计数不强行填补，也不阻断本来完整的18维输入；但整个1008窗的时间位置仍必须连续。原点不等于最后闭合窗终点返回ESTALE，所需窗口不可信或历史不足返回EAGAIN。对象由调用者持有并串行调用，同一对象只属于一个采集来源／过滤配置，来源改变须重新init。
+
+候选软件验证覆盖冷启动、有效零流量、18维顺序、多轮环形覆盖、重复／倒退、非法时长、计数精度边界、时间溢出、时间缺口、质量失效、部分采集与空指针。真实数据回放通过Python ctypes调用该C候选，处理机构0的40292个闭合窗口、跳过5个非600秒边界；3792个既有预测起点的68256个原始历史值均与旧cases.bin完全相同，最大差异0。结果在`/home/zcb/datasets/netflow-analyzer/cesnet-timeseries24-v1/history-check.6sYbTa/replay-check.json`；离线质量标记仅依据数据可用性，不冒充实测捕获质量。
+
+本模块不读取时钟、libpcap或抓包drop，也不生成窗口、不执行MLP、不读取未来包数。下一步再接闭窗计数与在线调度，采集层负责单调时钟／UTC标签、完整性／质量证据、来源与新鲜度控制；不能按120条不定长5秒报告代替精确600秒窗口。1008个10分钟窗口是一周，模型冷启动历史不足时返回不可用；可以回放同来源历史检验，不能缩短窗口或用公共机构历史冒充实际网卡历史。当前不新增板端动作、自动告警、调度或MCU控制。
 
 ## 9. 硬件与部署环境
 

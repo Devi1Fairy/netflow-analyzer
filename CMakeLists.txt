@@ -92,6 +92,7 @@ add_library(
     src/flow/flow_expiration.c
     src/metrics/runtime_metrics.c
     src/metrics/load_capacity.c
+    src/metrics/load_history.c
     src/flow/tcp_flow_state.c
 )
 
@@ -1593,6 +1594,29 @@ if(BUILD_TESTING)
         load_capacity_tests
         PROPERTIES
             TIMEOUT 5
+    )
+
+    # 验证滚动历史和模型输入，不访问网络或硬件。
+    add_executable(
+        load_history_tests
+        tests/unit/test_load_history.c
+    )
+
+    target_link_libraries(
+        load_history_tests
+        PRIVATE analyzer_core
+    )
+
+    enable_project_warnings(load_history_tests)
+
+    add_test(
+        NAME load_history_tests
+        COMMAND load_history_tests
+    )
+
+    set_tests_properties(
+        load_history_tests
+        PROPERTIES TIMEOUT 5
     )
 
     # 创建TCP流状态机单元测试程序。
