@@ -93,6 +93,7 @@ add_library(
     src/metrics/runtime_metrics.c
     src/metrics/load_capacity.c
     src/metrics/load_history.c
+    src/metrics/load_window.c
     src/flow/tcp_flow_state.c
 )
 
@@ -1616,6 +1617,29 @@ if(BUILD_TESTING)
 
     set_tests_properties(
         load_history_tests
+        PROPERTIES TIMEOUT 5
+    )
+
+    # 验证闭窗计数及其与历史模块的联动。
+    add_executable(
+        load_window_tests
+        tests/unit/test_load_window.c
+    )
+
+    target_link_libraries(
+        load_window_tests
+        PRIVATE analyzer_core
+    )
+
+    enable_project_warnings(load_window_tests)
+
+    add_test(
+        NAME load_window_tests
+        COMMAND load_window_tests
+    )
+
+    set_tests_properties(
+        load_window_tests
         PROPERTIES TIMEOUT 5
     )
 
