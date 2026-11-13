@@ -68,7 +68,7 @@
 | TD-044 | 应用层DNS解析先建立独立、长度有界的协议模块 | 固定头与合成测试完成／尚未接入采集链 |
 | TD-045 | BMS的Linux接入放在独立gateway目录，先验证有界串口接收 | 有界接收及SIGINT／SIGTERM收尾通过／TCP网关尚未实现 |
 | TD-046 | TCP控制显式启用，隔离解析、队列及事件循环 | 接口及验证边界见正文历史记录 |
-| TD-047 | 面向分析端容量风险预测，分离流量预测、容量标定与告警判定 | 板端C推理通过／VM实时入口58项及lo短测通过；完整600秒、物理网卡和容量待测 |
+| TD-047 | 面向分析端容量风险预测，分离流量预测、容量标定与告警判定 | 板端C推理及VM实时入口58项、首个600秒计时闭窗通过；可信后续窗、物理网卡和容量待测 |
 
 ## 3. 核心语言与运行平台
 
@@ -1230,7 +1230,7 @@ normal简化提示词对照随后退出0，生成5.22 token/s、墙钟24.00秒�
 
 ### TD-047：面向分析端容量风险预测，分离负载预测、容量标定与业务判定
 
-状态：历史／计数器已提交到efcee32，用户已应用第八批实时开关但尚未提交；实际CTest日志58/58通过。VM lo真实短测退出0、6包与pending_packets一致，未闭合尾窗正确保留为不可用，本轮只读复核日志未重跑。此前ARM64模型3792起点一致性结果仍有效，当前58项未在板端全跑；真实600秒闭窗、新入口ARM64及实测容量仍待验证，模型尚未在线调用。
+状态：历史／计数器及第八批实时开关已由用户提交到22f7775；实际CTest日志58/58通过。第九批VM lo真实计时验收通过：分析器及tee均退出0，首窗恰好600秒、6包、尾窗待计数0，计数守恒；首窗不完整／不可信标记符合策略，未当作可用模型输入。本轮没有源码变化，不重复构建或全跑测试。此前ARM64模型3792起点一致性结果独立保留，当前58项未在板端全跑；后续完整可信窗、新入口ARM64物理网卡及实测容量仍待验证，模型尚未在线调用。
 
 业务对象：根据面试目标公司的公开流量采集与分发业务，选取“分析端未来持续负载可能超过安全处理能力”作为项目试点，而非围绕单台BMS是否需要预测展开。公开产品资料只能证明业务方向，不能证明公司内部已使用本项目模型或有相同设计。参考[公司网络可视化产品介绍](https://www.sinovatio.com/news/3a19b693-97a0-15e8-910f-1b3416486ae2)。
 
@@ -1440,6 +1440,18 @@ pcap_stats的received=12、drop=0、ifdrop=0独立于应用回调处理6包，�
 同目录verification.json记录日志摘要、复核时当前二进制SHA、HEAD／源码未提交状态及证据来源；退出0标为用户报告，58项通过来自实际CTest日志，不冒充本轮重跑。原计划命令预算20秒，未单独测量总墙钟或RSS，不添加新吞吐／资源结论。当前二进制摘要为`f7b8c8667c1d10d8fe4e6ef1fc0b9c5eb5a4da9d8fd8c44935ce6d8b68fb77fc`，不是运行前后双重校验。
 
 当前可由用户将本批源码和三份文档一起提交。下一步独立验证真实600秒闭窗及后续窗质量，再安排新入口ARM64物理网卡验收；旧dd4fa23 MLP上板结果不迁移为新入口已部署。公共模型与实际application_read_packets的来源／统计口径及容量适用条件仍须对齐，prediction=not-connected继续保留。
+
+#### 第九批：VM真实600秒计时闭窗验收（2026-11-13）
+
+实时入口已由用户提交为`22f7775 feat(forecast): add opt-in live load window collection`。运行前保存的完整HEAD为`22f7775d5b5e0dd1ff3b5518735b37fe4d1d6fa2`，工作区仅session_handoff.md及technical_decisions.md两份准备文档有修改；本轮业务源码未变。运行前保存的`build/bin/netflow-analyzer`摘要与验收时实际文件相同，均为`f7b8c8667c1d10d8fe4e6ef1fc0b9c5eb5a4da9d8fd8c44935ce6d8b68fb77fc`。没有重新构建、重训或重复全套58项测试。
+
+用户在Ubuntu VM执行610秒预算的真实lo采集，BPF为`icmp and host 127.0.0.1`，显式`--load-windows`，不设包数提前退出，启用后从另一终端发3次ping。源码／命令预检及重定向检查先于实测完成，实测由用户手工运行；不涉及鲁班猫网卡、串口或BMS命令。原始日志在`/home/zcb/nfa-load-window-610.s38HY0`，stdout为run.txt，窗口stderr为windows.txt，另存退出码、HEAD、工作区状态与二进制摘要。命令预算为610秒，未独立测量总墙钟或RSS，不将其作为性能指标。
+
+助手直接读取原始文件后核对：exit-status.txt和tee-exit-status.txt均0，唯一闭窗start=1794551604、end=1794552204，差值600秒、packets=6。日志中121条定期指标仅1条包含6包，其余为0；结合首个闭窗记录，支持早期流量结束后空闲轮询仍能关闭窗口。只有一条启用和一条正常停止记录，没有reset或disabled。
+
+首窗complete=0、quality_ok=0、quality_carry=1，history=1/1008、input_status=unavailable，符合现有保守启动策略；本次通过的是实际计时与计数路径，不将首窗升级为完整可信输入。statistics_known=1、drop_delta=0、ifdrop_delta=0；停止时history=1/1008、pending_packets=0、tail=not-exported。已闭合窗6包加尾窗待计数0等于Total packets=6，全部complete，truncated／malformed／unsupported／flow_rejected均0。捕获统计received=12、drop=0、ifdrop=0与应用读取计数分开记录，不推断其差额为网络丢包或重复处理，也不据零捕获drop宣称网络零丢包。
+
+同目录verification.json保存实际字段断言、源元数据与7份原文件SHA-256，注明scope为Ubuntu VM真实环回首个600秒计时闭窗；不修改原日志、不保存额外候选业务源码。后续完整可信窗、物理网卡、新入口ARM64、模型在线预测和实测容量仍待验证，prediction=not-connected、容量SIMULATED继续保留；旧dd4fa23板端模型一致性结果独立于本轮采集适配器验收。
 
 ## 9. 硬件与部署环境
 

@@ -4,7 +4,9 @@
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
-当前任务（2026-11-13，第八批验收，VM环回入口）：用户已补齐补丁EOF换行并应用，源码／新文件／文档均为本批待提交修改，HEAD仍efcee32，继续保留。只读核对实际build/Testing/Temporary/LastTest.log：1～58顺序完整、58条Test Passed、0失败，包括load_live_tests，未重复运行测试。用户真实VM lo短时ICMP采集退出0，助手复读/home/zcb/nfa-load-live.B7v8c1日志：应用6包且complete=6、caplen/wire合计各588字节，窗口pending_packets=6、history=0/1008、tail=not-exported，无闭合行／reset／disabled，符合未满600秒的预期。pcap_stats received=12与应用交付计数不同；相同端点127.0.0.1:0的ICMP按现有流键归A→B，不能据此测试异机方向。verification.json已存原日志目录，注明退出0来自用户、当前二进制摘要／源码未提交状态、测试通过来自实际日志。三份文档已补实测，当前可由用户提交feat(forecast): add opt-in live load window collection。完整600秒真实闭窗、ARM64新入口和模型来源／容量口径对齐仍待后续；旧dd4fa23模型上板结果独立保留，不等于58项板端回归，本轮无新增硬件或Git写操作。
+当前任务（2026-11-13，第九批验收，VM真实600秒计时闭窗）：用户已执行610秒预算的lo采集，助手直接核对/home/zcb/nfa-load-window-610.s38HY0原始日志及元数据。分析器／timeout和tee均退出0；唯一闭窗start=1794551604、end=1794552204，时长600秒、6包，pending_packets=0、Total packets=6，计数守恒；没有reset或disabled。history=1/1008、input_status=unavailable，首窗complete=0、quality_ok=0、quality_carry=1符合保守策略，不能标为可信训练输入。捕获统计received=12、drop=0、ifdrop=0，与应用6包分开解释。
+
+运行前保存HEAD为22f7775d5b5e0dd1ff3b5518735b37fe4d1d6fa2，仅两份文档有未提交修改，业务源码未变；运行前及本轮复核二进制SHA-256均为f7b8c8667c1d10d8fe4e6ef1fc0b9c5eb5a4da9d8fd8c44935ce6d8b68fb77fc。同目录verification.json保存字段校验与原文件摘要。此前58/58项CTest结果保留，本轮不重复测试、不操作硬件或Git写入。后续完整可信窗、新入口ARM64物理网卡、模型来源／容量口径仍待验证，prediction=not-connected；旧dd4fa23板端模型结果独立保留，不等于58项板端回归。
 
 第二批历史：`f006680`时52项CTest通过，随后用户录入点预测脚本与C桥接并提交为`bfbf3c0`。其机构0点预测结果已由用户复现于`cesnet-timeseries24-v1/runs/capacity-pilot-q74v059o`，MLP模拟越界提前提示0/18；该测试已用于开发诊断，不作为第三批未见验证。时间轴、输入质量处理和数据指纹仍按第二批记录保留。
 
