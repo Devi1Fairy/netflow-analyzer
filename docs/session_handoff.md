@@ -4,7 +4,11 @@
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
-当前任务（2026-11-13，第十批验收，后续完整零包窗口）：用户已执行1210秒预算的Ubuntu VM lo采集，助手直接复核/home/zcb/nfa-load-window-1210.3bMGkv原始日志、元数据及退出码。两个600秒闭窗首尾连续，包数依次6、0；首窗complete=0、quality_ok=0，第二窗complete=1、quality_ok=1、quality_carry=0，证明当前质量检查下完整零包窗口可退出启动保护并保留位置。停止history=2/1008、pending_packets=0、tail=not-exported，总包6，计数守恒；分析器／timeout及tee均退出0，无reset或disabled。input_status=unavailable符合历史不足，prediction=not-connected继续保留，不能据此宣称模型在线预测通过。
+当前任务（2026-11-13，第十一批候选，滚动历史快照）：第十批文档已由用户提交为a6c5f8e，文档更新前工作区干净。候选新增load_history_store.h、src/output/load_history_store.c和test_load_history_store.c，源码只在对话／内存中处理，由用户创建文件并修改CMake；尚未接入当前程序或CTest。模块保存固定来源、接口、BPF、application_read_packets度量、600秒宽度及最多1008窗的时间顺序／包数／usable，读回时先完整校验，再发布等价历史。POSIX同目录临时文件、fflush／fsync／fclose后rename替换旧快照；不承诺未同步父目录时的断电目录项持久性。读回不恢复单调时钟、未闭合尾窗或libpcap基线，不代表可无缝接入新会话。
+
+候选经stdin严格C11编译、五组UBSan软件检查及真实lo两闭窗回放保存／读回通过；记录在/home/zcb/datasets/netflow-analyzer/cesnet-timeseries24-v1/store-check.FeQq75/verification.json，同目录real-lo-history-v1.snapshot为回放数据，2窗6／0包、usable为false／true。当前构建无待编译目标，实际CTest枚举仍58项，未重复全跑；新增第59项须待用户录入再验收。实时CLI持久化、重启时间缺口／相位调度及ARM64仍未实现／未验证；prediction=not-connected不变。本轮仅直接更新两份现有文档，没有写入候选业务源码文件、操作硬件或Git写入。
+
+上一批验收（2026-11-13，第十批，后续完整零包窗口）：用户已执行1210秒预算的Ubuntu VM lo采集，助手直接复核/home/zcb/nfa-load-window-1210.3bMGkv原始日志、元数据及退出码。两个600秒闭窗首尾连续，包数依次6、0；首窗complete=0、quality_ok=0，第二窗complete=1、quality_ok=1、quality_carry=0，证明当前质量检查下完整零包窗口可退出启动保护并保留位置。停止history=2/1008、pending_packets=0、tail=not-exported，总包6，计数守恒；分析器／timeout及tee均退出0，无reset或disabled。input_status=unavailable符合历史不足，prediction=not-connected继续保留，不能据此宣称模型在线预测通过。
 
 本次运行前HEAD为50920dc05653e65212c8b64a2eac98331ee55796，仅两份准备文档有修改，业务源码未变；运行前及本轮复核二进制摘要与前批一致。同目录verification.json保存两个窗口字段、连续性／计数断言及8份原始文件摘要。此次为VM真实环回计时验收，不是鲁班猫物理网卡或实测容量验收；没有重新构建或全跑58项测试，没有操作硬件或Git写入。下一阶段计划设计闭窗持久化与同来源历史恢复，避免进程重启后历史清零；该功能尚未实现，需保留来源、过滤、度量、版本和时间缺口的校验边界。
 

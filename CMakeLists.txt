@@ -93,6 +93,7 @@ add_library(
     src/metrics/runtime_metrics.c
     src/metrics/load_capacity.c
     src/metrics/load_history.c
+    src/output/load_history_store.c
     src/metrics/load_window.c
     src/metrics/load_live.c
     src/flow/tcp_flow_state.c
@@ -1650,6 +1651,29 @@ if(BUILD_TESTING)
     enable_project_warnings(load_live_tests)
     add_test(NAME load_live_tests COMMAND load_live_tests)
     set_tests_properties(load_live_tests PROPERTIES TIMEOUT 5)
+
+    # 验证快照保存、来源校验和历史恢复，不打开网卡。
+    add_executable(
+        load_history_store_tests
+        tests/unit/test_load_history_store.c
+    )
+
+    target_link_libraries(
+        load_history_store_tests
+        PRIVATE analyzer_core
+    )
+
+    enable_project_warnings(load_history_store_tests)
+
+    add_test(
+        NAME load_history_store_tests
+        COMMAND load_history_store_tests
+    )
+
+    set_tests_properties(
+        load_history_store_tests
+        PROPERTIES TIMEOUT 10
+    )
 
     # 创建TCP流状态机单元测试程序。
     add_executable(
