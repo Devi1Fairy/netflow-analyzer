@@ -94,6 +94,7 @@ add_library(
     src/metrics/load_capacity.c
     src/metrics/load_history.c
     src/metrics/load_window.c
+    src/metrics/load_live.c
     src/flow/tcp_flow_state.c
 )
 
@@ -1642,6 +1643,13 @@ if(BUILD_TESTING)
         load_window_tests
         PROPERTIES TIMEOUT 5
     )
+
+    # 验证实时窗口适配器和CLI参数，不打开网卡。
+    add_executable(load_live_tests tests/unit/test_load_live.c)
+    target_link_libraries(load_live_tests PRIVATE analyzer_core)
+    enable_project_warnings(load_live_tests)
+    add_test(NAME load_live_tests COMMAND load_live_tests)
+    set_tests_properties(load_live_tests PROPERTIES TIMEOUT 5)
 
     # 创建TCP流状态机单元测试程序。
     add_executable(

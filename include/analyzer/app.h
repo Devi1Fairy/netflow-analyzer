@@ -100,6 +100,9 @@ typedef struct {
      */
     const char *filter_expression;
 
+    /* 显式启用实时600秒窗口；只记录观察结果，不自动运行模型。 */
+    bool collect_load_windows;
+
     /**
      * 实时流表容量耗尽时采用的策略。
      *

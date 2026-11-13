@@ -4,7 +4,7 @@
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
-当前任务（2026-11-13，第七批，600秒闭窗计数）：用户已提交`f9bef8f feat(forecast): add bounded history for load prediction`，文档更新前工作区干净、与远程同步。VM构建无待编译目标，56/56项CTest通过（19.89秒），load_history_tests已集成。此前用户ARM64的3792起点原生C部署验收保持有效：0.59秒含I/O、RSS1408 KiB、退出0、与PC C参考CSV摘要一致；不等于当前56项板端回归。下一步提供include/analyzer/load_window.h、src/metrics/load_window.c、tests/unit/test_load_window.c及CMake插入位置，由用户从对话录入，本轮不直接修改业务源码。候选经stdin严格编译与UBSan，使用软件时间推进2025个窗口并与已有历史模块联动，18维输入顺序正确；另有2万条合成时间增量／166窗独立分桶对照，计数、UTC相位和质量标记差异0，计数器sizeof=40字节（VM）。采用单调纳秒计时和固定UTC标签，接收逐包或同一时刻的计数增量，不均分跨边界累计差值；边界属下一窗，超出一个窗口的追赶范围返回ESTALE，避免补造多个有效零窗。窗口完整性、整窗质量证据、时钟映射与来源隔离仍由采集适配层负责。新增CTest录入后预计57项，尚未集成；真实网卡接入、在线推理调度及实测容量均未完成，本轮无硬件、服务或Git写操作，容量仍SIMULATED。
+当前任务（2026-11-13，第八批验收，VM环回入口）：用户已补齐补丁EOF换行并应用，源码／新文件／文档均为本批待提交修改，HEAD仍efcee32，继续保留。只读核对实际build/Testing/Temporary/LastTest.log：1～58顺序完整、58条Test Passed、0失败，包括load_live_tests，未重复运行测试。用户真实VM lo短时ICMP采集退出0，助手复读/home/zcb/nfa-load-live.B7v8c1日志：应用6包且complete=6、caplen/wire合计各588字节，窗口pending_packets=6、history=0/1008、tail=not-exported，无闭合行／reset／disabled，符合未满600秒的预期。pcap_stats received=12与应用交付计数不同；相同端点127.0.0.1:0的ICMP按现有流键归A→B，不能据此测试异机方向。verification.json已存原日志目录，注明退出0来自用户、当前二进制摘要／源码未提交状态、测试通过来自实际日志。三份文档已补实测，当前可由用户提交feat(forecast): add opt-in live load window collection。完整600秒真实闭窗、ARM64新入口和模型来源／容量口径对齐仍待后续；旧dd4fa23模型上板结果独立保留，不等于58项板端回归，本轮无新增硬件或Git写操作。
 
 第二批历史：`f006680`时52项CTest通过，随后用户录入点预测脚本与C桥接并提交为`bfbf3c0`。其机构0点预测结果已由用户复现于`cesnet-timeseries24-v1/runs/capacity-pilot-q74v059o`，MLP模拟越界提前提示0/18；该测试已用于开发诊断，不作为第三批未见验证。时间轴、输入质量处理和数据指纹仍按第二批记录保留。
 

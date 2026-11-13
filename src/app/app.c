@@ -13,6 +13,7 @@
 #include "analyzer/flow_feature_export.h"
 #include "analyzer/flow_expiration.h"
 #include "analyzer/runtime_metrics.h"
+#include "analyzer/load_live.h"
 #include "analyzer/tcp_flow_state.h"
 
 #include <errno.h>
@@ -234,6 +235,108 @@ static int app_maybe_print_runtime_metrics(
     return app_print_runtime_metrics(&report);
 }
 
+/* 窗口统计为可选旁路；失败只停用本次观察器。 */
+static int app_load_monotonic_ns(uint64_t *value)
+{
+    if (value == NULL) return EINVAL;
+    runtime_metrics_timestamp_t stamp;
+    int rc = app_get_monotonic_timestamp(&stamp);
+    if (rc != 0) return rc;
+    uint64_t nanos = (uint64_t)stamp.nanoseconds;
+    if ((uint64_t)stamp.seconds >
+        (UINT64_MAX - nanos) / UINT64_C(1000000000))
+        return EOVERFLOW;
+    *value = (uint64_t)stamp.seconds * UINT64_C(1000000000) + nanos;
+    return 0;
+}
+
+static int app_load_boundary(
+    capture_t *capture,
+    load_live_boundary_t *boundary)
+{
+    struct timespec utc;
+    if (clock_gettime(CLOCK_REALTIME, &utc) != 0)
+        return errno != 0 ? errno : EIO;
+    if (utc.tv_sec < 0) return ERANGE;
+    uint64_t seconds = (uint64_t)utc.tv_sec;
+    if ((time_t)seconds != utc.tv_sec) return ERANGE;
+
+    capture_statistics_t stats = {0};
+    *boundary = (load_live_boundary_t){
+        .utc_seconds = seconds
+    };
+    if (capture_get_statistics(capture, &stats) == 0) {
+        boundary->statistics_available = true;
+        boundary->dropped_packets = stats.dropped_packets;
+        boundary->interface_dropped_packets =
+            stats.interface_dropped_packets;
+    }
+    return 0;
+}
+
+static void app_observe_load_windows(
+    capture_t *capture,
+    load_live_t *live,
+    bool *active,
+    uint64_t delta)
+{
+    if (!*active) return;
+    uint64_t mono;
+    int rc = app_load_monotonic_ns(&mono);
+    if (rc != 0) goto disabled;
+
+    load_live_boundary_t boundary;
+    const load_live_boundary_t *sample = NULL;
+    bool needs_sample = !live->counter.initialized ||
+        mono < live->counter.last_monotonic_ns ||
+        mono >= live->counter.start_monotonic_ns + LOAD_WINDOW_WIDTH_NS;
+    if (needs_sample) {
+        rc = app_load_boundary(capture, &boundary);
+        if (rc != 0) goto disabled;
+        sample = &boundary;
+    }
+    if (!live->counter.initialized) {
+        rc = load_live_init(live, mono, sample);
+        if (rc != 0) goto disabled;
+        if (fprintf(stderr,
+                "Load windows enabled: window_seconds=600 "
+                "metric=application_read_packets prediction=not-connected\n") < 0) {
+            rc = EIO;
+            goto disabled;
+        }
+    }
+
+    load_live_event_t event;
+    rc = load_live_observe(live, mono, delta, sample, &event);
+    if (rc != 0) goto disabled;
+    if (event.reset && fprintf(stderr,
+            "Load windows reset: history discarded; prediction unavailable\n") < 0) {
+        rc = EIO;
+        goto disabled;
+    }
+    if (event.closed && fprintf(stderr,
+            "Load window: schema=load_window_v1 metric=application_read_packets "
+            "start=%" PRIu64 " end=%" PRIu64 " packets=%" PRIu64
+            " complete=%d quality_ok=%d history=%zu/1008 input_status=%s"
+            " statistics_known=%d drop_delta=%" PRIu64
+            " ifdrop_delta=%" PRIu64 " quality_carry=%d\n",
+            event.window.start_seconds, event.window.end_seconds,
+            event.window.packet_count, event.window.complete,
+            event.window.quality_ok, live->history.length,
+            event.history_status == 0 ? "ready" : "unavailable",
+            event.statistics_known, event.dropped_delta,
+            event.interface_dropped_delta, event.quality_carried) < 0) {
+        rc = EIO;
+        goto disabled;
+    }
+    return;
+
+disabled:
+    *active = false;
+    (void)fprintf(stderr, "Load windows disabled: %s; capture continues\n",
+                  strerror(rc));
+}
+
 /**
  * @brief 把十进制字符串解析为大于0的size_t数值。
  *
@@ -357,6 +460,7 @@ static int app_print_help(const char *program_name)
             "[--count <PACKETS>] "
             "[--filter <BPF_EXPRESSION>] "
             "[--flow-full-policy <reject|evict-oldest>] "
+            "[--load-windows] "
             "[--feature-csv <FEATURE_CSV_FILE>]\n"
             "\n"
             "Linux network traffic analyzer.\n"
@@ -371,6 +475,7 @@ static int app_print_help(const char *program_name)
             "omit to run until stopped.\n"
             "      --filter EXPRESSION  Apply a BPF filter "
             "to live capture.\n"
+            "      --load-windows  Collect 600-second live load windows to stderr.\n"
             "      --flow-full-policy POLICY  Handle a full "
             "live flow table: reject or evict-oldest.\n"
             "      --csv FILE  Export full offline flow records "
@@ -1622,6 +1727,8 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
     runtime_metrics_schedule_t runtime_metrics_schedule = {0};
     runtime_metrics_timestamp_t runtime_metrics_start = {0};
     runtime_metrics_packet_result_t packet_result = RUNTIME_METRICS_PACKET_RESULT_COMPLETE;
+    load_live_t load_live = {0};
+    bool load_windows_active = false;
 
     flow_timestamp_t packet_timestamp = {0};
     flow_timestamp_t expiration_cutoff = {0};
@@ -1673,6 +1780,7 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
      * 后面的协议解析和流量聚合不需要再区分数据来自文件还是网卡。
      */
     live_capture = context->command == APP_COMMAND_CAPTURE_INTERFACE;
+    load_windows_active = live_capture && context->collect_load_windows;
 
     /*
     * 输入来源与流生命周期策略是两个不同概念。
@@ -1944,6 +2052,10 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
         }
     }
 
+    if (load_windows_active) {
+        app_observe_load_windows(capture, &load_live, &load_windows_active, 0);
+    }
+
     if (live_capture) {
         error_code = printf(
             "Capture interface: %s\n"
@@ -2109,6 +2221,11 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
                 return EIO;
             }
 
+            if (load_windows_active) {
+                app_observe_load_windows(capture, &load_live,
+                                         &load_windows_active, 0);
+            }
+
             /*
              * 无论因为数据就绪还是正常超时返回，都检查单调时钟。
              *
@@ -2185,6 +2302,10 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
         }
 
         total_packet_count += 1U;
+        if (load_windows_active) {
+            app_observe_load_windows(capture, &load_live,
+                                     &load_windows_active, 1);
+        }
 
         error_code = runtime_metrics_totals_add_packet(
             &runtime_metrics_totals,
@@ -2534,6 +2655,16 @@ static int app_run_capture_analysis(app_context_t *context,FILE *flow_csv_output
                 capture_close(&capture);
                 return error_code;
             }
+        }
+    }
+
+    if (load_windows_active) {
+        app_observe_load_windows(capture, &load_live, &load_windows_active, 0);
+        if (load_windows_active) {
+            (void)fprintf(stderr,
+                "Load windows stopped: history=%zu/1008 pending_packets=%"
+                PRIu64 " tail=not-exported\n",
+                load_live.history.length, load_live.counter.packet_count);
         }
     }
 
@@ -3067,6 +3198,7 @@ int app_context_init(app_context_t *context)
         .capture_path = NULL,
         .interface_name = NULL,
         .filter_expression = NULL,
+        .collect_load_windows = false,
         .flow_full_policy = APP_FLOW_FULL_POLICY_REJECT,
         .packet_limit = 0U,
         .offline_flow_idle_timeout_seconds = INT64_C(0),
@@ -3093,6 +3225,7 @@ int app_parse_arguments(app_context_t *context,
     
     app_flow_full_policy_t parsed_flow_full_policy;
     bool parsed_flow_full_policy_provided;
+    bool parsed_collect_load_windows;
     size_t parsed_packet_limit;
 
     int argument_index;
@@ -3116,6 +3249,7 @@ int app_parse_arguments(app_context_t *context,
     context->capture_path = NULL;
     context->interface_name = NULL;
     context->filter_expression = NULL;
+    context->collect_load_windows = false;
     context->packet_limit = 0U;
     context->offline_flow_idle_timeout_seconds = INT64_C(0);
     context->flow_full_policy = APP_FLOW_FULL_POLICY_REJECT;
@@ -3155,6 +3289,7 @@ int app_parse_arguments(app_context_t *context,
     parsed_flow_full_policy = APP_FLOW_FULL_POLICY_REJECT;
     parsed_offline_flow_idle_timeout_seconds = INT64_C(0);
     parsed_flow_full_policy_provided = false;
+    parsed_collect_load_windows = false;
     parsed_csv_output_path = NULL;
     parsed_feature_csv_output_path = NULL;
     parsed_packet_limit = 0U;
@@ -3177,8 +3312,15 @@ int app_parse_arguments(app_context_t *context,
             return EINVAL;
         }
 
+        if (strcmp(option, "--load-windows") == 0) {
+            if (parsed_collect_load_windows) return EINVAL;
+            parsed_collect_load_windows = true;
+            ++argument_index;
+            continue;
+        }
+
         /*
-         * 所有当前业务选项后面都必须存在一个非空参数。
+         * 以下选项后面必须存在一个非空参数。
          */
         if (argument_index + 1 >= argc ||
             argv[argument_index + 1] == NULL ||
@@ -3308,6 +3450,10 @@ int app_parse_arguments(app_context_t *context,
      *
      * 同时指定离线文件和实时网卡会让命令语义不明确。
      */
+    if (parsed_collect_load_windows && parsed_interface_name == NULL) {
+        return EINVAL;
+    }
+
     if (parsed_capture_path != NULL &&
         parsed_interface_name != NULL) {
         return EINVAL;
@@ -3404,6 +3550,7 @@ int app_parse_arguments(app_context_t *context,
     context->capture_path = parsed_capture_path;
     context->interface_name = parsed_interface_name;
     context->filter_expression = parsed_filter_expression;
+    context->collect_load_windows = parsed_collect_load_windows;
     context->offline_flow_idle_timeout_seconds = parsed_offline_flow_idle_timeout_seconds;
     context->csv_output_path = parsed_csv_output_path;
     context->feature_csv_output_path = parsed_feature_csv_output_path;
@@ -3470,6 +3617,11 @@ int app_run(app_context_t *context)
         return 0;
 
     case APP_COMMAND_READ_CAPTURE:
+        if (context->collect_load_windows) {
+            (void)snprintf(context->error_message, sizeof(context->error_message),
+                           "load windows are only supported for live capture");
+            return EINVAL;
+        }
         if (context->capture_path == NULL || context->capture_path[0] == '\0') {
             (void)snprintf(
                 context->error_message,
