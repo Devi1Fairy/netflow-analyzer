@@ -4,7 +4,11 @@
 
 本文用于把当前项目状态、学习背景、协作方式、代码架构、测试、Git历史、已知边界和下一步计划完整交接给新的Codex会话。接手者应先完整阅读本文，再执行只读检查，不要根据标题直接开始大范围修改。
 
-当前任务（2026-11-13，第九批验收，VM真实600秒计时闭窗）：用户已执行610秒预算的lo采集，助手直接核对/home/zcb/nfa-load-window-610.s38HY0原始日志及元数据。分析器／timeout和tee均退出0；唯一闭窗start=1794551604、end=1794552204，时长600秒、6包，pending_packets=0、Total packets=6，计数守恒；没有reset或disabled。history=1/1008、input_status=unavailable，首窗complete=0、quality_ok=0、quality_carry=1符合保守策略，不能标为可信训练输入。捕获统计received=12、drop=0、ifdrop=0，与应用6包分开解释。
+当前任务（2026-11-13，第十批验收，后续完整零包窗口）：用户已执行1210秒预算的Ubuntu VM lo采集，助手直接复核/home/zcb/nfa-load-window-1210.3bMGkv原始日志、元数据及退出码。两个600秒闭窗首尾连续，包数依次6、0；首窗complete=0、quality_ok=0，第二窗complete=1、quality_ok=1、quality_carry=0，证明当前质量检查下完整零包窗口可退出启动保护并保留位置。停止history=2/1008、pending_packets=0、tail=not-exported，总包6，计数守恒；分析器／timeout及tee均退出0，无reset或disabled。input_status=unavailable符合历史不足，prediction=not-connected继续保留，不能据此宣称模型在线预测通过。
+
+本次运行前HEAD为50920dc05653e65212c8b64a2eac98331ee55796，仅两份准备文档有修改，业务源码未变；运行前及本轮复核二进制摘要与前批一致。同目录verification.json保存两个窗口字段、连续性／计数断言及8份原始文件摘要。此次为VM真实环回计时验收，不是鲁班猫物理网卡或实测容量验收；没有重新构建或全跑58项测试，没有操作硬件或Git写入。下一阶段计划设计闭窗持久化与同来源历史恢复，避免进程重启后历史清零；该功能尚未实现，需保留来源、过滤、度量、版本和时间缺口的校验边界。
+
+上一批验收（2026-11-13，第九批，VM真实600秒计时闭窗）：用户已执行610秒预算的lo采集，助手直接核对/home/zcb/nfa-load-window-610.s38HY0原始日志及元数据。分析器／timeout和tee均退出0；唯一闭窗start=1794551604、end=1794552204，时长600秒、6包，pending_packets=0、Total packets=6，计数守恒；没有reset或disabled。history=1/1008、input_status=unavailable，首窗complete=0、quality_ok=0、quality_carry=1符合保守策略，不能标为可信训练输入。捕获统计received=12、drop=0、ifdrop=0，与应用6包分开解释。
 
 运行前保存HEAD为22f7775d5b5e0dd1ff3b5518735b37fe4d1d6fa2，仅两份文档有未提交修改，业务源码未变；运行前及本轮复核二进制SHA-256均为f7b8c8667c1d10d8fe4e6ef1fc0b9c5eb5a4da9d8fd8c44935ce6d8b68fb77fc。同目录verification.json保存字段校验与原文件摘要。此前58/58项CTest结果保留，本轮不重复测试、不操作硬件或Git写入。后续完整可信窗、新入口ARM64物理网卡、模型来源／容量口径仍待验证，prediction=not-connected；旧dd4fa23板端模型结果独立保留，不等于58项板端回归。
 
